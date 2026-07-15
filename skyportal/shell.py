@@ -667,18 +667,51 @@ class InteractiveShell:
     def _render_assistant_messages(self, messages: List[Dict[str, Any]]) -> bool:
         rendered = False
         for message in sorted(messages, key=lambda item: int(item.get("sequence", 0))):
-            if message.get("role") != "assistant":
-                continue
-            text = self._message_text(message)
-            if not text:
-                continue
-            if not rendered:
-                self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
-            self.console.print(Markdown(text))
-            rendered = True
+            role = message.get("role")
+            if role == "assistant":
+                text = self._message_text(message)
+                if not text:
+                    continue
+                if not rendered:
+                    self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
+                self.console.print(Markdown(text))
+                rendered = True
+            elif role == "tool":
+                line = self._tool_result_line(message)
+                if line is None:
+                    continue
+                if not rendered:
+                    self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
+                self.console.print(line)
+                rendered = True
         if rendered:
             self.console.print("[dim #2563eb]╰────────────────────────────────────────[/dim #2563eb]\n")
         return rendered
+
+    @staticmethod
+    def _tool_result_line(message: Dict[str, Any]) -> Optional[Text]:
+        """One compact '[hostname] $ command -> output' line per executed
+        command — the server always records which host a run_command call
+        actually executed on (terminal_server_hostname), but nothing in the
+        transcript surfaced it, so a multi-server session gave no way to
+        tell which host a given command ran against."""
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return None
+        command = metadata.get("terminal_command")
+        if not command or metadata.get("awaiting_approval"):
+            return None
+        hostname = metadata.get("terminal_server_hostname") or "unknown host"
+        success = metadata.get("terminal_success")
+        marker = "[dim]?[/dim]" if success is None else ("[green]✓[/green]" if success else "[red]✗[/red]")
+        output = (metadata.get("terminal_output") or "").strip()
+        output = output.splitlines()[0] if output else ""
+        if len(output) > 120:
+            output = output[:117] + "..."
+        line = "[dim]\\[{}][/dim] {} [bold]$[/bold] {}".format(hostname, marker, command)
+        if output:
+            line += "  [dim]-> {}[/dim]".format(output)
+        return Text.from_markup(line)
 
     def _render_history(self, messages: List[Dict[str, Any]]) -> None:
         ordered = sorted(messages, key=lambda item: int(item.get("sequence", 0)))
