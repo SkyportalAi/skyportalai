@@ -25,7 +25,7 @@ dependencies = [
     "prompt-toolkit>=3.0.43,<4.0",
     "pydantic>=2.0,<3.0",
     "rich>=13.0,<16.0",
-    "typer>=0.12,<1.0",
+    "typer>=0.27.0,<1.0",
     "pyyaml>=6.0,<7.0",
 ]
 
