@@ -1,0 +1,62 @@
+name: Publish to PyPI
+
+# Publishes on a GitHub Release using PyPI trusted publishing (OIDC), so no
+# long-lived PyPI token is stored in GitHub. Before the first release, configure
+# a trusted publisher for SkyportalAi/skyportalai, workflow publish.yml, and the
+# pypi environment in the PyPI project settings.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check "poetry==2.4.1" "twine==6.2.0"
+      - name: Verify release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PACKAGE_VERSION="$(poetry version --short)"
+          if [[ "$RELEASE_TAG" != "v$PACKAGE_VERSION" ]]; then
+            echo "Release tag $RELEASE_TAG does not match package version v$PACKAGE_VERSION" >&2
+            exit 1
+          fi
+      - name: Build
+        run: poetry build
+      - name: Check metadata
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/skyportalai
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0

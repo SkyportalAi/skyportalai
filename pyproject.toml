@@ -1,0 +1,70 @@
+[project]
+name = "skyportalai"
+version = "0.1.0"
+description = "Official Python SDK and command-line client for the SkyPortal API"
+authors = [{ name = "SkyPortal", email = "tech@skyportal.ai" }]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11,<4.0"
+keywords = ["skyportal", "sdk", "cli", "agent", "mlops", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "requests>=2.32,<3.0",
+    "click>=8.0,<9.0",
+    "prompt-toolkit>=3.0.43,<4.0",
+    "pydantic>=2.0,<3.0",
+    "rich>=13.0,<16.0",
+    "typer>=0.12,<1.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+agent = ["wandb>=0.16,<1.0"]
+
+[project.scripts]
+skyportal-agent = "skyportalai.agent.__main__:main"
+skyportal = "skyportal.cli:main"
+skyportalai = "skyportalai.cli:main"
+
+[project.urls]
+Homepage = "https://skyportal.ai"
+Documentation = "https://github.com/SkyportalAi/skyportalai#readme"
+Repository = "https://github.com/SkyportalAi/skyportalai"
+Issues = "https://github.com/SkyportalAi/skyportalai/issues"
+
+[tool.poetry]
+packages = [{ include = "skyportalai" }, { include = "skyportal" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.4.2,<10.0.0"
+requests-mock = "^1.12"
+ruff = "^0.15.12"
+# Present in dev so the MLflow scanner tests run (they skip without pyyaml)
+# without forcing the heavy `agent` extra in CI.
+pyyaml = "^6.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
