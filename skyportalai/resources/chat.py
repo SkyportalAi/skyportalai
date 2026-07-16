@@ -190,9 +190,10 @@ class ChatResource:
             params={"limit": limit},
         )
 
-    def get_plans(self, chat_id: int) -> dict:
-        """Plans the agent produced for this chat."""
-        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plans/")
+    def get_plan(self, chat_id: int) -> dict:
+        """The chat's active plan, or None — a chat has at most one active
+        plan at a time; no history is kept once it's replaced or cleared."""
+        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plan/")
 
     def get_evaluations(self, chat_id: int, *, evaluator_type: str | None = None) -> dict:
         """Evaluator results plus a pass/fail summary."""

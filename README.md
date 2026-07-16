@@ -79,7 +79,7 @@ if status.status == "awaiting_approval":
 
 Follow-ups go through `chat.send("...")`; `chat.cancel()` stops an active run.
 Read-only introspection mirrors the observability endpoints: `chat.events()`,
-`chat.tool_calls()`, `chat.reasoning()`, `chat.plans()`, `chat.evaluations()`,
+`chat.tool_calls()`, `chat.reasoning()`, `chat.plan()`, `chat.evaluations()`,
 `chat.environment()`.
 
 `wait()` raises `WaitTimeoutError` if the agent is still busy past `timeout`
