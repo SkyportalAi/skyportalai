@@ -230,7 +230,7 @@ def test_wait_times_out(requests_mock):
         ("get_execution_status", "/api/v1/agent/chat/5/execution-status/"),
         ("get_tool_calls", "/api/v1/agent/chat/5/tool-calls/"),
         ("get_reasoning", "/api/v1/agent/chat/5/reasoning/"),
-        ("get_plans", "/api/v1/agent/chat/5/plans/"),
+        ("get_plan", "/api/v1/agent/chat/5/plan/"),
         ("get_evaluations", "/api/v1/agent/chat/5/evaluations/"),
         ("get_environment", "/api/v1/agent/chat/5/environment/"),
     ],
