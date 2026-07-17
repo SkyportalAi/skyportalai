@@ -104,10 +104,12 @@ def test_normal_completion_processes_the_turn():
     assert shell.last_sequence == 1
 
 
-def test_toolbar_advertises_stop_and_exit():
-    text = "".join(part[1] for part in InteractiveShell._bottom_toolbar())
-    assert "Ctrl-C" in text and "stop" in text.lower()
-    assert "/exit" in text
+def test_prompt_uses_compact_reference_style():
+    shell, _ = _shell(FakeClient())
+
+    text = "".join(part[1] for part in shell._prompt_fragments())
+
+    assert text == "skyportal [connected]  > "
 
 
 def test_exit_still_completes_after_completion_message():
