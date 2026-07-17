@@ -53,7 +53,10 @@ def _shell(client):
     return shell, console
 
 
-def test_resume_by_id_sets_chat_cursor_and_renders_history():
+def test_resume_by_id_sets_chat_cursor_without_history_by_default():
+    """/resume reloads context (chat_id/last_sequence) so the next message
+    continues the right flow — it doesn't need to replay the transcript to
+    do that, so the default is quiet. --verbose opts back into the render."""
     msgs = [
         {"role": "user", "sequence": 2, "content": [{"type": "text", "text": "list files"}]},
         {"role": "assistant", "sequence": 3,
@@ -70,7 +73,36 @@ def test_resume_by_id_sets_chat_cursor_and_renders_history():
     assert client.message_calls == [(42, 0)]
     out = console.file.getvalue()
     assert "Resumed chat #42" in out
+    assert "list files" not in out and "here they are" not in out
+
+
+def test_resume_verbose_renders_history():
+    msgs = [
+        {"role": "user", "sequence": 2, "content": [{"type": "text", "text": "list files"}]},
+        {"role": "assistant", "sequence": 3,
+         "content": [{"type": "text", "text": "here they are"}]},
+    ]
+    client = FakeClient(messages=msgs)
+    shell, console = _shell(client)
+
+    shell._cmd_resume(["42", "--verbose"])
+
+    assert shell.chat_id == 42
+    assert shell.last_sequence == 3
+    out = console.file.getvalue()
+    assert "Resumed chat #42" in out
     assert "list files" in out and "here they are" in out
+
+
+def test_resume_verbose_before_chat_id_also_works():
+    msgs = [{"role": "assistant", "sequence": 1, "content": [{"type": "text", "text": "hi"}]}]
+    client = FakeClient(messages=msgs)
+    shell, console = _shell(client)
+
+    shell._cmd_resume(["--verbose", "42"])
+
+    assert shell.chat_id == 42
+    assert "hi" in console.file.getvalue()
 
 
 def test_bare_resume_uses_previous_chat():
@@ -145,7 +177,7 @@ def test_resume_empty_chat_still_attaches():
     client = FakeClient(messages=[])
     shell, console = _shell(client)
 
-    shell._cmd_resume(["7"])
+    shell._cmd_resume(["7", "--verbose"])
 
     assert shell.chat_id == 7
     assert shell.last_sequence == 0
@@ -179,7 +211,7 @@ def test_resume_history_skips_tool_and_system_messages():
     client = FakeClient(messages=msgs)
     shell, console = _shell(client)
 
-    shell._cmd_resume(["9"])
+    shell._cmd_resume(["9", "--verbose"])
 
     out = console.file.getvalue()
     assert "run it" in out and "done" in out
