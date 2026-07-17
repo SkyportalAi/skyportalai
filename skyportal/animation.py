@@ -3,32 +3,12 @@
 import os
 import time
 from math import hypot
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Tuple
 
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.text import Text
-
-_GLYPHS: Dict[str, Sequence[str]] = {
-    "S": ("###", "#..", "###", "..#", "###"),
-    "K": ("#.#", "##.", "#..", "##.", "#.#"),
-    "Y": ("#.#", "#.#", ".#.", ".#.", ".#."),
-    "P": ("##.", "#.#", "##.", "#..", "#.."),
-    "O": (".#.", "#.#", "#.#", "#.#", ".#."),
-    "R": ("##.", "#.#", "##.", "#.#", "#.#"),
-    "T": ("###", ".#.", ".#.", ".#.", ".#."),
-    "A": (".#.", "#.#", "###", "#.#", "#.#"),
-    "L": ("#..", "#..", "#..", "#..", "###"),
-}
-
-_BRAND_COLORS: Tuple[str, ...] = (
-    "#2563eb",
-    "#0b82f0",
-    "#00a8f3",
-    "#22d3ee",
-    "#a5f3fc",
-)
 
 _PIXEL_STYLES: Dict[str, Tuple[str, str]] = {
     "O": ("██", "bold #052e7a"),
@@ -168,28 +148,6 @@ def _build_astronaut() -> Tuple[str, ...]:
 _ASTRONAUT_PIXELS = _build_astronaut()
 
 
-def _wordmark(reveal: Optional[int] = None) -> Text:
-    """Build the SKYPORTAL wordmark, optionally revealing it left-to-right."""
-    rows: List[List[Tuple[str, int]]] = [[] for _ in range(5)]
-    for row_index in range(5):
-        column = 0
-        for letter in "SKYPORTAL":
-            for pixel in _GLYPHS[letter][row_index]:
-                rows[row_index].append(("##" if pixel == "#" else "  ", column))
-                column += 1
-            rows[row_index].append(("  ", column))
-            column += 1
-
-    result = Text()
-    for row_index, row in enumerate(rows):
-        for value, pixel_column in row:
-            visible = reveal is None or pixel_column <= reveal
-            result.append(value if visible else "  ", style="bold " + _BRAND_COLORS[row_index])
-        if row_index != len(rows) - 1:
-            result.append("\n")
-    return result
-
-
 def _pixel_art(scale: float = 1.0) -> Text:
     """Render the astronaut's layered blue pixels at a horizontal spin scale."""
     source_width = max(len(line) for line in _ASTRONAUT_PIXELS)
@@ -217,18 +175,26 @@ def _final_banner(width: int) -> RenderableType:
         return Group(
             _astronaut_renderable(compact=True),
             Text(),
-            Align.center(Text("S K Y P O R T A L", style="bold #22d3ee")),
-            Align.center(Text("Your AI command center", style="dim white")),
+            Align.center(_brand_wordmark()),
+            Align.center(Text("YOUR AI COMMAND CENTER", style="bold #3b82f6")),
         )
 
     return Group(
         _astronaut_renderable(),
         Text(),
-        Align.center(_wordmark()),
+        Align.center(_brand_wordmark()),
         Text(),
-        Align.center(Text("YOUR AI COMMAND CENTER", style="bold #a5f3fc")),
-        Align.center(Text("Agent  /  Servers  /  Compute", style="dim white")),
+        Align.center(Text("Y O U R   A I   C O M M A N D   C E N T E R", style="bold #3b82f6")),
+        Align.center(Text("Agent  /  Servers  /  Compute", style="dim")),
     )
+
+
+def _brand_wordmark() -> Text:
+    """Render the compact logo and wordmark used by the command center."""
+    wordmark = Text()
+    wordmark.append("S", style="bold #3b82f6")
+    wordmark.append("  Skyportal", style="bold")
+    return wordmark
 
 
 def show_static_banner(console: Console) -> None:
@@ -254,8 +220,6 @@ def show_startup_animation(console: Console, delay: float = 0.035) -> None:
 
     compact = console.width < 76
     spin = (0.08, 0.20, 0.42, 0.72, 1.0, 0.62, 0.22, 0.58, 0.86, 1.0)
-    wordmark_columns = len("SKYPORTAL") * 4
-
     with Live(
         _astronaut_renderable(spin[0], compact),
         console=console,
@@ -267,16 +231,15 @@ def show_startup_animation(console: Console, delay: float = 0.035) -> None:
             time.sleep(delay * speed)
 
         if console.width >= 76:
-            for reveal in range(0, wordmark_columns, 3):
-                live.update(
-                    Group(
-                        _astronaut_renderable(),
-                        Text(),
-                        Align.center(_wordmark(reveal)),
-                    ),
-                    refresh=True,
-                )
-                time.sleep(delay * speed)
+            live.update(
+                Group(
+                    _astronaut_renderable(),
+                    Text(),
+                    Align.center(_brand_wordmark()),
+                ),
+                refresh=True,
+            )
+            time.sleep(delay * speed)
 
     show_static_banner(console)
     console.print()
