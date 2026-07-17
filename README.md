@@ -1,8 +1,6 @@
 # Skyportal Agent
 
 [![CI](https://github.com/SkyportalAi/skyportalai/actions/workflows/ci.yml/badge.svg)](https://github.com/SkyportalAi/skyportalai/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/skyportalai.svg)](https://pypi.org/project/skyportalai/)
-[![Python](https://img.shields.io/pypi/pyversions/skyportalai.svg)](https://pypi.org/project/skyportalai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 An open-source AI infrastructure engineer that explains what changed before
