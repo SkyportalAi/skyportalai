@@ -15,7 +15,7 @@ from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -93,12 +93,11 @@ class InteractiveShell:
 
     PROMPT_STYLE = Style.from_dict(
         {
-            "brand": "bold #22d3ee",
-            "connected": "bold #44d17a",
-            "guest": "#f0b429",
-            "context": "#a5f3fc",
-            "arrow": "bold #2563eb",
-            "toolbar": "bg:#101827 #a9b8d0",
+            "brand": "bold #3b82f6",
+            "connected": "#059669",
+            "guest": "#d97706",
+            "context": "#3b82f6",
+            "arrow": "bold",
         }
     )
 
@@ -199,10 +198,7 @@ class InteractiveShell:
         self._show_onboarding()
         while self.running:
             try:
-                line = self.session.prompt(
-                    self._prompt_fragments(),
-                    bottom_toolbar=self._bottom_toolbar,
-                )
+                line = self.session.prompt(self._prompt_fragments())
             except KeyboardInterrupt:
                 self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
                 continue
@@ -223,15 +219,9 @@ class InteractiveShell:
             except PortalError as error:
                 self._show_portal_error(error)
             except Exception as error:
-                self.console.print(
-                    Panel(
-                        "{}\n\n[dim]The shell is still running. Try /help or retry.[/dim]".format(
-                            error
-                        ),
-                        title="[red]Command failed[/red]",
-                        border_style="red",
-                    )
-                )
+                self._print_section("Command failed", style="red")
+                self.console.print(error)
+                self.console.print("[dim]The shell is still running. Try /help or retry.[/dim]\n")
 
     def _prompt_fragments(self) -> List[Tuple[str, str]]:
         connected = self.client.is_authenticated()
@@ -251,17 +241,12 @@ class InteractiveShell:
             fragments.append(("class:context", " chat#{}".format(self.chat_id)))
         if self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
-        fragments.append(("class:arrow", "  ❯ "))
+        fragments.append(("class:arrow", "  > "))
         return fragments
 
-    @staticmethod
-    def _bottom_toolbar() -> List[Tuple[str, str]]:
-        return [
-            (
-                "class:toolbar",
-                "  /help commands   •   Ctrl-C stop a turn   •   /exit or Ctrl-D to quit  ",
-            )
-        ]
+    def _print_section(self, title: str, style: str = "#6b7280") -> None:
+        """Print a lightweight terminal section divider."""
+        self.console.print(Rule(title, characters="─", style=style, align="center"))
 
     def _show_onboarding(self) -> None:
         status = (
@@ -269,26 +254,20 @@ class InteractiveShell:
             if self.client.is_authenticated()
             else "[yellow]○ Guest mode[/yellow] — start with [bold cyan]/login[/bold cyan]"
         )
+        self._print_section("Welcome aboard")
         body = Text.from_markup(
             "{}\n\n"
             "[bold cyan]/login[/bold cyan]      Create an API key and connect this terminal\n"
             "[bold cyan]/servers[/bold cyan]    List or select a server\n"
             "[bold cyan]/new[/bold cyan]        Start a fresh agent conversation\n"
             "[bold cyan]/help[/bold cyan]       See every slash command\n\n"
-            "[dim]Type naturally to talk to the Skyportal Agent.\n"
-            "Press Ctrl-C to stop a running turn. Type /exit or press Ctrl-D to leave.[/dim]".format(
+            "Type naturally to talk to the Skyportal Agent.".format(
                 status
             )
         )
-        self.console.print(
-            Panel(
-                body,
-                title="[bold bright_cyan]Welcome aboard[/bold bright_cyan]",
-                subtitle="[dim]The terminal stays with you[/dim]",
-                border_style="bright_blue",
-                padding=(1, 2),
-            )
-        )
+        self.console.print(body)
+        self.console.print()
+        self._print_section("[#3b82f6]The terminal stays with you[/#3b82f6]")
         self.console.print()
 
     def _dispatch(self, line: str) -> None:
@@ -312,19 +291,13 @@ class InteractiveShell:
     def _cmd_help(self, args: List[str]) -> None:
         table = Table(box=None, show_header=False, pad_edge=False)
         table.add_column(style="bold cyan", no_wrap=True)
-        table.add_column(style="white")
+        table.add_column()
         for info in COMMANDS.values():
             if info.usage != "/quit":
                 table.add_row(info.usage, info.description)
-        self.console.print(
-            Panel(
-                table,
-                title="[bold bright_cyan]Skyportal commands[/bold bright_cyan]",
-                subtitle="[dim]Type a message to talk to the agent[/dim]",
-                border_style="blue",
-                padding=(1, 2),
-            )
-        )
+        self._print_section("Skyportal commands", style="#3b82f6")
+        self.console.print(table)
+        self.console.print("[dim]Type a message to talk to the agent.[/dim]\n")
 
     def _cmd_login(self, args: List[str]) -> None:
         if any(argument != "--no-browser" for argument in args):
@@ -346,20 +319,19 @@ class InteractiveShell:
         url = str(result["verification_url"])
         details = Text()
         details.append("Connect this terminal in four steps:\n\n", style="bold green")
-        details.append("1. Open the account API-key page:\n", style="white")
+        details.append("1. Open the account API-key page:\n")
         details.append(url, style="bold cyan link {}".format(url))
         details.append(
             "\n\n2. Sign in if prompted.\n"
             "3. Create a key named Skyportal CLI and copy the sk_ value.\n"
             "4. Return here and paste it into the hidden prompt.\n\n"
             "Do not use an agt_ deployment token; those only upload observability data.",
-            style="white",
         )
         if open_browser and not result.get("browser_opened"):
             details.append("\nYour browser did not open; use the link above.", style="yellow")
-        self.console.print(
-            Panel(details, title="[bold cyan]Connect Skyportal CLI[/bold cyan]", border_style="cyan")
-        )
+        self._print_section("Connect Skyportal CLI")
+        self.console.print(details)
+        self.console.print()
         try:
             token = self._token_prompt(
                 "Paste API key (input hidden, Enter to cancel): "
@@ -455,9 +427,9 @@ class InteractiveShell:
             else "[dim]automatic[/dim]",
         )
         rows.add_row("Credentials", str(CredentialStore.get_path()))
-        self.console.print(
-            Panel(rows, title="[bold cyan]Session status[/bold cyan]", border_style="blue")
-        )
+        self._print_section("Session status", style="#3b82f6")
+        self.console.print(rows)
+        self.console.print()
 
     def _cmd_new(self, args: List[str]) -> None:
         self.chat_id = None
@@ -523,7 +495,7 @@ class InteractiveShell:
             return
         table = Table(title="Skyportal servers", border_style="blue", header_style="bold cyan")
         table.add_column("ID", style="cyan", no_wrap=True)
-        table.add_column("Name", style="bold white")
+        table.add_column("Name", style="bold")
         table.add_column("Status")
         table.add_column("Environment")
         table.add_column("Resources")
@@ -570,17 +542,15 @@ class InteractiveShell:
 
     def _cmd_clear(self, args: List[str]) -> None:
         self.console.clear()
-        self.console.print("[bold bright_cyan]SKYPORTAL[/bold bright_cyan] [dim]// command center[/dim]\n")
+        self.console.print("[bold #3b82f6]S[/bold #3b82f6]  [bold]Skyportal[/bold]")
+        self.console.print("[#3b82f6]YOUR AI COMMAND CENTER[/#3b82f6]\n")
 
     def _cmd_about(self, args: List[str]) -> None:
+        self._print_section("Skyportal CLI", style="#3b82f6")
         self.console.print(
-            Panel(
-                "[bold bright_cyan]Skyportal CLI[/bold bright_cyan]\n"
-                "A persistent command center for the Skyportal Agent and your servers.\n\n"
-                "[dim]CLI auth: account API keys from /keys/\n"
-                "Prompt history: {}[/dim]".format(self._history_path()),
-                border_style="bright_blue",
-            )
+            "A persistent command center for the Skyportal Agent and your servers.\n\n"
+            "[dim]CLI auth: account API keys from /keys/\n"
+            "Prompt history: {}[/dim]\n".format(self._history_path())
         )
 
     def _cmd_exit(self, args: List[str]) -> None:
@@ -663,13 +633,8 @@ class InteractiveShell:
                 or approval.get("reason")
                 or json.dumps(approval, indent=2, sort_keys=True)
             )
-            self.console.print(
-                Panel(
-                    str(description),
-                    title="[yellow]Approval requested[/yellow]",
-                    border_style="yellow",
-                )
-            )
+            self._print_section("Approval requested", style="yellow")
+            self.console.print(str(description))
             try:
                 answer = self.session.prompt("Approve this action? [y/N]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
@@ -698,7 +663,8 @@ class InteractiveShell:
                 if line is None:
                     continue
                 if not rendered:
-                    self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
+                    self.console.print()
+                    self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
             elif role == "tool":
@@ -706,11 +672,12 @@ class InteractiveShell:
                 if line is None:
                     continue
                 if not rendered:
-                    self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
+                    self.console.print()
+                    self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
         if rendered:
-            self.console.print("[dim #2563eb]╰────────────────────────────────────────[/dim #2563eb]\n")
+            self.console.print()
         return rendered
 
     def _assistant_message_line(self, message: Dict[str, Any]) -> Optional[Any]:
@@ -789,7 +756,7 @@ class InteractiveShell:
         if not printable:
             self.console.print("[dim]This chat has no earlier messages yet.[/dim]")
             return
-        self.console.print("[dim #2563eb]── earlier conversation ──[/dim #2563eb]")
+        self._print_section("earlier conversation", style="#6b7280")
         for role, text, msg_type in printable:
             if role == "user":
                 line = Text()
@@ -801,9 +768,9 @@ class InteractiveShell:
             elif msg_type == "react_action":
                 self.console.print(Text.from_markup("[dim]→ calling[/dim] [bold]{}[/bold]".format(text)))
             else:
-                self.console.print("[bold #22d3ee]agent[/bold #22d3ee]")
+                self.console.print("[bold #3b82f6]agent[/bold #3b82f6]")
                 self.console.print(Markdown(text))
-        self.console.print("[dim #2563eb]──────────────────────────[/dim #2563eb]\n")
+        self.console.print()
 
     @staticmethod
     def _message_text(message: Dict[str, Any]) -> str:
@@ -835,15 +802,10 @@ class InteractiveShell:
             else "Check /status and retry."
         )
         status = " ({})".format(error.status_code) if error.status_code else ""
-        self.console.print(
-            Panel(
-                "{}{}\n\n[dim]{}\nThe command line is still active.[/dim]".format(
-                    error, status, guidance
-                ),
-                title="[red]{}[/red]".format(title),
-                border_style="red",
-            )
-        )
+        self._print_section(title, style="red")
+        self.console.print("{}{}\n\n[dim]{}\nThe command line is still active.[/dim]\n".format(
+            error, status, guidance
+        ))
 
     @staticmethod
     def _items(payload: Any) -> List[Dict[str, Any]]:

@@ -113,7 +113,7 @@ def github_token_status() -> None:
     try:
         result = _portal_client().get_github_token_status()
     except PortalError as error:
-        raise click.ClickException(str(error))
+        raise click.ClickException(str(error)) from error
     if result.get("has_token"):
         console.print(
             "[green]✓[/green] GitHub PAT is set: [bold]{}[/bold]".format(
@@ -137,7 +137,7 @@ def github_token_set(repo: Optional[str]) -> None:
         pat = click.prompt("GitHub Personal Access Token", hide_input=True)
         result = _portal_client().save_github_token(pat.strip(), repo=repo)
     except PortalError as error:
-        raise click.ClickException(str(error))
+        raise click.ClickException(str(error)) from error
     console.print(
         "[green]✓[/green] GitHub PAT saved for [bold]{}[/bold] (masked: [bold]{}[/bold])".format(
             result.get("login", "unknown"),
@@ -152,7 +152,7 @@ def github_token_remove() -> None:
     try:
         _portal_client().delete_github_token()
     except PortalError as error:
-        raise click.ClickException(str(error))
+        raise click.ClickException(str(error)) from error
     console.print("[green]✓[/green] GitHub PAT removed")
 
 
