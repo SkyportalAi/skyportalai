@@ -44,6 +44,40 @@ def _assistant_message(text, sequence=0):
     }
 
 
+def _generic_tool_message(*, tool_name="add_host", success=True, sequence=1):
+    """A non-bash tool result — no terminal_* fields, just the generic
+    tool_name/success metadata every tool result carries (see
+    tool_result.py server-side)."""
+    return {
+        "role": "tool",
+        "sequence": sequence,
+        "content": [{"type": "text", "text": "done"}],
+        "metadata": {
+            "tool_name": tool_name,
+            "tool_args": {"hostname": "my-host"},
+            "success": success,
+        },
+    }
+
+
+def _react_thought_message(text="Let me check the logs.", sequence=0):
+    return {
+        "role": "assistant",
+        "sequence": sequence,
+        "content": [{"type": "text", "text": text}],
+        "metadata": {"type": "react_thought", "reasoning": text},
+    }
+
+
+def _react_action_message(text="run_command(command=ls -la)", sequence=1):
+    return {
+        "role": "assistant",
+        "sequence": sequence,
+        "content": [{"type": "text", "text": text}],
+        "metadata": {"type": "react_action", "tool_name": "run_command", "tool_params": {}},
+    }
+
+
 def _console():
     return Console(file=StringIO(), force_terminal=False, width=200)
 
@@ -123,3 +157,117 @@ class TestRenderAssistantMessagesIncludesToolLines:
         rendered = shell._render_assistant_messages(messages)
         assert rendered is False
         assert console.file.getvalue().strip() == ""
+
+
+class TestGenericToolResultLine:
+    """Non-bash tools (add_host, search_repo, query_monitoring, ...) have no
+    terminal_* fields — before this, _tool_result_line() only recognized
+    terminal_command, so every non-bash tool call was silently invisible in
+    the transcript (a real contributor to turns that appeared to complete
+    "without a text response" even though a tool genuinely ran)."""
+
+    def test_generic_tool_result_shows_name_and_success(self):
+        line = InteractiveShell._tool_result_line(_generic_tool_message())
+        assert line is not None
+        assert "add_host" in line.plain
+
+    def test_generic_tool_failure_shown_distinctly(self):
+        ok_line = InteractiveShell._tool_result_line(_generic_tool_message(success=True))
+        fail_line = InteractiveShell._tool_result_line(_generic_tool_message(success=False))
+        assert ok_line.plain != fail_line.plain
+
+    def test_no_tool_name_and_no_terminal_command_is_invisible(self):
+        message = {"role": "tool", "metadata": {"success": True}}
+        assert InteractiveShell._tool_result_line(message) is None
+
+    def test_generic_tool_result_appears_in_rendered_output(self):
+        console = _console()
+        shell = InteractiveShell(
+            console=console,
+            client_factory=lambda: object(),
+            session=object(),
+            token_prompt=lambda _prompt: "",
+        )
+        rendered = shell._render_assistant_messages([_generic_tool_message()])
+        assert rendered is True
+        assert "add_host" in console.file.getvalue()
+
+
+class TestAssistantMessageLine:
+    """react_thought/react_action messages carry real, human-readable
+    content (see react_action.py server-side) but previously rendered
+    pixel-identical to the turn's actual final answer — no way to tell
+    mid-turn narration apart from a real response while reading a
+    transcript."""
+
+    def _shell(self):
+        console = _console()
+        shell = InteractiveShell(
+            console=console,
+            client_factory=lambda: object(),
+            session=object(),
+            token_prompt=lambda _prompt: "",
+        )
+        return shell, console
+
+    def test_react_thought_rendered_distinctly_from_plain_answer(self):
+        shell, console = self._shell()
+        shell._render_assistant_messages([_react_thought_message("Let me check the logs.")])
+        text = console.file.getvalue()
+        assert "Let me check the logs." in text
+
+    def test_react_action_rendered_distinctly_from_plain_answer(self):
+        shell, console = self._shell()
+        shell._render_assistant_messages([_react_action_message("run_command(command=ls -la)")])
+        text = console.file.getvalue()
+        assert "run_command(command=ls -la)" in text
+        assert "calling" in text
+
+    def test_plain_final_answer_unaffected(self):
+        shell, console = self._shell()
+        shell._render_assistant_messages([_assistant_message("Here's your answer.")])
+        text = console.file.getvalue()
+        assert "Here's your answer." in text
+        assert "calling" not in text
+
+    def test_thought_and_action_and_answer_all_distinguishable_in_one_turn(self):
+        shell, console = self._shell()
+        messages = [
+            _react_thought_message("I'll check disk usage.", sequence=0),
+            _react_action_message("run_command(command=df -h)", sequence=1),
+            _tool_message(command="df -h", output="/dev/sda1 50%", sequence=2),
+            _assistant_message("Disk usage is at 50%.", sequence=3),
+        ]
+        rendered = shell._render_assistant_messages(messages)
+        assert rendered is True
+        text = console.file.getvalue()
+        assert "I'll check disk usage." in text
+        assert "calling" in text
+        assert "df -h" in text
+        assert "Disk usage is at 50%." in text
+
+
+class TestEmptyTurnMessage:
+    """A turn producing genuinely zero renderable messages (not even a
+    thought/action/tool-result) is a much rarer case now that those all
+    render — most often a routing issue (e.g. a stray character before a
+    /command), not an agent failure, so the fallback message should say
+    that rather than a bare dead end."""
+
+    def test_empty_turn_message_names_chat_and_status(self):
+        from skyportal.portal import ChatTurnResult
+
+        console = _console()
+        shell = InteractiveShell(
+            console=console,
+            client_factory=lambda: object(),
+            session=object(),
+            token_prompt=lambda _prompt: "",
+        )
+        turn = ChatTurnResult(
+            chat_id=42, status="idle", messages=[], latest_sequence=0, pending_approvals=[],
+        )
+        shell._process_turn(turn)
+        text = console.file.getvalue()
+        assert "#42" in text
+        assert "idle" in text

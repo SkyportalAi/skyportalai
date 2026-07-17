@@ -255,6 +255,72 @@ def test_wait_for_chat_polls_and_returns_message_cursor(credential_path):
     get_messages.assert_called_once_with(42, after_sequence=3)
 
 
+def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
+    """Reproduced live: chat_status() can flip to a terminal status (e.g.
+    awaiting_input) before the message that justifies it is queryable via
+    chat_messages() — a fast, LLM-free turn (one host-collection step) can
+    win that race and come back empty on the first fetch. wait_for_chat
+    must keep retrying (with backoff, bounded by the same deadline as the
+    status poll) rather than report an empty turn for a response that
+    exists but isn't visible yet."""
+    client = SkyportalClient("https://app.skyportal.ai")
+    real_messages = {
+        "messages": [
+            {"sequence": 12, "role": "assistant", "content": [{"type": "text", "text": "What's the name?"}]},
+        ],
+        "has_more": False,
+    }
+    empty_messages = {"messages": [], "has_more": False}
+
+    # monotonic() is called once for the initial deadline, then once per
+    # loop-condition check in each while loop — keep it comfortably inside
+    # the deadline throughout so the retry loop runs on chat_messages'
+    # side_effect exhausting, not on hitting the (mocked) clock.
+    with patch.object(
+        client, "chat_status", return_value={"status": "awaiting_input", "pending_approvals": []},
+    ), patch.object(
+        client, "chat_messages", side_effect=[empty_messages, empty_messages, real_messages],
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep, patch(
+        "skyportal.portal.time.monotonic", return_value=0.0,
+    ):
+        result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=300)
+
+    assert result.messages == real_messages["messages"]
+    assert result.latest_sequence == 12
+    assert get_messages.call_count == 3
+    # Backoff doubles each retry starting at 0.25s, capped at 2.0s.
+    assert [call.args[0] for call in sleep.call_args_list] == [0.25, 0.5]
+
+
+def test_wait_for_chat_gives_up_at_deadline_on_genuinely_empty_turn(credential_path):
+    """A turn that really did produce no new messages must still return an
+    empty result once the deadline passes, not hang or raise."""
+    client = SkyportalClient("https://app.skyportal.ai")
+    empty_messages = {"messages": [], "has_more": False}
+
+    # First monotonic() call sets the deadline (0.0 + timeout); the status
+    # loop's own condition check needs to stay under that deadline so
+    # chat_status() gets a chance to report "idle" and break out normally.
+    # Only once we reach the messages-retry loop does the clock jump past
+    # the deadline, so it exits on its first empty fetch instead of
+    # looping (or sleeping) in the test.
+    clock = iter([0.0, 0.1] + [1000.0] * 10)
+
+    with patch.object(
+        client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
+    ), patch.object(
+        client, "chat_messages", return_value=empty_messages,
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep, patch(
+        "skyportal.portal.time.monotonic", side_effect=lambda: next(clock),
+    ):
+        result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=1)
+
+    assert result.messages == []
+    assert result.latest_sequence == 10
+    assert get_messages.call_count == 1
+    sleep.assert_not_called()
+
+
 def test_run_chat_turn_continues_existing_chat(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     completed = ChatTurnResult(42, "idle", [], [], 9)

@@ -300,9 +300,31 @@ class SkyportalClient:
                 )
             )
 
-        payload = self.chat_messages(chat_id, after_sequence=after_sequence)
-        messages = payload.get("messages", []) if isinstance(payload, dict) else []
-        valid_messages = [message for message in messages if isinstance(message, dict)]
+        # chat_status() reporting a terminal status doesn't guarantee the
+        # message(s) that status is about are queryable yet — reproduced
+        # live: a fast, LLM-free turn (e.g. one host-collection step) can
+        # flip status to "awaiting_input" and still lose the race against a
+        # single immediate chat_messages() call, which then comes back
+        # empty even though the turn produced a real response. A browser
+        # polling continuously never hits this (it just picks the message
+        # up on the next tick); a one-shot fetch here needs to keep trying
+        # instead of reporting "no response" for a response that exists
+        # but isn't visible yet. How long that takes varies (near-instant
+        # for most turns, longer under load), so this backs off up to 2s
+        # between attempts and keeps going until the SAME deadline already
+        # governing the status poll above — not a separate fixed budget —
+        # rather than guessing a fixed number of retries that could still
+        # be too short some of the time and wasted work the rest.
+        valid_messages: List[Dict[str, Any]] = []
+        messages_retry_delay = 0.25
+        while True:
+            payload = self.chat_messages(chat_id, after_sequence=after_sequence)
+            messages = payload.get("messages", []) if isinstance(payload, dict) else []
+            valid_messages = [message for message in messages if isinstance(message, dict)]
+            if valid_messages or time.monotonic() >= deadline:
+                break
+            time.sleep(messages_retry_delay)
+            messages_retry_delay = min(messages_retry_delay * 2, 2.0)
         sequences = [after_sequence]
         for message in valid_messages:
             try:

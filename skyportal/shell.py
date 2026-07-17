@@ -40,7 +40,10 @@ COMMANDS: Dict[str, CommandInfo] = {
     ),
     "/status": CommandInfo("/status", "Show connection, chat, and server status"),
     "/new": CommandInfo("/new", "Start a fresh Skyportal chat"),
-    "/resume": CommandInfo("/resume [chat_id]", "Reattach to a chat (defaults to your previous one)"),
+    "/resume": CommandInfo(
+        "/resume [chat_id] [--verbose]",
+        "Reattach to a chat (defaults to your previous one); --verbose replays its history",
+    ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
     "/server": CommandInfo("/server <id|auto>", "Select a server for agent execution"),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
@@ -462,13 +465,15 @@ class InteractiveShell:
         self.console.print("[green]✓ Started a fresh Skyportal chat.[/green]")
 
     def _cmd_resume(self, args: List[str]) -> None:
-        if len(args) > 1:
-            self.console.print("[yellow]Usage:[/yellow] /resume [chat_id]")
+        verbose = "--verbose" in args
+        chat_id_args = [a for a in args if a != "--verbose"]
+        if len(chat_id_args) > 1:
+            self.console.print("[yellow]Usage:[/yellow] /resume [chat_id] [--verbose]")
             return
         self._require_api_connection()
-        if args:
+        if chat_id_args:
             try:
-                chat_id = int(args[0])
+                chat_id = int(chat_id_args[0])
             except ValueError:
                 self.console.print("[yellow]Chat ID must be a number.[/yellow]")
                 return
@@ -496,7 +501,12 @@ class InteractiveShell:
             (int(message.get("sequence", 0)) for message in messages), default=0
         )
         self._remember_chat(chat_id)
-        self._render_history(messages)
+        # Reloading context (chat_id/last_sequence) doesn't require replaying
+        # the transcript — the common case is reattaching to keep answering
+        # an in-progress flow, not reviewing history. --verbose opts back
+        # into the full render for when the history itself is what's wanted.
+        if verbose:
+            self._render_history(messages)
         truncated = " Older messages were hidden." if payload.get("has_more") else ""
         self.console.print(
             "[green]✓ Resumed chat #{}.[/green]{} Type a message to continue.".format(
@@ -624,7 +634,22 @@ class InteractiveShell:
                 )
             if turn.status != "awaiting_approval":
                 if not rendered:
-                    self.console.print("[dim]Turn completed without a text response.[/dim]")
+                    # _render_assistant_messages() now surfaces thoughts,
+                    # tool-call announcements, and generic tool results (not
+                    # just a final text answer), so reaching here means the
+                    # turn genuinely produced nothing at all — most often a
+                    # chat_id/command typo routing the input somewhere the
+                    # active flow never saw it, not an agent failure. Surface
+                    # the chat id and status so that's diagnosable instead of
+                    # a bare dead-end message.
+                    self.console.print(
+                        "[dim]Chat #{} finished (status: {}) with no messages to show — "
+                        "if you were expecting a reply, check the message actually reached "
+                        "this chat (e.g. a leading space or stray character before a /command "
+                        "sends it as a new chat message instead).[/dim]".format(
+                            turn.chat_id, turn.status
+                        )
+                    )
                 return
             if not turn.pending_approvals:
                 raise PortalError(
@@ -669,12 +694,12 @@ class InteractiveShell:
         for message in sorted(messages, key=lambda item: int(item.get("sequence", 0))):
             role = message.get("role")
             if role == "assistant":
-                text = self._message_text(message)
-                if not text:
+                line = self._assistant_message_line(message)
+                if line is None:
                     continue
                 if not rendered:
                     self.console.print("\n[bold #22d3ee]╭─ Skyportal Agent[/bold #22d3ee]")
-                self.console.print(Markdown(text))
+                self.console.print(line)
                 rendered = True
             elif role == "tool":
                 line = self._tool_result_line(message)
@@ -688,47 +713,93 @@ class InteractiveShell:
             self.console.print("[dim #2563eb]╰────────────────────────────────────────[/dim #2563eb]\n")
         return rendered
 
+    def _assistant_message_line(self, message: Dict[str, Any]) -> Optional[Any]:
+        """Render one assistant-role message, distinguishing the three kinds
+        the server actually emits (see react_action.py/tool_execution_handler.py
+        server-side) instead of showing all three as identical prose. Before
+        this, a mid-turn "I'll check the logs" thought and a "run_command(...)"
+        tool-call announcement rendered pixel-identical to the turn's real
+        final answer — with no way to tell, while reading a transcript,
+        which lines were the agent's actual response versus its own internal
+        narration of what it was about to do."""
+        text = self._message_text(message)
+        if not text:
+            return None
+        metadata = message.get("metadata", {})
+        msg_type = metadata.get("type") if isinstance(metadata, dict) else None
+        if msg_type == "react_thought":
+            return Text.from_markup("[dim italic]· {}[/dim italic]".format(text))
+        if msg_type == "react_action":
+            return Text.from_markup("[dim]→ calling[/dim] [bold]{}[/bold]".format(text))
+        return Markdown(text)
+
     @staticmethod
     def _tool_result_line(message: Dict[str, Any]) -> Optional[Text]:
-        """One compact '[hostname] $ command -> output' line per executed
-        command — the server always records which host a run_command call
-        actually executed on (terminal_server_hostname), but nothing in the
-        transcript surfaced it, so a multi-server session gave no way to
-        tell which host a given command ran against."""
+        """One compact result line per completed tool call. Bash/kube commands
+        get the richer '[hostname] $ command -> output' form (the server
+        always records which host a run_command call actually executed on
+        via terminal_server_hostname, so a multi-server session can tell
+        which host a given command ran against); every other tool (add_host,
+        search_repo, query_monitoring, ...) falls back to a generic
+        'tool_name -> ok/failed' line built from the metadata every tool
+        result carries (tool_name/success — see tool_result.py server-side),
+        rather than being silently invisible the way it was before."""
         metadata = message.get("metadata", {})
         if not isinstance(metadata, dict):
             return None
-        command = metadata.get("terminal_command")
-        if not command or metadata.get("awaiting_approval"):
+        if metadata.get("awaiting_approval"):
             return None
-        hostname = metadata.get("terminal_server_hostname") or "unknown host"
-        success = metadata.get("terminal_success")
+        command = metadata.get("terminal_command")
+        if command:
+            hostname = metadata.get("terminal_server_hostname") or "unknown host"
+            success = metadata.get("terminal_success")
+            marker = "[dim]?[/dim]" if success is None else ("[green]✓[/green]" if success else "[red]✗[/red]")
+            output = (metadata.get("terminal_output") or "").strip()
+            output = output.splitlines()[0] if output else ""
+            if len(output) > 120:
+                output = output[:117] + "..."
+            line = "[dim]\\[{}][/dim] {} [bold]$[/bold] {}".format(hostname, marker, command)
+            if output:
+                line += "  [dim]-> {}[/dim]".format(output)
+            return Text.from_markup(line)
+
+        tool_name = metadata.get("tool_name")
+        if not tool_name:
+            return None
+        success = metadata.get("success")
         marker = "[dim]?[/dim]" if success is None else ("[green]✓[/green]" if success else "[red]✗[/red]")
-        output = (metadata.get("terminal_output") or "").strip()
-        output = output.splitlines()[0] if output else ""
-        if len(output) > 120:
-            output = output[:117] + "..."
-        line = "[dim]\\[{}][/dim] {} [bold]$[/bold] {}".format(hostname, marker, command)
-        if output:
-            line += "  [dim]-> {}[/dim]".format(output)
-        return Text.from_markup(line)
+        return Text.from_markup("[dim]tool[/dim] {} [bold]{}[/bold]".format(marker, tool_name))
 
     def _render_history(self, messages: List[Dict[str, Any]]) -> None:
         ordered = sorted(messages, key=lambda item: int(item.get("sequence", 0)))
-        printable = [(m.get("role"), self._message_text(m)) for m in ordered]
-        printable = [
-            (role, text) for role, text in printable if text and role in ("user", "assistant")
-        ]
+        printable = []
+        for m in ordered:
+            role = m.get("role")
+            if role == "user":
+                text = self._message_text(m)
+                if text:
+                    printable.append(("user", text, None))
+            elif role == "assistant":
+                text = self._message_text(m)
+                if not text:
+                    continue
+                metadata = m.get("metadata", {})
+                msg_type = metadata.get("type") if isinstance(metadata, dict) else None
+                printable.append(("assistant", text, msg_type))
         if not printable:
             self.console.print("[dim]This chat has no earlier messages yet.[/dim]")
             return
         self.console.print("[dim #2563eb]── earlier conversation ──[/dim #2563eb]")
-        for role, text in printable:
+        for role, text, msg_type in printable:
             if role == "user":
                 line = Text()
                 line.append("you  ", style="bold #f0b429")
                 line.append(text)
                 self.console.print(line)
+            elif msg_type == "react_thought":
+                self.console.print(Text.from_markup("[dim italic]· {}[/dim italic]".format(text)))
+            elif msg_type == "react_action":
+                self.console.print(Text.from_markup("[dim]→ calling[/dim] [bold]{}[/bold]".format(text)))
             else:
                 self.console.print("[bold #22d3ee]agent[/bold #22d3ee]")
                 self.console.print(Markdown(text))
