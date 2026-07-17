@@ -49,7 +49,7 @@ packages = [{ include = "skyportalai" }, { include = "skyportal" }]
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.4.2,<10.0.0"
 requests-mock = "^1.12"
-ruff = "^0.15.12"
+ruff = "^0.15.22"
 # Present in dev so the MLflow scanner tests run (they skip without pyyaml)
 # without forcing the heavy `agent` extra in CI.
 pyyaml = "^6.0"
