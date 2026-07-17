@@ -39,6 +39,8 @@ temporary paths, and environment isolation.
 5. Use a concise conventional title such as `feat: ...`, `fix: ...`,
    `docs: ...`, or `chore: ...` so the project history stays readable.
 
+All pull requests are reviewed by the Skyportal team before merging.
+
 Public functions should be typed. Preserve existing APIs unless a breaking
 change is intentional and documented. Never commit credentials or fixtures
 copied from a real account.
