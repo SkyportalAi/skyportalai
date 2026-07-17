@@ -35,14 +35,13 @@ the most likely change, and report its confidence.
 
 ## Works with
 
-- Kubernetes
-- Prometheus
-- OpenTelemetry
-- vLLM
-- Ray
-- Docker
-- Bare metal
-- NVIDIA GPUs
+![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?logo=prometheus&logoColor=white)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-000000?logo=opentelemetry&logoColor=white)
+![vLLM](https://img.shields.io/badge/vLLM-4B32C3?logo=vllm&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+![Bare metal](https://img.shields.io/badge/Bare_metal-FCC624?logo=linux&logoColor=black)
+![NVIDIA GPUs](https://img.shields.io/badge/NVIDIA_GPUs-76B900?logo=nvidia&logoColor=white)
 
 ## Get started
 
