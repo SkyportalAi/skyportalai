@@ -337,7 +337,7 @@ def test_run_chat_turn_continues_existing_chat(credential_path):
 
     assert result is completed
     send.assert_called_once_with(42, "Continue")
-    wait.assert_called_once_with(42, after_sequence=8, timeout=300, poll_interval=0)
+    wait.assert_called_once_with(42, after_sequence=8, timeout=None, poll_interval=0)
 
 
 def test_approval_and_server_selection_use_headless_endpoints(credential_path):

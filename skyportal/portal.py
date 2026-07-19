@@ -282,13 +282,20 @@ class SkyportalClient:
         self,
         chat_id: int,
         after_sequence: int = 0,
-        timeout: float = 300,
+        timeout: Optional[float] = None,
         poll_interval: float = 1,
     ) -> ChatTurnResult:
-        """Poll a headless chat until it completes, pauses, or fails."""
-        deadline = time.monotonic() + timeout
+        """Poll a headless chat until it completes, pauses, or fails.
+
+        Polls indefinitely by default (timeout=None) — a multi-tool agent
+        turn has no fixed upper bound on how long it legitimately takes, and
+        the caller (an interactive shell) already offers Ctrl-C as a manual
+        way to stop waiting and cancel the turn. Pass an explicit timeout
+        only if the caller genuinely wants a hard deadline instead (e.g. a
+        script that should fail fast rather than block)."""
+        deadline = time.monotonic() + timeout if timeout is not None else None
         state: Dict[str, Any] = {"status": "processing", "pending_approvals": []}
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             state = self.chat_status(chat_id)
             if state.get("status") not in ("processing", "uninitialized"):
                 break
@@ -379,10 +386,12 @@ class SkyportalClient:
         chat_id: Optional[int] = None,
         after_sequence: int = 0,
         server_id: Optional[int] = None,
-        timeout: float = 300,
+        timeout: Optional[float] = None,
         poll_interval: float = 1,
     ) -> ChatTurnResult:
-        """Start or continue a chat and wait for the resulting agent turn."""
+        """Start or continue a chat and wait for the resulting agent turn.
+
+        See wait_for_chat() — polls indefinitely by default (timeout=None)."""
         chat_id = self.begin_chat_turn(message, chat_id=chat_id, server_id=server_id)
         return self.wait_for_chat(
             chat_id,
