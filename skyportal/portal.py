@@ -328,7 +328,7 @@ class SkyportalClient:
             payload = self.chat_messages(chat_id, after_sequence=after_sequence)
             messages = payload.get("messages", []) if isinstance(payload, dict) else []
             valid_messages = [message for message in messages if isinstance(message, dict)]
-            if valid_messages or time.monotonic() >= deadline:
+            if valid_messages or (deadline is not None and time.monotonic() >= deadline):
                 break
             time.sleep(messages_retry_delay)
             messages_retry_delay = min(messages_retry_delay * 2, 2.0)

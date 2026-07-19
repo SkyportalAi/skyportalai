@@ -292,6 +292,35 @@ def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
     assert [call.args[0] for call in sleep.call_args_list] == [0.25, 0.5]
 
 
+def test_wait_for_chat_retries_indefinitely_with_no_timeout(credential_path):
+    """Regression test: timeout=None (the default) must not crash when the
+    messages-retry loop's own deadline check runs. This is a genuinely
+    separate code path from the status-poll loop above (test_wait_for_chat_
+    retries_when_first_fetch_is_empty only exercises timeout=None there) —
+    reproduced live via `>=` not supported between 'float' and 'NoneType',
+    a second raw deadline comparison further down wait_for_chat that the
+    None-timeout support initially missed."""
+    client = SkyportalClient("https://app.skyportal.ai")
+    real_messages = {
+        "messages": [
+            {"sequence": 12, "role": "assistant", "content": [{"type": "text", "text": "Done"}]},
+        ],
+        "has_more": False,
+    }
+    empty_messages = {"messages": [], "has_more": False}
+
+    with patch.object(
+        client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
+    ), patch.object(
+        client, "chat_messages", side_effect=[empty_messages, real_messages],
+    ) as get_messages, patch("skyportal.portal.time.sleep"):
+        result = client.wait_for_chat(983, after_sequence=10, poll_interval=0)
+
+    assert result.messages == real_messages["messages"]
+    assert result.latest_sequence == 12
+    assert get_messages.call_count == 2
+
+
 def test_wait_for_chat_gives_up_at_deadline_on_genuinely_empty_turn(credential_path):
     """A turn that really did produce no new messages must still return an
     empty result once the deadline passes, not hang or raise."""
