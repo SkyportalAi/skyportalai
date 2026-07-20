@@ -183,7 +183,7 @@ class SkyportalClient:
         )
 
     def is_authenticated(self) -> bool:
-        token = os.environ.get("SKYPORTAL_ACCESS_TOKEN")
+        token = self._env_access_token()
         credentials = CredentialStore.load()
         if not token and credentials:
             stored_base_url = credentials.get("base_url")
@@ -410,7 +410,7 @@ class SkyportalClient:
         )
 
     def _access_token(self) -> str:
-        token = os.environ.get("SKYPORTAL_ACCESS_TOKEN")
+        token = self._env_access_token()
         if not token:
             credentials = CredentialStore.load()
             if not credentials or not credentials.get("access_token"):
@@ -423,6 +423,13 @@ class SkyportalClient:
             token = str(credentials["access_token"])
         self._reject_agent_token(token)
         return token
+
+    @staticmethod
+    def _env_access_token() -> Optional[str]:
+        token = os.environ.get("SKYPORTAL_ACCESS_TOKEN")
+        if token:
+            return token
+        return os.environ.get("SKYPORTAL_API_KEY")
 
     def _reject_agent_token(self, token: str) -> None:
         if token.startswith("agt_"):
