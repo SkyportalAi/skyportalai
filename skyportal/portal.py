@@ -20,6 +20,15 @@ PRODUCTION_MARKETING_URL = "https://skyportal.ai"
 PRODUCTION_APP_URL = "https://app.skyportal.ai"
 CLI_USER_AGENT = f"Skyportal-CLI/{__version__} (+https://app.skyportal.ai)"
 
+# wait_for_chat()'s messages-retry loop bridges a short-lived read-after-write
+# race (chat_status() flips terminal before chat_messages() is queryable) —
+# bounded by its own fixed attempt count, independent of the overall wait's
+# deadline (which is None by default). At the loop's own backoff schedule
+# (0.25s, doubling, capped at 2s), 10 attempts is ~16s worst case — generous
+# for a race that's normally near-instant, without becoming a second hidden
+# unbounded wait when timeout=None and a turn genuinely has no messages.
+_MESSAGES_RETRY_MAX_ATTEMPTS = 10
+
 
 class _NoRedirectHandler(HTTPRedirectHandler):
     """Keep Bearer credentials from being forwarded through HTTP redirects."""
@@ -242,6 +251,13 @@ class SkyportalClient:
         """Get current headless workflow status."""
         return self._request("GET", "/api/v1/agent/chat/{}/status/".format(chat_id))
 
+    def get_execution_status(self, chat_id: int) -> Dict[str, Any]:
+        """Get detailed execution status, including live_command_output — the
+        currently in-flight command's accumulated output so far (or None if
+        nothing is running). Best-effort/advisory only: chat_status()/
+        chat_messages() remain the authoritative "is the turn done" signal."""
+        return self._request("GET", "/api/v1/agent/chat/{}/execution-status/".format(chat_id))
+
     def chat_messages(self, chat_id: int, after_sequence: int = 0) -> Dict[str, Any]:
         """Get messages created after the supplied sequence cursor."""
         query = urlencode({"after_sequence": after_sequence, "limit": 500})
@@ -284,6 +300,7 @@ class SkyportalClient:
         after_sequence: int = 0,
         timeout: Optional[float] = None,
         poll_interval: float = 1,
+        on_progress: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
     ) -> ChatTurnResult:
         """Poll a headless chat until it completes, pauses, or fails.
 
@@ -292,11 +309,24 @@ class SkyportalClient:
         the caller (an interactive shell) already offers Ctrl-C as a manual
         way to stop waiting and cancel the turn. Pass an explicit timeout
         only if the caller genuinely wants a hard deadline instead (e.g. a
-        script that should fail fast rather than block)."""
+        script that should fail fast rather than block).
+
+        on_progress, if given, is called once per poll tick with the current
+        live_command_output dict (or None) via a SEPARATE get_execution_status()
+        call — deliberately not folded into the status-poll loop above, so this
+        stays additive and can't disturb that loop's exit-condition logic.
+        Exceptions from the callback (or the extra request itself) are
+        swallowed: a rendering bug must never break the wait."""
         deadline = time.monotonic() + timeout if timeout is not None else None
         state: Dict[str, Any] = {"status": "processing", "pending_approvals": []}
         while deadline is None or time.monotonic() < deadline:
             state = self.chat_status(chat_id)
+            if on_progress is not None:
+                try:
+                    execution_status = self.get_execution_status(chat_id)
+                    on_progress(execution_status.get("live_command_output"))
+                except Exception:
+                    pass
             if state.get("status") not in ("processing", "uninitialized"):
                 break
             time.sleep(poll_interval)
@@ -318,17 +348,27 @@ class SkyportalClient:
         # instead of reporting "no response" for a response that exists
         # but isn't visible yet. How long that takes varies (near-instant
         # for most turns, longer under load), so this backs off up to 2s
-        # between attempts and keeps going until the SAME deadline already
-        # governing the status poll above — not a separate fixed budget —
-        # rather than guessing a fixed number of retries that could still
-        # be too short some of the time and wasted work the rest.
+        # between attempts.
+        #
+        # Bounded by its OWN fixed retry cap, not the overall wait's deadline
+        # (which is None by default now that wait_for_chat polls
+        # indefinitely) — this loop is bridging a specific, short-lived
+        # consistency-lag window, not "wait as long as the caller's willing
+        # to wait for the whole turn." Without its own bound, a genuinely
+        # empty turn (chat_messages() legitimately never returns anything)
+        # would spin here forever whenever timeout=None, since the deadline
+        # check alone can never fire — reproduced live via a test with an
+        # empty-messages mock and timeout=None: 100% CPU, no progress.
         valid_messages: List[Dict[str, Any]] = []
         messages_retry_delay = 0.25
+        messages_retry_budget = _MESSAGES_RETRY_MAX_ATTEMPTS
         while True:
             payload = self.chat_messages(chat_id, after_sequence=after_sequence)
             messages = payload.get("messages", []) if isinstance(payload, dict) else []
             valid_messages = [message for message in messages if isinstance(message, dict)]
-            if valid_messages or (deadline is not None and time.monotonic() >= deadline):
+            messages_retry_budget -= 1
+            past_deadline = deadline is not None and time.monotonic() >= deadline
+            if valid_messages or past_deadline or messages_retry_budget <= 0:
                 break
             time.sleep(messages_retry_delay)
             messages_retry_delay = min(messages_retry_delay * 2, 2.0)
@@ -388,6 +428,7 @@ class SkyportalClient:
         server_id: Optional[int] = None,
         timeout: Optional[float] = None,
         poll_interval: float = 1,
+        on_progress: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None,
     ) -> ChatTurnResult:
         """Start or continue a chat and wait for the resulting agent turn.
 
@@ -398,6 +439,7 @@ class SkyportalClient:
             after_sequence=after_sequence,
             timeout=timeout,
             poll_interval=poll_interval,
+            on_progress=on_progress,
         )
 
     @staticmethod
