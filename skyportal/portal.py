@@ -184,12 +184,13 @@ class SkyportalClient:
 
     def is_authenticated(self) -> bool:
         token = self._env_access_token()
-        credentials = CredentialStore.load()
-        if not token and credentials:
-            stored_base_url = credentials.get("base_url")
-            if stored_base_url not in (None, self.base_url):
-                return False
-            token = credentials.get("access_token")
+        if not token:
+            credentials = CredentialStore.load()
+            if credentials:
+                stored_base_url = credentials.get("base_url")
+                if stored_base_url not in (None, self.base_url):
+                    return False
+                token = credentials.get("access_token")
         return bool(token and not token.startswith("agt_"))
 
     def logout(self) -> None:
