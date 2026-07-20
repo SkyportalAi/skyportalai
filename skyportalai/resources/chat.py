@@ -105,6 +105,30 @@ class ChatResource:
             json={"server_id": server_id},
         )
 
+    def select_servers(self, chat_id: int, server_ids: list[int], *,
+                       active_server_id: int | None = None,
+                       active_host_id: int | None = None,
+                       selected_namespaces: dict[str, list[str]] | None = None) -> dict:
+        """Set the chat's full multi-server scope, optionally with per-server
+        Kubernetes namespace selection.
+
+        ``server_ids`` is the account server ids in scope for this chat.
+        ``selected_namespaces`` keys the server id (as a string, matching the
+        server's own JSON encoding) to the list of namespace names allowed
+        for that server — a kube host with no entry here is refused by the
+        agent's scope guard until its namespace is added.
+        """
+        body: dict = {"selected_server_ids": list(server_ids)}
+        if active_server_id is not None:
+            body["active_server_id"] = active_server_id
+        if active_host_id is not None:
+            body["active_host_id"] = active_host_id
+        if selected_namespaces is not None:
+            body["selected_namespaces"] = selected_namespaces
+        return self._client._request(
+            "POST", f"/api/v1/agent/chat/{int(chat_id)}/select-servers/", json=body,
+        )
+
     def cancel(self, chat_id: int, *, reason: str | None = None) -> dict:
         """Cancel the active workflow (409 from the server if it is idle)."""
         body: dict = {}

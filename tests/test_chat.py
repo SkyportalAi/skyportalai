@@ -133,6 +133,50 @@ def test_select_server_posts_id(requests_mock):
     assert requests_mock.last_request.json() == {"server_id": 9}
 
 
+def test_select_servers_posts_server_ids_only_when_optionals_omitted(requests_mock):
+    requests_mock.post(f"{BASE}/api/v1/agent/chat/5/select-servers/",
+                       json={"success": True, "selected_server_ids": [9, 12]})
+    result = _client().chat.select_servers(5, [9, 12])
+    assert result == {"success": True, "selected_server_ids": [9, 12]}
+    assert requests_mock.last_request.json() == {"selected_server_ids": [9, 12]}
+
+
+def test_select_servers_posts_all_optional_fields(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/select-servers/",
+        json={
+            "success": True,
+            "selected_server_ids": [9, 12],
+            "active_server_id": 9,
+            "active_host_id": 3,
+            "selected_namespaces": {"9": ["kube-test"]},
+        },
+    )
+    result = _client().chat.select_servers(
+        5, [9, 12],
+        active_server_id=9, active_host_id=3,
+        selected_namespaces={"9": ["kube-test"]},
+    )
+    assert result["selected_namespaces"] == {"9": ["kube-test"]}
+    assert requests_mock.last_request.json() == {
+        "selected_server_ids": [9, 12],
+        "active_server_id": 9,
+        "active_host_id": 3,
+        "selected_namespaces": {"9": ["kube-test"]},
+    }
+
+
+def test_chat_select_servers_delegates_with_bound_chat_id(requests_mock):
+    requests_mock.post(f"{BASE}/api/v1/agent/chat/5/select-servers/",
+                       json={"success": True, "selected_server_ids": [9]})
+    chat = Chat(_client(), 5)
+    chat.select_servers([9], selected_namespaces={"9": ["kube-test"]})
+    assert requests_mock.last_request.json() == {
+        "selected_server_ids": [9],
+        "selected_namespaces": {"9": ["kube-test"]},
+    }
+
+
 def test_cancel_posts_optional_reason(requests_mock):
     requests_mock.post(f"{BASE}/api/v1/agent/chat/5/cancel/",
                        json={"success": True, "status": "cancelled"})
