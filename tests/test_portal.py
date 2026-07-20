@@ -49,6 +49,7 @@ def credential_path(tmp_path, monkeypatch):
     path = tmp_path / "credentials.json"
     monkeypatch.setenv("SKYPORTAL_CREDENTIALS_PATH", str(path))
     monkeypatch.delenv("SKYPORTAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SKYPORTAL_API_KEY", raising=False)
     return path
 
 
@@ -168,6 +169,32 @@ def test_saved_agent_token_does_not_report_connected(credential_path):
     )
 
     assert SkyportalClient("https://app.skyportal.ai").is_authenticated() is False
+
+
+def test_api_key_env_alias_is_used_for_authentication(credential_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_env_alias")
+
+    client = SkyportalClient("https://app.skyportal.ai")
+    assert client.is_authenticated() is True
+
+    with patch("skyportal.portal.urlopen", return_value=FakeResponse([])) as call:
+        assert client.servers() == []
+
+    request = call.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer " + "sk_env_alias"
+
+
+def test_access_token_env_precedes_api_key_alias(credential_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTAL_ACCESS_TOKEN", "skt_primary")
+    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_alias")
+
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch("skyportal.portal.urlopen", return_value=FakeResponse([])) as call:
+        assert client.servers() == []
+
+    request = call.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer " + "skt_primary"
 
 
 def test_server_list_uses_real_owned_server_endpoint(credential_path):
