@@ -54,6 +54,19 @@ class Chat:
     def select_server(self, server_id: int) -> None:
         self._client.chat.select_server(self.chat_id, server_id)
 
+    def select_servers(self, server_ids: list[int], *,
+                       active_server_id: int | None = None,
+                       active_host_id: int | None = None,
+                       selected_namespaces: dict[int | str, list[str]] | None = None) -> dict:
+        """Replace this chat's full multi-server execution scope."""
+        return self._client.chat.select_servers(
+            self.chat_id,
+            server_ids,
+            active_server_id=active_server_id,
+            active_host_id=active_host_id,
+            selected_namespaces=selected_namespaces,
+        )
+
     def cancel(self, reason: str | None = None) -> dict:
         return self._client.chat.cancel(self.chat_id, reason=reason)
 

@@ -231,6 +231,38 @@ def test_create_chat_posts_message_and_optional_server(credential_path):
     assert json.loads(request.data) == {"message": "Check GPU health", "server_id": 7}
 
 
+def test_create_chat_posts_atomic_multi_server_scope(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch(
+        "skyportal.portal.urlopen",
+        return_value=FakeResponse({"chat_id": 42, "status": "processing"}),
+    ) as call:
+        client.create_chat(
+            "Compare hosts",
+            server_ids=[7, 9, 7],
+            selected_namespaces={9: ["default"]},
+        )
+
+    request = call.call_args.args[0]
+    assert json.loads(request.data) == {
+        "message": "Compare hosts",
+        "selected_server_ids": [7, 9],
+        "active_server_id": 7,
+        "selected_namespaces": {"9": ["default"]},
+    }
+
+
+def test_create_chat_rejects_singular_and_plural_server_options(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with pytest.raises(PortalError, match="not both"):
+        client.create_chat("Compare hosts", server_id=7, server_ids=[7, 9])
+
+
 def test_follow_up_message_uses_existing_chat(credential_path):
     CredentialStore.save(
         {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
@@ -395,6 +427,45 @@ def test_approval_and_server_selection_use_headless_endpoints(credential_path):
     assert json.loads(server_request.data) == {"server_id": 7}
 
 
+def test_multi_server_selection_uses_plural_headless_endpoint(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch("skyportal.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
+        client.select_chat_servers(
+            42,
+            [7, 9, 7],
+            selected_namespaces={9: ["__all__"]},
+        )
+
+    request = call.call_args.args[0]
+    assert request.full_url.endswith("/api/v1/agent/chat/42/select-servers/")
+    assert json.loads(request.data) == {
+        "selected_server_ids": [7, 9],
+        "active_server_id": 7,
+        "selected_namespaces": {"9": ["__all__"]},
+    }
+
+
+@pytest.mark.parametrize(
+    "scope_kwargs",
+    [
+        {"active_server_id": 7},
+        {"active_host_id": 7},
+        {"selected_namespaces": {7: ["default"]}},
+    ],
+)
+def test_create_chat_rejects_plural_scope_fields_without_server_ids(
+    credential_path, scope_kwargs
+):
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with pytest.raises(PortalError, match="server_ids is required"):
+        client.create_chat("check host", **scope_kwargs)
+
+
 def test_assistant_text_uses_newest_assistant_message(credential_path):
     messages = [
         {"sequence": 2, "role": "assistant", "content": [{"type": "text", "text": "old"}]},
@@ -435,6 +506,27 @@ def test_begin_chat_turn_creates_new_chat(credential_path):
         chat_id = client.begin_chat_turn("hello", server_id=3)
     assert chat_id == 77
     create.assert_called_once_with("hello", server_id=3)
+
+
+def test_begin_chat_turn_creates_new_chat_with_multi_server_scope(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    with patch.object(client, "create_chat", return_value={"chat_id": 77}) as create:
+        chat_id = client.begin_chat_turn(
+            "hello",
+            server_ids=[3, 4],
+            active_server_id=4,
+            selected_namespaces={4: ["default"]},
+        )
+
+    assert chat_id == 77
+    create.assert_called_once_with(
+        "hello",
+        server_id=None,
+        server_ids=[3, 4],
+        active_server_id=4,
+        active_host_id=None,
+        selected_namespaces={4: ["default"]},
+    )
 
 
 def test_begin_chat_turn_continues_existing_chat(credential_path):
