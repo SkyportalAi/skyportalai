@@ -28,9 +28,11 @@ The default application URL is `https://app.skyportal.ai`. Run `skyportal login`
 To use an existing key non-persistently:
 
 ```bash
-export SKYPORTAL_ACCESS_TOKEN='sk_...'
+export SKYPORTAL_API_KEY='sk_...'
 skyportal
 ```
+
+`skyportal` also accepts `SKYPORTAL_ACCESS_TOKEN` for compatibility.
 
 Avoid putting credentials directly in shell history. Do not use `agt_` observability-agent tokens with the CLI.
 
