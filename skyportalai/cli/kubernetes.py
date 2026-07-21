@@ -40,7 +40,7 @@ def _read_kubeconfig(path: str) -> str:
         try:
             contents = raw_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise typer.BadParameter(f"Cannot read kubeconfig {resolved}: {exc}") from None
+            raise typer.BadParameter(f"Cannot decode kubeconfig {resolved}: {exc}") from None
         source = str(resolved)
     if not contents.strip():
         raise typer.BadParameter(f"Kubeconfig from {source} is empty.")
@@ -74,9 +74,12 @@ def connect(
             environment=environment,
         ),
     )
-    verification = (
-        "verified" if cluster.connection_verified else "saved; reachability not verified"
-    )
+    if cluster.connection_verified is True:
+        verification = "verified"
+    elif cluster.connection_verified is False:
+        verification = "saved; reachability not verified"
+    else:
+        verification = "saved; reachability unknown"
     _state(context).output.success(
         cluster,
         human=(
