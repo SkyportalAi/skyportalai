@@ -18,9 +18,40 @@ chat_app = typer.Typer(help="Create, inspect, approve, and cancel ops-agent chat
 def send(
     context: typer.Context,
     message: Annotated[str, typer.Argument(help="Instruction for the ops agent.")],
-    server_id: Annotated[
+    server_ids: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--server",
+            "-s",
+            min=1,
+            help="Server ID for a new chat; repeat to set multi-host scope.",
+        ),
+    ] = None,
+    active_server_id: Annotated[
         int | None,
-        typer.Option("--server", help="Connected server ID for a new chat."),
+        typer.Option(
+            "--active-server",
+            min=1,
+            help="Default execution server; defaults to the first --server.",
+        ),
+    ] = None,
+    active_host_id: Annotated[
+        int | None,
+        typer.Option(
+            "--active-host",
+            min=1,
+            help="Terminal/Jupyter host; defaults to the active server for a new chat.",
+        ),
+    ] = None,
+    namespaces: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--namespace",
+            help=(
+                "Kubernetes scope as SERVER_ID=NAMESPACE; repeat as needed, "
+                "or use __all__ for cluster-wide scope."
+            ),
+        ),
     ] = None,
     chat_id: Annotated[
         int | None,
@@ -37,17 +68,73 @@ def send(
     ] = 1.0,
 ) -> None:
     """Start a chat or send a follow-up message."""
-    if chat_id is not None and server_id is not None:
+    selected_server_ids = list(dict.fromkeys(server_ids or []))
+    has_scope_options = bool(
+        selected_server_ids
+        or active_server_id is not None
+        or active_host_id is not None
+        or namespaces
+    )
+
+    if chat_id is not None and has_scope_options:
         state = _state(context)
-        state.output.failure("--server can only be used when creating a new chat.")
+        state.output.failure(
+            "--server can only be used when creating a new chat; --active-server, "
+            "--active-host, and --namespace are also creation-only."
+        )
         raise typer.Exit(2)
+    if not selected_server_ids and has_scope_options:
+        state = _state(context)
+        state.output.failure(
+            "--active-server, --active-host, and --namespace require at least one --server."
+        )
+        raise typer.Exit(2)
+
+    if selected_server_ids:
+        error = _scope_option_error(
+            selected_server_ids,
+            active_server_id=active_server_id,
+            active_host_id=active_host_id,
+            namespaces=namespaces or [],
+            clear_namespaces=False,
+            clear_scope=False,
+        )
+        if error is not None:
+            state = _state(context)
+            state.output.failure(error)
+            raise typer.Exit(2)
+
+    selected_namespaces = _parse_namespaces(namespaces or []) or None
+    effective_active_server_id = active_server_id
+    if effective_active_server_id is None and selected_server_ids:
+        effective_active_server_id = active_host_id or selected_server_ids[0]
+
+    # Keep the established one-host request intact for compatibility with
+    # deployments that predate atomic first-turn multi-host scope.
+    use_legacy_single_server = (
+        len(selected_server_ids) == 1
+        and active_server_id is None
+        and active_host_id is None
+        and selected_namespaces is None
+    )
 
     def operation(
         state: CLIContext,
     ) -> tuple[int, ChatStatus | None, MessagesPage | None, dict[str, Any]]:
         client = state.client()
         if chat_id is None:
-            chat = client.chat.create_chat(message, server_id=server_id)
+            if use_legacy_single_server:
+                chat = client.chat.create_chat(message, server_id=selected_server_ids[0])
+            elif selected_server_ids:
+                chat = client.chat.create_chat(
+                    message,
+                    server_ids=selected_server_ids,
+                    active_server_id=effective_active_server_id,
+                    active_host_id=active_host_id,
+                    selected_namespaces=selected_namespaces,
+                )
+            else:
+                chat = client.chat.create_chat(message)
             current_chat_id = chat.chat_id
             initial = dict(chat.raw)
         else:
@@ -184,6 +271,107 @@ def cancel(
     _state(context).output.success(result, human=f"Chat #{chat_id}: {result.get('status', 'cancelled')}")
 
 
+@chat_app.command("select-servers")
+def select_servers(
+    context: typer.Context,
+    chat_id: Annotated[int, typer.Argument(min=1)],
+    server_ids: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--server",
+            "-s",
+            min=1,
+            help="Server ID to include in scope; repeat for multiple hosts.",
+        ),
+    ] = None,
+    active_server_id: Annotated[
+        int | None,
+        typer.Option(
+            "--active-server",
+            min=1,
+            help="Default execution server; defaults to the first --server.",
+        ),
+    ] = None,
+    active_host_id: Annotated[
+        int | None,
+        typer.Option(
+            "--active-host",
+            min=1,
+            help="Terminal/Jupyter host; omit to preserve its current binding.",
+        ),
+    ] = None,
+    namespaces: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--namespace",
+            help=(
+                "Kubernetes scope as SERVER_ID=NAMESPACE; repeat as needed, "
+                "or use __all__ for cluster-wide scope."
+            ),
+        ),
+    ] = None,
+    clear_namespaces: Annotated[
+        bool,
+        typer.Option("--clear-namespaces", help="Clear every Kubernetes namespace selection."),
+    ] = False,
+    clear_scope: Annotated[
+        bool,
+        typer.Option("--clear-scope", help="Explicitly clear every server from the chat scope."),
+    ] = False,
+) -> None:
+    """Replace the full multi-server scope of an existing chat."""
+    state = _state(context)
+    selected_server_ids = list(dict.fromkeys(server_ids or []))
+
+    error = _scope_option_error(
+        selected_server_ids,
+        active_server_id=active_server_id,
+        active_host_id=active_host_id,
+        namespaces=namespaces or [],
+        clear_namespaces=clear_namespaces,
+        clear_scope=clear_scope,
+    )
+    if error is not None:
+        state.output.failure(error)
+        raise typer.Exit(2)
+
+    selected_namespaces = (
+        {} if clear_namespaces else _parse_namespaces(namespaces or []) or None
+    )
+    effective_active_server_id = active_server_id
+    if effective_active_server_id is None and selected_server_ids:
+        effective_active_server_id = active_host_id or selected_server_ids[0]
+
+    def operation(cli_state: CLIContext) -> dict[str, Any]:
+        client = cli_state.client()
+        current = client.chat.get_status(chat_id)
+        if current.status in {"processing", "uninitialized", "awaiting_approval"}:
+            raise typer.BadParameter(
+                f"Chat #{chat_id} is {current.status}; finish the current turn or approval "
+                "before changing scope."
+            )
+        return client.chat.select_servers(
+            chat_id,
+            selected_server_ids,
+            active_server_id=effective_active_server_id,
+            active_host_id=active_host_id,
+            selected_namespaces=selected_namespaces,
+        )
+
+    try:
+        result = run_command(context, operation)
+    except typer.BadParameter as exc:
+        state.output.failure(str(exc))
+        raise typer.Exit(2) from None
+
+    scope = result.get("selected_server_ids", selected_server_ids)
+    shown_scope = ", ".join(str(server_id) for server_id in scope) or "cleared"
+    state.output.success(
+        result,
+        human=f"Chat #{chat_id} server scope: {shown_scope}",
+    )
+
+
 @chat_app.command("wait")
 def wait_for_chat(
     context: typer.Context,
@@ -211,6 +399,66 @@ def _messages_text(page: MessagesPage) -> str:
         f"[{message.sequence}] {message.role or 'unknown'}: {message.content}"
         for message in page.messages
     )
+
+
+def _scope_option_error(
+    server_ids: list[int],
+    *,
+    active_server_id: int | None,
+    active_host_id: int | None,
+    namespaces: list[str],
+    clear_namespaces: bool,
+    clear_scope: bool,
+) -> str | None:
+    selected = set(server_ids)
+    if clear_scope and selected:
+        return "--clear-scope cannot be combined with --server."
+    if not clear_scope and not selected:
+        return "Provide at least one --server or use --clear-scope."
+    if active_server_id is not None and active_server_id not in selected:
+        return "--active-server must also be included with --server."
+    if active_host_id is not None and active_host_id not in selected:
+        return "--active-host must also be included with --server."
+    if (
+        active_server_id is not None
+        and active_host_id is not None
+        and active_server_id != active_host_id
+    ):
+        return "--active-server and --active-host must match when both are provided."
+    if clear_namespaces and namespaces:
+        return "--clear-namespaces cannot be combined with --namespace."
+    try:
+        parsed = _parse_namespaces(namespaces)
+    except ValueError as exc:
+        return str(exc)
+    outside_scope = sorted(int(server_id) for server_id in parsed if int(server_id) not in selected)
+    if outside_scope:
+        return "Namespace server IDs must be included with --server: " + ", ".join(
+            str(server_id) for server_id in outside_scope
+        )
+    return None
+
+
+def _parse_namespaces(values: list[str]) -> dict[str, list[str]]:
+    parsed: dict[str, list[str]] = {}
+    for value in values:
+        server_text, separator, namespace = value.partition("=")
+        if not separator or not server_text or not namespace:
+            raise ValueError(
+                f"Invalid --namespace {value!r}; expected SERVER_ID=NAMESPACE."
+            )
+        try:
+            server_id = int(server_text)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid --namespace {value!r}; SERVER_ID must be a positive integer."
+            ) from exc
+        if server_id < 1:
+            raise ValueError(
+                f"Invalid --namespace {value!r}; SERVER_ID must be a positive integer."
+            )
+        parsed.setdefault(str(server_id), []).append(namespace)
+    return parsed
 
 
 def _exit_for_status(status: ChatStatus | None) -> None:

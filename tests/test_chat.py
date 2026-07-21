@@ -50,6 +50,61 @@ def test_create_chat_omits_server_id_when_not_given(requests_mock):
     assert requests_mock.last_request.json() == {"message": "hello"}
 
 
+def test_create_chat_posts_atomic_multi_server_scope(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/",
+        status_code=202,
+        json={"chat_id": 1, "status": "processing"},
+    )
+
+    _client().chat.create_chat(
+        "compare the clusters",
+        server_ids=[9, 12],
+        active_server_id=9,
+        active_host_id=9,
+        selected_namespaces={12: ["default", "vllm"]},
+    )
+
+    assert requests_mock.last_request.json() == {
+        "message": "compare the clusters",
+        "selected_server_ids": [9, 12],
+        "active_server_id": 9,
+        "active_host_id": 9,
+        "selected_namespaces": {"12": ["default", "vllm"]},
+    }
+
+
+def test_create_chat_preserves_explicit_empty_multi_server_scope(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/",
+        status_code=202,
+        json={"chat_id": 1, "status": "processing"},
+    )
+
+    _client().chat.create_chat("work without a host", server_ids=[])
+
+    assert requests_mock.last_request.json() == {
+        "message": "work without a host",
+        "selected_server_ids": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"server_id": 9, "server_ids": [9]},
+        {"active_server_id": 9},
+        {"active_host_id": 9},
+        {"selected_namespaces": {}},
+    ],
+)
+def test_create_chat_rejects_ambiguous_scope_fields_before_request(requests_mock, kwargs):
+    with pytest.raises(ValueError):
+        _client().chat.create_chat("hello", **kwargs)
+
+    assert not requests_mock.called
+
+
 def test_send_message_posts_follow_up(requests_mock):
     requests_mock.post(f"{BASE}/api/v1/agent/chat/5/message/", status_code=202,
                        json={"status": "processing"})
@@ -131,6 +186,76 @@ def test_select_server_posts_id(requests_mock):
     result = _client().chat.select_server(5, 9)
     assert result == {"success": True, "server_id": 9}
     assert requests_mock.last_request.json() == {"server_id": 9}
+
+
+def test_select_servers_posts_server_ids_only_when_optionals_omitted(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/select-servers/",
+        json={"success": True, "selected_server_ids": [9, 12]},
+    )
+
+    result = _client().chat.select_servers(5, [9, 12])
+
+    assert result == {"success": True, "selected_server_ids": [9, 12]}
+    assert requests_mock.last_request.json() == {"selected_server_ids": [9, 12]}
+
+
+def test_select_servers_posts_all_optional_fields(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/select-servers/",
+        json={
+            "success": True,
+            "selected_server_ids": [9, 12],
+            "active_server_id": 9,
+            "active_host_id": 9,
+            "selected_namespaces": {"12": ["default"]},
+        },
+    )
+
+    result = _client().chat.select_servers(
+        5,
+        [9, 12],
+        active_server_id=9,
+        active_host_id=9,
+        selected_namespaces={"12": ["default"]},
+    )
+
+    assert result["selected_namespaces"] == {"12": ["default"]}
+    assert requests_mock.last_request.json() == {
+        "selected_server_ids": [9, 12],
+        "active_server_id": 9,
+        "active_host_id": 9,
+        "selected_namespaces": {"12": ["default"]},
+    }
+
+
+def test_chat_select_servers_delegates_with_bound_chat_id(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/select-servers/",
+        json={"success": True, "selected_server_ids": [9]},
+    )
+    chat = Chat(_client(), 5)
+
+    chat.select_servers([9], selected_namespaces={9: ["__all__"]})
+
+    assert requests_mock.last_request.json() == {
+        "selected_server_ids": [9],
+        "selected_namespaces": {"9": ["__all__"]},
+    }
+
+
+def test_select_servers_can_clear_scope_and_namespaces(requests_mock):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/select-servers/",
+        json={"success": True, "selected_server_ids": [], "selected_namespaces": {}},
+    )
+
+    _client().chat.select_servers(5, [], selected_namespaces={})
+
+    assert requests_mock.last_request.json() == {
+        "selected_server_ids": [],
+        "selected_namespaces": {},
+    }
 
 
 def test_cancel_posts_optional_reason(requests_mock):

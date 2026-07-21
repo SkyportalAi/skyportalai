@@ -158,14 +158,32 @@ def github_token_remove() -> None:
 
 @main.command()
 @click.argument("message", required=False)
-@click.option("--server", "server_id", type=int, help="Target one owned server ID")
-def ask(message: Optional[str], server_id: Optional[int]) -> None:
+@click.option(
+    "--server",
+    "server_ids",
+    type=int,
+    multiple=True,
+    help="Target a server ID; repeat to scope the first turn to multiple hosts",
+)
+def ask(message: Optional[str], server_ids: tuple[int, ...]) -> None:
     """Send one message to the Skyportal Agent."""
     prompt = message or click.prompt("Message")
     client = _portal_client()
     try:
         with console.status("[cyan]Skyportal is thinking…[/cyan]", spinner="dots12"):
-            turn = client.run_chat_turn(prompt, server_id=server_id)
+            selected = list(dict.fromkeys(server_ids))
+            if len(selected) == 1:
+                # Preserve the established singular request for deployments
+                # that predate the plural first-turn scope contract.
+                turn = client.run_chat_turn(prompt, server_id=selected[0])
+            elif selected:
+                turn = client.run_chat_turn(
+                    prompt,
+                    server_ids=selected,
+                    active_server_id=selected[0],
+                )
+            else:
+                turn = client.run_chat_turn(prompt)
     except PortalError as error:
         raise click.ClickException(str(error)) from error
     response = client.assistant_text(turn.messages)

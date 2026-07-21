@@ -51,8 +51,8 @@ cd skyportalai
 ./run.sh
 ```
 
-Inside the terminal, run `/login` once, select a server with `/servers`, and ask
-what changed:
+Inside the terminal, run `/login` once, list infrastructure with `/servers`,
+select one or more hosts with `/server`, and ask what changed:
 
 ```text
 skyportal [connected] > diagnose the latest deployment
@@ -63,7 +63,7 @@ Useful commands:
 ```text
 /login          Connect your Skyportal account
 /servers        List available infrastructure
-/server <id>    Select a server
+/server <id> [id ...]  Select one or more servers; the first is the default
 /status         Show the active context
 /new            Start a new investigation
 /resume         Continue the previous investigation
@@ -86,6 +86,29 @@ with Skyportal(api_key="sk-...") as client:
     print(result.status)
 ```
 
+To make the full multi-host scope available to the first turn, create the chat
+with repeatable server scope and an active default:
+
+```python
+with Skyportal(api_key="sk-...") as client:
+    chat = client.chat.create_chat(
+        "Compare GPU health on all selected hosts",
+        server_ids=[12, 18],
+        active_server_id=12,
+        selected_namespaces={18: ["default", "vllm"]},
+    )
+    result = chat.wait(on_approval=lambda approval: True)
+```
+
+The scope is an allowlist: the active server handles an ambiguous command, and
+the agent broadcasts only when the prompt explicitly targets all selected
+hosts. Use `{"18": ["__all__"]}` for every Kubernetes namespace, omit
+`selected_namespaces` when no Kubernetes scope is needed, and use
+`chat.select_servers(...)` between turns to replace an existing chat's scope.
+When replacing scope, omitting namespace data preserves retained selections
+while `{}` clears them. The singular `server_id=12` creation form remains
+supported.
+
 Set `SKYPORTAL_API_KEY` instead of passing a key directly. The client also
 supports `SKYPORTAL_BASE_URL` for self-hosted deployments.
 
@@ -95,8 +118,23 @@ The `skyportalai` command provides stable JSON output for scripts and CI:
 
 ```bash
 skyportalai chat send --server 12 --wait "Diagnose the latest regression"
+skyportalai chat send --server 12 --server 18 \
+  --namespace 18=default --namespace 18=vllm --wait \
+  "Compare GPU health on all selected hosts"
 skyportalai --json chat messages 123
 ```
+
+Set the full scope of an existing chat between turns with repeatable `--server`
+options:
+
+```bash
+skyportalai chat select-servers 123 \
+  --server 12 --server 18 --active-server 12 \
+  --namespace 18=default --namespace 18=vllm
+skyportalai chat send --chat-id 123 --wait "Compare all selected hosts"
+```
+
+Use `--clear-scope` to remove every selected server explicitly.
 
 Run `skyportalai --help` for the complete command reference.
 

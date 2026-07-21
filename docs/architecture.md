@@ -43,7 +43,31 @@ an unexpected origin or sent in cleartext.
 
 ## Server context
 
-`GET /api/v1/experiments/my-servers/` provides the authenticated account's owned servers. A selected server is included when creating a chat or sent to `/select-server/` for an existing chat.
+`GET /api/v1/experiments/my-servers/` provides the authenticated account's
+owned servers. Chat creation accepts either the backward-compatible
+`server_id` field or an atomic first-turn scope with `selected_server_ids`,
+`active_server_id`, `active_host_id`, and `selected_namespaces`. The singular
+and plural forms are mutually exclusive. A single selection can also be sent
+to `/select-server/` for an existing chat.
+
+For an existing chat that is not actively processing, `POST
+/api/v1/agent/chat/{id}/select-servers/` replaces the complete execution
+allowlist. It can also choose the default execution server, preserve or update
+the terminal/Jupyter binding, and set per-server Kubernetes namespace scope.
+Omitted namespace data preserves choices for retained servers, `{}` clears all
+namespace choices, and `__all__` represents cluster-wide namespace access.
+Multi-server scope does not make every command a broadcast: the prompt must
+explicitly target all selected hosts.
+
+The plural creation fields are persisted before first-turn processing starts,
+so every tool sees the complete allowlist from the beginning. Scope changes on
+an existing chat still happen only while it is not actively processing. The
+website serializes REST and browser turns and scope mutations with the same
+token-owned Redis lease, rejects changes while approvals are pending, and
+renews the lease during long turns; losing ownership cancels the local worker
+instead of allowing two clients to execute against different scopes.
+The interactive `skyportal` shell accepts multiple IDs with `/server 12 18`,
+and the one-shot `skyportal ask` command accepts repeated `--server` options.
 
 ## Local state
 

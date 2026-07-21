@@ -224,11 +224,42 @@ class SkyportalClient:
         """List servers owned by the authenticated user."""
         return self._request("GET", "/api/v1/experiments/my-servers/")
 
-    def create_chat(self, message: str, server_id: Optional[int] = None) -> Dict[str, Any]:
-        """Create a headless chat and start its first turn."""
+    def create_chat(
+        self,
+        message: str,
+        server_id: Optional[int] = None,
+        *,
+        server_ids: Optional[List[int]] = None,
+        active_server_id: Optional[int] = None,
+        active_host_id: Optional[int] = None,
+        selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """Create a headless chat and atomically scope its first turn."""
+        if server_id is not None and server_ids is not None:
+            raise PortalError("Use server_id or server_ids, not both")
+        if server_ids is None and (
+            active_server_id is not None
+            or active_host_id is not None
+            or selected_namespaces is not None
+        ):
+            raise PortalError(
+                "server_ids is required with active_server_id, active_host_id, "
+                "or selected_namespaces"
+            )
         body: Dict[str, Any] = {"message": message}
         if server_id is not None:
             body["server_id"] = server_id
+        if server_ids is not None:
+            deduped = list(dict.fromkeys(int(value) for value in server_ids))
+            body["selected_server_ids"] = deduped
+            if active_server_id is None and deduped:
+                active_server_id = deduped[0]
+        if active_server_id is not None:
+            body["active_server_id"] = active_server_id
+        if active_host_id is not None:
+            body["active_host_id"] = active_host_id
+        if selected_namespaces is not None:
+            body["selected_namespaces"] = selected_namespaces
         return self._request("POST", "/api/v1/agent/chat/", json_body=body)
 
     def send_chat_message(self, chat_id: int, message: str) -> Dict[str, Any]:
@@ -277,6 +308,32 @@ class SkyportalClient:
             "POST",
             "/api/v1/agent/chat/{}/select-server/".format(chat_id),
             json_body={"server_id": server_id},
+        )
+
+    def select_chat_servers(
+        self,
+        chat_id: int,
+        server_ids: List[int],
+        *,
+        active_server_id: Optional[int] = None,
+        active_host_id: Optional[int] = None,
+        selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        """Replace an existing chat's complete multi-server scope."""
+        deduped = list(dict.fromkeys(int(value) for value in server_ids))
+        body: Dict[str, Any] = {"selected_server_ids": deduped}
+        if active_server_id is None and deduped:
+            active_server_id = deduped[0]
+        if active_server_id is not None:
+            body["active_server_id"] = active_server_id
+        if active_host_id is not None:
+            body["active_host_id"] = active_host_id
+        if selected_namespaces is not None:
+            body["selected_namespaces"] = selected_namespaces
+        return self._request(
+            "POST",
+            "/api/v1/agent/chat/{}/select-servers/".format(chat_id),
+            json_body=body,
         )
 
     def wait_for_chat(
@@ -348,6 +405,11 @@ class SkyportalClient:
         message: str,
         chat_id: Optional[int] = None,
         server_id: Optional[int] = None,
+        *,
+        server_ids: Optional[List[int]] = None,
+        active_server_id: Optional[int] = None,
+        active_host_id: Optional[int] = None,
+        selected_namespaces: Optional[Dict[Any, List[str]]] = None,
     ) -> int:
         """Start or continue a chat and return its ID without waiting.
 
@@ -355,7 +417,22 @@ class SkyportalClient:
         ID up front, so it can cancel the turn while the agent is still working.
         """
         if chat_id is None:
-            started = self.create_chat(message, server_id=server_id)
+            if (
+                server_ids is None
+                and active_server_id is None
+                and active_host_id is None
+                and selected_namespaces is None
+            ):
+                started = self.create_chat(message, server_id=server_id)
+            else:
+                started = self.create_chat(
+                    message,
+                    server_id=server_id,
+                    server_ids=server_ids,
+                    active_server_id=active_server_id,
+                    active_host_id=active_host_id,
+                    selected_namespaces=selected_namespaces,
+                )
             try:
                 return int(started["chat_id"])
             except (KeyError, TypeError, ValueError) as error:
@@ -382,9 +459,22 @@ class SkyportalClient:
         server_id: Optional[int] = None,
         timeout: float = 300,
         poll_interval: float = 1,
+        *,
+        server_ids: Optional[List[int]] = None,
+        active_server_id: Optional[int] = None,
+        active_host_id: Optional[int] = None,
+        selected_namespaces: Optional[Dict[Any, List[str]]] = None,
     ) -> ChatTurnResult:
         """Start or continue a chat and wait for the resulting agent turn."""
-        chat_id = self.begin_chat_turn(message, chat_id=chat_id, server_id=server_id)
+        chat_id = self.begin_chat_turn(
+            message,
+            chat_id=chat_id,
+            server_id=server_id,
+            server_ids=server_ids,
+            active_server_id=active_server_id,
+            active_host_id=active_host_id,
+            selected_namespaces=selected_namespaces,
+        )
         return self.wait_for_chat(
             chat_id,
             after_sequence=after_sequence,
