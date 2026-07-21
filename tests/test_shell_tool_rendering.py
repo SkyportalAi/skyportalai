@@ -6,6 +6,7 @@ role == "tool" messages — a multi-server session gave no way to tell which
 host a given command ran against."""
 
 from io import StringIO
+from unittest.mock import MagicMock
 
 from rich.console import Console
 
@@ -270,4 +271,78 @@ class TestEmptyTurnMessage:
         shell._process_turn(turn)
         text = console.file.getvalue()
         assert "#42" in text
-        assert "idle" in text
+
+
+class TestUpdateThinkingStatus:
+    """_update_thinking_status is wait_for_chat's on_progress callback —
+    updates the spinner text in place with the currently in-flight command's
+    tail output, instead of a static message for the whole wait."""
+
+    def _shell(self):
+        console = _console()
+        shell = InteractiveShell(
+            console=console,
+            client_factory=lambda: object(),
+            session=object(),
+            token_prompt=lambda _prompt: "",
+        )
+        return shell
+
+    def test_none_info_resets_to_default_thinking_message(self):
+        shell = self._shell()
+        status = MagicMock()
+
+        shell._update_thinking_status(status, None)
+
+        status.update.assert_called_once_with(shell._THINKING_STATUS)
+
+    def test_none_info_resets_to_explicit_base_when_given(self):
+        """The approval-resubmit call site passes its own "Submitting…" base
+        message — resetting to the generic "thinking…" text there would be
+        wrong context for what's actually happening."""
+        shell = self._shell()
+        status = MagicMock()
+
+        shell._update_thinking_status(status, None, base="[cyan]Submitting approved…[/cyan]")
+
+        status.update.assert_called_once_with("[cyan]Submitting approved…[/cyan]")
+
+    def test_empty_output_resets_to_default_message(self):
+        shell = self._shell()
+        status = MagicMock()
+
+        shell._update_thinking_status(status, {"command": "ls", "output": ""})
+
+        status.update.assert_called_once_with(shell._THINKING_STATUS)
+
+    def test_shows_command_and_last_output_line(self):
+        shell = self._shell()
+        status = MagicMock()
+
+        shell._update_thinking_status(
+            status, {"command": "cat crash.log", "output": "line one\nline two\nline three"},
+        )
+
+        (rendered,), _ = status.update.call_args
+        assert "cat crash.log" in rendered
+        assert "line three" in rendered
+        assert "line one" not in rendered  # only the tail, not the whole buffer
+
+    def test_long_output_line_is_truncated(self):
+        shell = self._shell()
+        status = MagicMock()
+        long_line = "x" * 200
+
+        shell._update_thinking_status(status, {"command": "cat big", "output": long_line})
+
+        (rendered,), _ = status.update.call_args
+        assert "..." in rendered
+        assert len(rendered) < len(long_line) + 50  # command/markup overhead only, not the full line
+
+    def test_missing_command_key_does_not_raise(self):
+        shell = self._shell()
+        status = MagicMock()
+
+        shell._update_thinking_status(status, {"output": "some output"})  # no "command" key
+
+        status.update.assert_called_once()

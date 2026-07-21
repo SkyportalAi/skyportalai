@@ -16,6 +16,7 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
+from rich.status import Status
 from rich.table import Table
 from rich.text import Text
 
@@ -557,6 +558,8 @@ class InteractiveShell:
         self.running = False
         self.console.print("[bold cyan]See you in orbit.[/bold cyan]")
 
+    _THINKING_STATUS = "[bold cyan]Skyportal is thinking…[/bold cyan]  [dim](press Ctrl-C to stop)[/dim]"
+
     def _send_prompt(self, message: str) -> None:
         self._require_api_connection()
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
@@ -568,15 +571,44 @@ class InteractiveShell:
         )
         self.chat_id = chat_id
         try:
-            with self.console.status(
-                "[bold cyan]Skyportal is thinking…[/bold cyan]  [dim](press Ctrl-C to stop)[/dim]",
-                spinner="dots12",
-            ):
-                turn = self.client.wait_for_chat(chat_id, after_sequence=self.last_sequence)
+            with self.console.status(self._THINKING_STATUS, spinner="dots12") as status:
+                turn = self.client.wait_for_chat(
+                    chat_id,
+                    after_sequence=self.last_sequence,
+                    on_progress=lambda info: self._update_thinking_status(status, info),
+                )
         except KeyboardInterrupt:
             self._cancel_active_turn(chat_id)
             return
         self._process_turn(turn)
+
+    def _update_thinking_status(
+        self, status: Status, info: Optional[Dict[str, Any]], base: Optional[str] = None,
+    ) -> None:
+        """Live progress callback for wait_for_chat's on_progress — updates the
+        spinner text in place with the currently in-flight command's tail
+        output, instead of a static message for the whole wait.
+
+        A single self-updating line, not scrolling console.print() output:
+        unbounded live output would contradict the terse/summarized rendering
+        _tool_result_line already uses for FINISHED commands. info is None
+        between commands (or once none are running) — reset to the base
+        message (the spinner's own starting text; differs between "thinking"
+        vs "submitting an approval") rather than showing stale output from a
+        command that already finished, which matters for multi-step turns."""
+        if not info or not info.get("output"):
+            status.update(base if base is not None else self._THINKING_STATUS)
+            return
+
+        command = info.get("command", "")
+        tail = info["output"].strip().splitlines()[-1] if info["output"].strip() else ""
+        if len(tail) > 100:
+            tail = tail[:97] + "..."
+
+        line = "[bold cyan]$ {}[/bold cyan]  [dim](press Ctrl-C to stop)[/dim]".format(command)
+        if tail:
+            line += "\n[dim]{}[/dim]".format(tail)
+        status.update(line)
 
     def _cancel_active_turn(self, chat_id: int) -> None:
         """Stop the running agent turn after a Ctrl-C, then keep the prompt."""
@@ -640,15 +672,16 @@ class InteractiveShell:
             except (KeyboardInterrupt, EOFError):
                 answer = ""
             decision = "approved" if answer in ("y", "yes") else "rejected"
+            submitting_status = "[cyan]Submitting {}…[/cyan] [dim](Ctrl-C to stop)[/dim]".format(decision)
             try:
-                with self.console.status(
-                    "[cyan]Submitting {}…[/cyan] [dim](Ctrl-C to stop)[/dim]".format(decision),
-                    spinner="dots",
-                ):
+                with self.console.status(submitting_status, spinner="dots") as status:
                     self.client.submit_chat_approval(turn.chat_id, approval, decision)
                     turn = self.client.wait_for_chat(
                         turn.chat_id,
                         after_sequence=self.last_sequence,
+                        on_progress=lambda info, s=status, base=submitting_status: (
+                            self._update_thinking_status(s, info, base=base)
+                        ),
                     )
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)

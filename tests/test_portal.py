@@ -14,6 +14,7 @@ from skyportal.portal import (
     CredentialStore,
     PortalError,
     SkyportalClient,
+    _MESSAGES_RETRY_MAX_ATTEMPTS,
 )
 
 
@@ -255,6 +256,79 @@ def test_wait_for_chat_polls_and_returns_message_cursor(credential_path):
     get_messages.assert_called_once_with(42, after_sequence=3)
 
 
+def test_wait_for_chat_invokes_on_progress_each_poll_tick(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    seen = []
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "get_execution_status",
+        side_effect=[
+            {"live_command_output": {"command": "ls", "output": "a\n"}},
+            {"live_command_output": {"command": "ls", "output": "a\nb\n"}},
+            {"live_command_output": None},
+        ],
+    ), patch.object(
+        client, "chat_messages", return_value={"messages": [], "has_more": False},
+    ), patch("skyportal.portal.time.sleep"):
+        client.wait_for_chat(42, poll_interval=0, on_progress=seen.append)
+
+    assert seen == [
+        {"command": "ls", "output": "a\n"},
+        {"command": "ls", "output": "a\nb\n"},
+        None,
+    ]
+
+
+def test_wait_for_chat_on_progress_exception_does_not_break_wait(credential_path):
+    """A callback bug (or a failure in the extra get_execution_status() call)
+    must never interrupt the wait — the status-poll loop's own correctness
+    is unrelated and must not be put at risk by this side channel."""
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    def _raises(_info):
+        raise RuntimeError("rendering bug")
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client, "get_execution_status", side_effect=RuntimeError("network hiccup"),
+    ), patch.object(
+        client, "chat_messages", return_value={"messages": [], "has_more": False},
+    ), patch("skyportal.portal.time.sleep"):
+        result = client.wait_for_chat(42, poll_interval=0, on_progress=_raises)
+
+    assert result.status == "idle"
+
+
+def test_wait_for_chat_without_on_progress_never_calls_execution_status(credential_path):
+    """Callers that don't pass on_progress shouldn't pay for the extra
+    per-tick HTTP round trip at all."""
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch.object(
+        client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
+    ), patch.object(client, "get_execution_status") as get_exec_status, patch.object(
+        client, "chat_messages", return_value={"messages": [], "has_more": False},
+    ), patch("skyportal.portal.time.sleep"):
+        client.wait_for_chat(42, poll_interval=0)
+
+    get_exec_status.assert_not_called()
+
+
 def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
     """Reproduced live: chat_status() can flip to a terminal status (e.g.
     awaiting_input) before the message that justifies it is queryable via
@@ -350,6 +424,30 @@ def test_wait_for_chat_gives_up_at_deadline_on_genuinely_empty_turn(credential_p
     sleep.assert_not_called()
 
 
+def test_wait_for_chat_messages_retry_loop_bounded_even_with_no_deadline(credential_path):
+    """Regression test: with timeout=None (the default), a genuinely empty
+    turn must NOT spin the messages-retry loop forever. Reproduced live —
+    the loop's old exit condition only checked the overall deadline, which
+    is None by default now that wait_for_chat polls indefinitely, so a
+    turn with truly no new messages hung at 100% CPU with no progress."""
+    client = SkyportalClient("https://app.skyportal.ai")
+    empty_messages = {"messages": [], "has_more": False}
+
+    with patch.object(
+        client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
+    ), patch.object(
+        client, "chat_messages", return_value=empty_messages,
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+        result = client.wait_for_chat(983, after_sequence=10, poll_interval=0)
+
+    assert result.messages == []
+    assert result.latest_sequence == 10
+    # Must actually stop — the loop's own fixed retry cap, not a borrowed
+    # deadline that doesn't exist in this mode.
+    assert get_messages.call_count == _MESSAGES_RETRY_MAX_ATTEMPTS
+    assert sleep.call_count == _MESSAGES_RETRY_MAX_ATTEMPTS - 1
+
+
 def test_run_chat_turn_continues_existing_chat(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     completed = ChatTurnResult(42, "idle", [], [], 9)
@@ -366,7 +464,7 @@ def test_run_chat_turn_continues_existing_chat(credential_path):
 
     assert result is completed
     send.assert_called_once_with(42, "Continue")
-    wait.assert_called_once_with(42, after_sequence=8, timeout=None, poll_interval=0)
+    wait.assert_called_once_with(42, after_sequence=8, timeout=None, poll_interval=0, on_progress=None)
 
 
 def test_approval_and_server_selection_use_headless_endpoints(credential_path):
