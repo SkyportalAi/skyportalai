@@ -25,7 +25,7 @@ class KubernetesResource:
         data = self._client._request("GET", "/api/v1/infrastructure/kubernetes/")
         return [
             KubernetesCluster.from_dict(item)
-            for item in data.get("clusters", [])
+            for item in data.get("clusters") or []
             if isinstance(item, dict)
         ]
 

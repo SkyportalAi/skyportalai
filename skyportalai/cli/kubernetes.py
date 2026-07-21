@@ -20,7 +20,13 @@ _MAX_KUBECONFIG_BYTES = 1024 * 1024
 
 def _read_kubeconfig(path: str) -> str:
     if path == "-":
-        contents = sys.stdin.read(_MAX_KUBECONFIG_BYTES + 1)
+        raw_bytes = sys.stdin.buffer.read(_MAX_KUBECONFIG_BYTES + 1)
+        if len(raw_bytes) > _MAX_KUBECONFIG_BYTES:
+            raise typer.BadParameter("Kubeconfig exceeds the 1 MiB safety limit.")
+        try:
+            contents = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise typer.BadParameter(f"Cannot decode kubeconfig from stdin: {exc}") from None
         source = "stdin"
     else:
         resolved = Path(path).expanduser()
@@ -36,8 +42,6 @@ def _read_kubeconfig(path: str) -> str:
         except UnicodeDecodeError as exc:
             raise typer.BadParameter(f"Cannot read kubeconfig {resolved}: {exc}") from None
         source = str(resolved)
-    if len(contents.encode("utf-8")) > _MAX_KUBECONFIG_BYTES:
-        raise typer.BadParameter("Kubeconfig exceeds the 1 MiB safety limit.")
     if not contents.strip():
         raise typer.BadParameter(f"Kubeconfig from {source} is empty.")
     return contents
