@@ -46,8 +46,9 @@ the most likely change, and report its confidence.
 Requires Python 3.11 or newer.
 
 ```bash
-pip install skyportalai
-skyportal
+git clone https://github.com/SkyportalAi/skyportalai.git
+cd skyportalai
+./run.sh
 ```
 
 Inside the terminal, run `/login` once, select a server with `/servers`, and ask

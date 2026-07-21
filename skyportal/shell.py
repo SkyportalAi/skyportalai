@@ -268,8 +268,6 @@ class InteractiveShell:
         )
         self.console.print(body)
         self.console.print()
-        self._print_section("[#3b82f6]The terminal stays with you[/#3b82f6]")
-        self.console.print()
 
     def _dispatch(self, line: str) -> None:
         try:
