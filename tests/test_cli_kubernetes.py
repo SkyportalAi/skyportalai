@@ -72,3 +72,12 @@ def test_list_and_disconnect(monkeypatch, tmp_path):
     assert listed.exit_code == 0
     assert removed.exit_code == 0
     assert resource.calls == [("list",), ("disconnect", 9)]
+
+
+def test_disconnect_json_mode_requires_yes(monkeypatch, tmp_path):
+    _fake_client(monkeypatch, tmp_path)
+    result = runner.invoke(app, ["--json", "kubernetes", "disconnect", "9"])
+
+    assert result.exit_code != 0
+    parsed = json.loads(result.output if result.output.strip() else "{}")
+    assert parsed.get("ok") is False

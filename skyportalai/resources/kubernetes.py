@@ -51,7 +51,7 @@ class KubernetesResource:
         return KubernetesCluster.from_dict(data.get("cluster") or {})
 
     def disconnect(self, cluster_id: int) -> dict:
-        if cluster_id <= 0:
+        if isinstance(cluster_id, bool) or not isinstance(cluster_id, int) or cluster_id <= 0:
             raise ValueError("cluster_id must be a positive integer")
         return self._client._request(
             "DELETE",

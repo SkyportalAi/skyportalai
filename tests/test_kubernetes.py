@@ -61,3 +61,39 @@ def test_lifecycle_validates_empty_values_without_network():
             pass
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_connect_redacts_kubeconfig_from_raw(requests_mock):
+    """Server echo of kubeconfig must not appear in the raw field."""
+    requests_mock.post(
+        "https://api.test/api/v1/infrastructure/kubernetes/",
+        json={
+            "success": True,
+            "cluster": {
+                "id": 5,
+                "name": "staging",
+                "environment": "Staging",
+                "status": "connected",
+                "connection_verified": True,
+                "namespaces": [],
+                "kubeconfig": "SENSITIVE_CREDENTIAL",
+            },
+        },
+        status_code=201,
+    )
+
+    cluster = _client().kubernetes.connect("staging", "apiVersion: v1", environment="Staging")
+
+    assert "kubeconfig" not in cluster.raw
+    assert "SENSITIVE_CREDENTIAL" not in str(cluster.raw)
+
+
+def test_disconnect_rejects_boolean_and_non_integer_ids():
+    client = _client()
+    for bad_id in (True, False, 1.5, "1"):
+        try:
+            client.kubernetes.disconnect(bad_id)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for cluster_id={bad_id!r}")

@@ -25,14 +25,15 @@ def _read_kubeconfig(path: str) -> str:
     else:
         resolved = Path(path).expanduser()
         try:
-            size = resolved.stat().st_size
+            with resolved.open("rb") as fh:
+                raw_bytes = fh.read(_MAX_KUBECONFIG_BYTES + 1)
         except OSError as exc:
             raise typer.BadParameter(f"Cannot read kubeconfig {resolved}: {exc}") from None
-        if size > _MAX_KUBECONFIG_BYTES:
+        if len(raw_bytes) > _MAX_KUBECONFIG_BYTES:
             raise typer.BadParameter("Kubeconfig exceeds the 1 MiB safety limit.")
         try:
-            contents = resolved.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            contents = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
             raise typer.BadParameter(f"Cannot read kubeconfig {resolved}: {exc}") from None
         source = str(resolved)
     if len(contents.encode("utf-8")) > _MAX_KUBECONFIG_BYTES:
@@ -111,8 +112,12 @@ def disconnect(
     ] = False,
 ) -> None:
     """Remove a Kubernetes cluster and its encrypted kubeconfig from SkyPortal."""
-    if not yes and not typer.confirm(f"Disconnect Kubernetes cluster #{cluster_id}?"):
-        raise typer.Abort()
+    if not yes:
+        if _state(context).output.json_mode:
+            _state(context).output.failure("--yes is required when using --json mode")
+            raise typer.Exit(1)
+        if not typer.confirm(f"Disconnect Kubernetes cluster #{cluster_id}?"):
+            raise typer.Abort()
     result = run_command(
         context,
         lambda state: state.client().kubernetes.disconnect(cluster_id),
