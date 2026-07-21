@@ -90,7 +90,7 @@ def test_connect_redacts_kubeconfig_from_raw(requests_mock):
 
 def test_disconnect_rejects_boolean_and_non_integer_ids():
     client = _client()
-    for bad_id in (True, False, 1.5, "1"):
+    for bad_id in (True, False, 0, -1, 1.5, "1"):
         try:
             client.kubernetes.disconnect(bad_id)
         except ValueError:
