@@ -8,6 +8,7 @@ def test_public_exports_present():
         "User",
         "Chat",
         "ChatStatus",
+        "KubernetesCluster",
         "PendingApproval",
         "ApprovalResult",
         "Message",

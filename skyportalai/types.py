@@ -21,6 +21,34 @@ class User:
 
 
 @dataclass(frozen=True)
+class KubernetesCluster:
+    """A Kubernetes cluster connected to the authenticated SkyPortal account."""
+
+    id: int
+    name: str
+    environment: str = "Custom"
+    status: str = ""
+    api_endpoint: str = ""
+    namespaces: list[str] = field(default_factory=list)
+    connection_verified: bool | None = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "KubernetesCluster":
+        verified = data.get("connection_verified")
+        return cls(
+            id=int(data.get("id", 0) or 0),
+            name=str(data.get("name") or data.get("hostname") or ""),
+            environment=str(data.get("environment") or data.get("host_type") or "Custom"),
+            status=str(data.get("status") or ""),
+            api_endpoint=str(data.get("api_endpoint") or ""),
+            namespaces=[str(item) for item in data.get("namespaces", [])],
+            connection_verified=bool(verified) if verified is not None else None,
+            raw=dict(data),
+        )
+
+
+@dataclass(frozen=True)
 class PendingApproval:
     """An approval the agent is blocked on (bash command or plan)."""
 
