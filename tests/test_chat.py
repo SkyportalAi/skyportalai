@@ -189,11 +189,6 @@ def test_select_server_posts_id(requests_mock):
 
 
 def test_select_servers_posts_server_ids_only_when_optionals_omitted(requests_mock):
-<<<<<<< HEAD
-    requests_mock.post(f"{BASE}/api/v1/agent/chat/5/select-servers/",
-                       json={"success": True, "selected_server_ids": [9, 12]})
-    result = _client().chat.select_servers(5, [9, 12])
-=======
     requests_mock.post(
         f"{BASE}/api/v1/agent/chat/5/select-servers/",
         json={"success": True, "selected_server_ids": [9, 12]},
@@ -201,7 +196,6 @@ def test_select_servers_posts_server_ids_only_when_optionals_omitted(requests_mo
 
     result = _client().chat.select_servers(5, [9, 12])
 
->>>>>>> origin/main
     assert result == {"success": True, "selected_server_ids": [9, 12]}
     assert requests_mock.last_request.json() == {"selected_server_ids": [9, 12]}
 
@@ -213,23 +207,6 @@ def test_select_servers_posts_all_optional_fields(requests_mock):
             "success": True,
             "selected_server_ids": [9, 12],
             "active_server_id": 9,
-<<<<<<< HEAD
-            "active_host_id": 3,
-            "selected_namespaces": {"9": ["kube-test"]},
-        },
-    )
-    result = _client().chat.select_servers(
-        5, [9, 12],
-        active_server_id=9, active_host_id=3,
-        selected_namespaces={"9": ["kube-test"]},
-    )
-    assert result["selected_namespaces"] == {"9": ["kube-test"]}
-    assert requests_mock.last_request.json() == {
-        "selected_server_ids": [9, 12],
-        "active_server_id": 9,
-        "active_host_id": 3,
-        "selected_namespaces": {"9": ["kube-test"]},
-=======
             "active_host_id": 9,
             "selected_namespaces": {"12": ["default"]},
         },
@@ -249,20 +226,10 @@ def test_select_servers_posts_all_optional_fields(requests_mock):
         "active_server_id": 9,
         "active_host_id": 9,
         "selected_namespaces": {"12": ["default"]},
->>>>>>> origin/main
     }
 
 
 def test_chat_select_servers_delegates_with_bound_chat_id(requests_mock):
-<<<<<<< HEAD
-    requests_mock.post(f"{BASE}/api/v1/agent/chat/5/select-servers/",
-                       json={"success": True, "selected_server_ids": [9]})
-    chat = Chat(_client(), 5)
-    chat.select_servers([9], selected_namespaces={"9": ["kube-test"]})
-    assert requests_mock.last_request.json() == {
-        "selected_server_ids": [9],
-        "selected_namespaces": {"9": ["kube-test"]},
-=======
     requests_mock.post(
         f"{BASE}/api/v1/agent/chat/5/select-servers/",
         json={"success": True, "selected_server_ids": [9]},
@@ -288,7 +255,6 @@ def test_select_servers_can_clear_scope_and_namespaces(requests_mock):
     assert requests_mock.last_request.json() == {
         "selected_server_ids": [],
         "selected_namespaces": {},
->>>>>>> origin/main
     }
 
 

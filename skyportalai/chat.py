@@ -51,18 +51,12 @@ class Chat:
             self.chat_id, approval_id, approval_type=approval_type, reason=reason
         )
 
-    def select_server(self, server_id: int) -> None:
-        self._client.chat.select_server(self.chat_id, server_id)
+    def select_server(self, server_id: int) -> dict:
+        return self._client.chat.select_server(self.chat_id, server_id)
 
     def select_servers(self, server_ids: list[int], *,
                        active_server_id: int | None = None,
                        active_host_id: int | None = None,
-<<<<<<< HEAD
-                       selected_namespaces: dict[str, list[str]] | None = None) -> dict:
-        return self._client.chat.select_servers(
-            self.chat_id, server_ids,
-            active_server_id=active_server_id, active_host_id=active_host_id,
-=======
                        selected_namespaces: dict[int | str, list[str]] | None = None) -> dict:
         """Replace this chat's full multi-server execution scope."""
         return self._client.chat.select_servers(
@@ -70,7 +64,6 @@ class Chat:
             server_ids,
             active_server_id=active_server_id,
             active_host_id=active_host_id,
->>>>>>> origin/main
             selected_namespaces=selected_namespaces,
         )
 

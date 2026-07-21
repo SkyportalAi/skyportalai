@@ -144,17 +144,6 @@ class ChatResource:
     def select_servers(self, chat_id: int, server_ids: list[int], *,
                        active_server_id: int | None = None,
                        active_host_id: int | None = None,
-<<<<<<< HEAD
-                       selected_namespaces: dict[str, list[str]] | None = None) -> dict:
-        """Set the chat's full multi-server scope, optionally with per-server
-        Kubernetes namespace selection.
-
-        ``server_ids`` is the account server ids in scope for this chat.
-        ``selected_namespaces`` keys the server id (as a string, matching the
-        server's own JSON encoding) to the list of namespace names allowed
-        for that server — a kube host with no entry here is refused by the
-        agent's scope guard until its namespace is added.
-=======
                        selected_namespaces: dict[int | str, list[str]] | None = None) -> dict:
         """Replace a chat's full multi-server execution scope.
 
@@ -166,7 +155,6 @@ class ChatResource:
         that remain in scope. Pass ``{}`` to clear all namespace selections;
         ``["__all__"]`` selects every namespace on a Kubernetes server. Call
         this between turns, while the chat is not actively processing.
->>>>>>> origin/main
         """
         body: dict = {"selected_server_ids": list(server_ids)}
         if active_server_id is not None:
