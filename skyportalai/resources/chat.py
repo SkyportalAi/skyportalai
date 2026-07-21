@@ -36,10 +36,46 @@ class ChatResource:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def create_chat(self, message: str, *, server_id: int | None = None) -> Chat:
-        """Create a chat and send the first message (agent starts processing)."""
+    def create_chat(
+        self,
+        message: str,
+        *,
+        server_id: int | None = None,
+        server_ids: list[int] | None = None,
+        active_server_id: int | None = None,
+        active_host_id: int | None = None,
+        selected_namespaces: dict[int | str, list[str]] | None = None,
+    ) -> Chat:
+        """Create a chat and send the first message (agent starts processing).
+
+        ``server_id`` is the backward-compatible single-server form.
+        ``server_ids`` selects the full multi-server scope atomically before
+        the first turn starts. The active ids and namespace scope are valid
+        only with ``server_ids``; mixing the plural and singular forms is
+        ambiguous and raises ``ValueError`` before making a request.
+        """
+        if server_id is not None and server_ids is not None:
+            raise ValueError("server_id and server_ids cannot be used together")
+        if server_ids is None and (
+            active_server_id is not None
+            or active_host_id is not None
+            or selected_namespaces is not None
+        ):
+            raise ValueError(
+                "server_ids is required with active_server_id, active_host_id, "
+                "or selected_namespaces"
+            )
+
         body: dict = {"message": message}
-        if server_id is not None:
+        if server_ids is not None:
+            body["selected_server_ids"] = list(server_ids)
+            if active_server_id is not None:
+                body["active_server_id"] = active_server_id
+            if active_host_id is not None:
+                body["active_host_id"] = active_host_id
+            if selected_namespaces is not None:
+                body["selected_namespaces"] = selected_namespaces
+        elif server_id is not None:
             body["server_id"] = server_id
         data = self._client._request("POST", "/api/v1/agent/chat/", json=body)
         return Chat(self._client, int(data.get("chat_id", 0) or 0), raw=dict(data))
@@ -108,6 +144,7 @@ class ChatResource:
     def select_servers(self, chat_id: int, server_ids: list[int], *,
                        active_server_id: int | None = None,
                        active_host_id: int | None = None,
+<<<<<<< HEAD
                        selected_namespaces: dict[str, list[str]] | None = None) -> dict:
         """Set the chat's full multi-server scope, optionally with per-server
         Kubernetes namespace selection.
@@ -117,6 +154,19 @@ class ChatResource:
         server's own JSON encoding) to the list of namespace names allowed
         for that server — a kube host with no entry here is refused by the
         agent's scope guard until its namespace is added.
+=======
+                       selected_namespaces: dict[int | str, list[str]] | None = None) -> dict:
+        """Replace a chat's full multi-server execution scope.
+
+        ``server_ids`` contains the account server IDs that the agent may use.
+        An empty list clears the scope. ``active_server_id`` chooses the
+        default execution target. Omitting ``active_host_id`` preserves the
+        terminal/Jupyter binding when possible, and omitting
+        ``selected_namespaces`` preserves namespace selections for servers
+        that remain in scope. Pass ``{}`` to clear all namespace selections;
+        ``["__all__"]`` selects every namespace on a Kubernetes server. Call
+        this between turns, while the chat is not actively processing.
+>>>>>>> origin/main
         """
         body: dict = {"selected_server_ids": list(server_ids)}
         if active_server_id is not None:

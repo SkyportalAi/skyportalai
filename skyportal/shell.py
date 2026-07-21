@@ -45,7 +45,10 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Reattach to a chat (defaults to your previous one); --verbose replays its history",
     ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
-    "/server": CommandInfo("/server <id|auto>", "Select a server for agent execution"),
+    "/server": CommandInfo(
+        "/server <id> [id ...] | auto",
+        "Select one or more servers for agent execution",
+    ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
     "/about": CommandInfo("/about", "Show Skyportal CLI information"),
     "/exit": CommandInfo("/exit", "Leave Skyportal"),
@@ -115,6 +118,7 @@ class InteractiveShell:
         self.chat_id: Optional[int] = None
         self.last_sequence = 0
         self.selected_server_id: Optional[int] = None
+        self.selected_server_ids: List[int] = []
         self.previous_chat_id: Optional[int] = self._load_previous_chat_id()
         self._token_prompt = token_prompt or self._default_token_prompt
         self.session = session or self._create_prompt_session()
@@ -239,7 +243,12 @@ class InteractiveShell:
         ]
         if self.chat_id is not None:
             fragments.append(("class:context", " chat#{}".format(self.chat_id)))
-        if self.selected_server_id is not None:
+        if len(self.selected_server_ids) > 1:
+            fragments.append((
+                "class:context",
+                " servers#{}".format(",".join(str(value) for value in self.selected_server_ids)),
+            ))
+        elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
         fragments.append(("class:arrow", "  > "))
         return fragments
@@ -353,6 +362,7 @@ class InteractiveShell:
         self.chat_id = None
         self.last_sequence = 0
         self.selected_server_id = None
+        self.selected_server_ids = []
         self._forget_chat()
         self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
 
@@ -419,11 +429,13 @@ class InteractiveShell:
             "#{}".format(self.chat_id) if self.chat_id is not None else "[dim]new chat[/dim]",
         )
         rows.add_row(
-            "Server",
-            str(self.selected_server_id)
-            if self.selected_server_id is not None
+            "Servers",
+            ", ".join(str(value) for value in self.selected_server_ids)
+            if self.selected_server_ids
             else "[dim]automatic[/dim]",
         )
+        if len(self.selected_server_ids) > 1:
+            rows.add_row("Default", str(self.selected_server_id))
         rows.add_row("Credentials", str(CredentialStore.get_path()))
         self._print_section("Session status", style="#3b82f6")
         self.console.print(rows)
@@ -512,31 +524,71 @@ class InteractiveShell:
                 ),
             )
         self.console.print(table)
-        self.console.print("[dim]Select one with /server <id>, or reset with /server auto.[/dim]")
+        self.console.print(
+            "[dim]Select one or more with /server <id> [id ...], "
+            "or reset with /server auto.[/dim]"
+        )
 
     def _cmd_server(self, args: List[str]) -> None:
-        if len(args) != 1:
-            self.console.print("[yellow]Usage:[/yellow] /server <id|auto>")
+        if not args:
+            self.console.print("[yellow]Usage:[/yellow] /server <id> [id ...] | auto")
             return
-        if args[0].lower() == "auto":
+        if len(args) == 1 and args[0].lower() == "auto":
+            if self.chat_id is not None:
+                with self.console.status("[cyan]Clearing server scope…[/cyan]", spinner="dots"):
+                    self.client.select_chat_servers(self.chat_id, [])
             self.selected_server_id = None
+            self.selected_server_ids = []
             self.console.print("[green]✓ Server selection set to automatic.[/green]")
             return
+        if any(argument.lower() == "auto" for argument in args):
+            self.console.print("[yellow]Use 'auto' by itself, or provide server IDs.[/yellow]")
+            return
         self._require_api_connection()
+        raw_ids = [part for argument in args for part in argument.split(",") if part]
         try:
-            server_id = int(args[0])
+            server_ids = list(dict.fromkeys(int(value) for value in raw_ids))
         except ValueError:
-            self.console.print("[yellow]Server ID must be a number or 'auto'.[/yellow]")
+            self.console.print("[yellow]Server IDs must be numbers, or use 'auto'.[/yellow]")
+            return
+        if not server_ids or any(server_id < 1 for server_id in server_ids):
+            self.console.print("[yellow]Server IDs must be positive numbers.[/yellow]")
             return
         if self.chat_id is not None:
-            with self.console.status("[cyan]Selecting server…[/cyan]", spinner="dots"):
-                self.client.select_chat_server(self.chat_id, server_id)
+            if len(server_ids) == 1:
+                # Keep the one-host path compatible with older website
+                # deployments that only expose /select-server/.
+                with self.console.status("[cyan]Selecting server…[/cyan]", spinner="dots"):
+                    self.client.select_chat_server(self.chat_id, server_ids[0])
+            else:
+                with self.console.status("[cyan]Selecting servers…[/cyan]", spinner="dots"):
+                    self.client.select_chat_servers(
+                        self.chat_id,
+                        server_ids,
+                        active_server_id=server_ids[0],
+                    )
         else:
             servers = self._items(self.client.servers())
-            if str(server_id) not in {str(server.get("id")) for server in servers}:
-                raise PortalError("Server {} was not found in your account".format(server_id))
-        self.selected_server_id = server_id
-        self.console.print("[green]✓ Server {} selected.[/green]".format(server_id))
+            available_ids = {str(server.get("id")) for server in servers}
+            missing = [server_id for server_id in server_ids if str(server_id) not in available_ids]
+            if missing:
+                raise PortalError(
+                    "Server{} {} {} not found in your account".format(
+                        "s" if len(missing) > 1 else "",
+                        ", ".join(str(server_id) for server_id in missing),
+                        "were" if len(missing) > 1 else "was",
+                    )
+                )
+        self.selected_server_ids = server_ids
+        self.selected_server_id = server_ids[0]
+        if len(server_ids) == 1:
+            message = "Server {} selected.".format(server_ids[0])
+        else:
+            message = "Servers {} selected; {} is the default.".format(
+                ", ".join(str(server_id) for server_id in server_ids),
+                server_ids[0],
+            )
+        self.console.print("[green]✓ {}[/green]".format(message))
 
     def _cmd_clear(self, args: List[str]) -> None:
         self.console.clear()
@@ -559,11 +611,19 @@ class InteractiveShell:
         self._require_api_connection()
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
         # server-side, not just stop the shell from listening.
-        chat_id = self.client.begin_chat_turn(
-            message,
-            chat_id=self.chat_id,
-            server_id=self.selected_server_id,
-        )
+        if len(self.selected_server_ids) > 1:
+            chat_id = self.client.begin_chat_turn(
+                message,
+                chat_id=self.chat_id,
+                server_ids=self.selected_server_ids,
+                active_server_id=self.selected_server_id,
+            )
+        else:
+            chat_id = self.client.begin_chat_turn(
+                message,
+                chat_id=self.chat_id,
+                server_id=self.selected_server_id,
+            )
         self.chat_id = chat_id
         try:
             with self.console.status(
