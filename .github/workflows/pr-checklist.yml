@@ -1,0 +1,66 @@
+name: PR checklist
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate-description:
+    name: Validate PR description sections
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required sections are filled in
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            // Helper: detect whether a checkbox is checked
+            const checked = (label) => new RegExp(`- \\[x\\] ${label}`, 'i').test(body);
+
+            // Helper: detect whether a section still contains its placeholder text
+            const isPlaceholder = (marker) => body.includes(marker);
+
+            const errors = [];
+
+            if (checked('🆕 New or changed CLI command')) {
+              // Usage example section must be present and not be the default placeholder
+              if (!body.includes('## CLI usage example')) {
+                errors.push('**CLI usage example** section is missing (required for new/changed commands or flags).');
+              } else if (isPlaceholder('skyportalai <new-command>')) {
+                errors.push('**CLI usage example** section still contains the template placeholder – please fill it in.');
+              }
+            }
+
+            if (checked('🔄 Behavior change')) {
+              if (!body.includes('## Before / after')) {
+                errors.push('**Before / after** section is missing (required for behavior changes).');
+              } else if (isPlaceholder('observable behavior or output')) {
+                errors.push('**Before / after** section still contains the template placeholder – please fill it in.');
+              }
+            }
+
+            if (checked('🔒 Security-sensitive change')) {
+              if (!body.includes('## Security callout')) {
+                errors.push('**Security callout** section is missing (required for security-sensitive changes).');
+              } else if (isPlaceholder('What changed in security-sensitive code:')) {
+                errors.push('**Security callout** section still contains the template placeholder – please fill it in.');
+              }
+            }
+
+            if (errors.length > 0) {
+              const msg = [
+                '### PR description is incomplete',
+                '',
+                'The following required section(s) need to be filled in:',
+                '',
+                ...errors.map(e => `- ${e}`),
+                '',
+                'See the PR template for guidance on what each section should contain.',
+              ].join('\n');
+              core.setFailed(msg);
+            }
