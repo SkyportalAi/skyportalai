@@ -17,6 +17,7 @@ from ._exceptions import (
 )
 from ._version import __version__
 from .resources.chat import ChatResource
+from .resources.kubernetes import KubernetesResource
 from .resources.me import fetch_me
 from .types import User
 
@@ -151,6 +152,7 @@ class Skyportal:
         self._backoff_base = 0.5
 
         self.chat = ChatResource(self)
+        self.kubernetes = KubernetesResource(self)
 
     def _request(self, method: str, path: str, *, params: dict | None = None,
                  json: object = None) -> Any:
@@ -194,6 +196,15 @@ class Skyportal:
     @staticmethod
     def _handle_response(response: requests.Response) -> Any:
         if 200 <= response.status_code < 300:
+            if response.status_code in (204, 205):
+                response.close()
+                return {}
+            if not response.content:
+                raise APIError(
+                    "API returned an empty response body.",
+                    status_code=response.status_code,
+                    body=response.text,
+                )
             try:
                 return response.json()
             except ValueError as exc:
