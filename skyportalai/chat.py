@@ -51,8 +51,8 @@ class Chat:
             self.chat_id, approval_id, approval_type=approval_type, reason=reason
         )
 
-    def select_server(self, server_id: int) -> None:
-        self._client.chat.select_server(self.chat_id, server_id)
+    def select_server(self, server_id: int) -> dict:
+        return self._client.chat.select_server(self.chat_id, server_id)
 
     def select_servers(self, server_ids: list[int], *,
                        active_server_id: int | None = None,
