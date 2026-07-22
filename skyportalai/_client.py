@@ -196,6 +196,8 @@ class Skyportal:
     @staticmethod
     def _handle_response(response: requests.Response) -> Any:
         if 200 <= response.status_code < 300:
+            if response.status_code == 204 or not response.content:
+                return {}
             try:
                 return response.json()
             except ValueError as exc:

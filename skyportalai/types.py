@@ -36,13 +36,14 @@ class KubernetesCluster:
     @classmethod
     def from_dict(cls, data: dict) -> "KubernetesCluster":
         verified = data.get("connection_verified")
+        ns_raw = data.get("namespaces")
         return cls(
             id=int(data.get("id", 0) or 0),
             name=str(data.get("name") or data.get("hostname") or ""),
             environment=str(data.get("environment") or data.get("host_type") or "Custom"),
             status=str(data.get("status") or ""),
             api_endpoint=str(data.get("api_endpoint") or ""),
-            namespaces=[str(item) for item in data.get("namespaces") or []],
+            namespaces=[str(item) for item in (ns_raw if isinstance(ns_raw, list) else [])],
             connection_verified=bool(verified) if verified is not None else None,
             raw={key: value for key, value in data.items() if key != "kubeconfig"},
         )

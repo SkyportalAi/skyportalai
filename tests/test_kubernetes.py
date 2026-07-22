@@ -97,3 +97,13 @@ def test_disconnect_rejects_boolean_and_non_integer_ids():
             pass
         else:
             raise AssertionError(f"expected ValueError for cluster_id={bad_id!r}")
+
+
+def test_disconnect_handles_204_no_content(requests_mock):
+    """A 204 No Content disconnect response must not raise an error."""
+    requests_mock.delete(
+        "https://api.test/api/v1/infrastructure/kubernetes/17/",
+        status_code=204,
+    )
+    result = _client().kubernetes.disconnect(17)
+    assert result == {}
