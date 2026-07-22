@@ -46,6 +46,14 @@ def test_404_raises_api_error(requests_mock):
     assert exc.value.status_code == 404
 
 
+def test_200_non_json_raises_api_error(requests_mock):
+    requests_mock.get("https://api.test/ping", status_code=200, text="not json")
+    with pytest.raises(APIError) as exc:
+        _client()._request("GET", "/ping")
+    assert exc.value.status_code == 200
+    assert exc.value.body == "not json"
+
+
 def test_5xx_retried_then_raises(requests_mock):
     requests_mock.get("https://api.test/ping", status_code=503, json={})
     with pytest.raises(APIError) as exc:

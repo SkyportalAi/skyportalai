@@ -206,6 +206,7 @@ class Skyportal:
                 )
             try:
                 return response.json()
+            except ValueError as exc:
                 raise APIError(
                     "API returned a non-JSON response.",
                     status_code=response.status_code,
