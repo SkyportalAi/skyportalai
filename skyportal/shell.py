@@ -506,6 +506,7 @@ class InteractiveShell:
         table = Table(title="Skyportal servers", border_style="blue", header_style="bold cyan")
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Name", style="bold")
+        table.add_column("Kind", no_wrap=True)
         table.add_column("Status")
         table.add_column("Environment")
         table.add_column("Resources")
@@ -517,6 +518,7 @@ class InteractiveShell:
             table.add_row(
                 str(server.get("id", "-")),
                 str(server.get("name") or server.get("hostname") or "Unnamed"),
+                str(server.get("target_kind") or "ssh"),
                 "[{}]{}[/{}]".format(status_style, status, status_style),
                 str(server.get("host_type") or server.get("location") or "Custom"),
                 "{} vCPU / {} GB RAM / {} GPU".format(
