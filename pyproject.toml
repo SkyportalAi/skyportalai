@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-agent = ["wandb>=0.16,<1.0"]
+agent = ["wandb>=0.28.1,<1.0"]
 
 [project.scripts]
 skyportal-agent = "skyportalai.agent.__main__:main"
