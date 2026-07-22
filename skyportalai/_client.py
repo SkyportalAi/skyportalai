@@ -196,11 +196,16 @@ class Skyportal:
     @staticmethod
     def _handle_response(response: requests.Response) -> Any:
         if 200 <= response.status_code < 300:
-            if response.status_code == 204 or not response.content:
+            if response.status_code in (204, 205):
                 return {}
+            if not response.content:
+                raise APIError(
+                    "API returned an empty response body.",
+                    status_code=response.status_code,
+                    body=response.text,
+                )
             try:
                 return response.json()
-            except ValueError as exc:
                 raise APIError(
                     "API returned a non-JSON response.",
                     status_code=response.status_code,
