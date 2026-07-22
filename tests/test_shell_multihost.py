@@ -15,6 +15,10 @@ class FakeClient:
         self.scope_calls = []
         self.single_scope_calls = []
         self.begin_calls = []
+        self.wait_calls = []
+        self.submit_calls = []
+        self.permission_mode = "ask"
+        self.wait_results = []
 
     def is_authenticated(self):
         return True
@@ -63,8 +67,22 @@ class FakeClient:
         )
         return chat_id if chat_id is not None else 100
 
-    def wait_for_chat(self, chat_id, after_sequence=0):
+    def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None):
+        self.wait_calls.append((chat_id, after_sequence, timeout, on_progress))
+        if self.wait_results:
+            return self.wait_results.pop(0)
         return ChatTurnResult(chat_id, "idle", [], [], after_sequence)
+
+    def get_permission_mode(self):
+        return self.permission_mode
+
+    def submit_chat_approval(
+        self, chat_id, approval, decision, *, autoapproved=False
+    ):
+        self.submit_calls.append(
+            (chat_id, approval["approval_id"], decision, autoapproved)
+        )
+        return {"success": True}
 
 
 @pytest.fixture
@@ -126,6 +144,31 @@ def test_single_server_existing_chat_uses_legacy_singular_endpoint(shell):
     assert client.single_scope_calls == [(42, 7)]
     assert client.scope_calls == []
     assert instance.selected_server_ids == [7]
+
+
+def test_multihost_scope_survives_autoapproval_resume_with_indefinite_wait(shell):
+    instance, client, _console = shell
+    instance.chat_id = 42
+    instance.selected_server_ids = [7, 9]
+    instance.selected_server_id = 7
+    client.permission_mode = "autoapprove"
+    client.wait_results = [ChatTurnResult(42, "idle", [], [], 0)]
+    approval = {
+        "approval_id": "multi-1",
+        "type": "bash_command",
+        "command": "hostname",
+    }
+
+    instance._process_turn(
+        ChatTurnResult(42, "awaiting_approval", [], [approval], 0)
+    )
+
+    assert instance.selected_server_ids == [7, 9]
+    assert instance.selected_server_id == 7
+    assert client.scope_calls == []
+    assert client.submit_calls == [(42, "multi-1", "approved", True)]
+    assert client.wait_calls[0][0:3] == (42, 0, None)
+    assert client.wait_calls[0][3] is not None
 
 
 def test_auto_explicitly_clears_existing_chat_scope(shell):

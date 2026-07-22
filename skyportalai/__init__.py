@@ -17,6 +17,7 @@ from .types import (
     Message,
     MessagesPage,
     PendingApproval,
+    PermissionMode,
     User,
 )
 
@@ -27,6 +28,7 @@ __all__ = [
     "ChatStatus",
     "KubernetesCluster",
     "PendingApproval",
+    "PermissionMode",
     "ApprovalResult",
     "Message",
     "MessagesPage",

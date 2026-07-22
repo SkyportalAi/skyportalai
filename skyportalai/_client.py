@@ -19,12 +19,13 @@ from ._version import __version__
 from .resources.chat import ChatResource
 from .resources.kubernetes import KubernetesResource
 from .resources.me import fetch_me
-from .types import User
+from .types import PermissionMode, User
 
 DEFAULT_BASE_URL = "https://app.skyportal.ai"
 
 #: Hosts allowed to use plain ``http://`` (local development only).
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_PERMISSION_MODES = frozenset({"ask", "autoapprove"})
 
 
 def _redacted(base_url: str) -> str:
@@ -230,6 +231,38 @@ class Skyportal:
     def me(self) -> User:
         """Return the authenticated user (the owner of the API key)."""
         return fetch_me(self)
+
+    def get_permission_mode(self) -> PermissionMode:
+        """Return the account's shared agent-approval mode.
+
+        ``ask`` leaves each gated action for an explicit decision;
+        ``autoapprove`` lets supported clients submit those concrete approvals
+        automatically. Server-side safety and environment policies still
+        apply in either mode.
+        """
+        data = self._request("GET", "/api/v1/agent/permission/")
+        return self._parse_permission_mode(data)
+
+    def set_permission_mode(self, mode: PermissionMode) -> PermissionMode:
+        """Persist the shared agent-approval mode for this account."""
+        if mode not in _PERMISSION_MODES:
+            raise ValueError("permission mode must be 'ask' or 'autoapprove'")
+        data = self._request(
+            "PUT",
+            "/api/v1/agent/permission/",
+            json={"permission_mode": mode},
+        )
+        return self._parse_permission_mode(data)
+
+    @staticmethod
+    def _parse_permission_mode(data: object) -> PermissionMode:
+        mode = data.get("permission_mode") if isinstance(data, dict) else None
+        if mode not in _PERMISSION_MODES:
+            raise APIError(
+                "API returned an invalid permission mode.",
+                body=data,
+            )
+        return mode
 
     def close(self) -> None:
         """Close the internally-created HTTP session.

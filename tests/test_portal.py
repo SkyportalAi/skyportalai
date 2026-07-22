@@ -3,7 +3,7 @@
 import json
 import os
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import call, patch
 from urllib.error import HTTPError
 
 import pytest
@@ -277,29 +277,48 @@ def test_follow_up_message_uses_existing_chat(credential_path):
     assert json.loads(request.data) == {"message": "Now show memory"}
 
 
+def test_get_execution_status_uses_detailed_status_endpoint(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+    payload = {"status": "processing", "current_step": "Inspect logs"}
+
+    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as request_call:
+        assert client.get_execution_status(42) == payload
+
+    request = request_call.call_args.args[0]
+    assert request.full_url.endswith("/api/v1/agent/chat/42/execution-status/")
+
+
 def test_wait_for_chat_polls_and_returns_message_cursor(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
-    messages = {
-        "messages": [
-            {"sequence": 4, "role": "user", "content": [{"type": "text", "text": "Hi"}]},
-            {
-                "sequence": 5,
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Hello"}],
-            },
-        ],
-        "has_more": False,
+    busy_message = {
+        "sequence": 4,
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Checking"}],
+    }
+    terminal_message = {
+        "sequence": 5,
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Hello"}],
     }
 
     with patch.object(
         client,
         "chat_status",
         side_effect=[
-            {"status": "uninitialized", "pending_approvals": []},
             {"status": "processing", "pending_approvals": []},
             {"status": "idle", "pending_approvals": []},
         ],
-    ), patch.object(client, "chat_messages", return_value=messages) as get_messages, patch(
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [busy_message], "has_more": False},
+            {"messages": [terminal_message], "has_more": False},
+        ],
+    ) as get_messages, patch.object(client, "get_execution_status") as detailed_status, patch(
         "skyportal.portal.time.sleep"
     ):
         result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
@@ -307,11 +326,128 @@ def test_wait_for_chat_polls_and_returns_message_cursor(credential_path):
     assert result == ChatTurnResult(
         chat_id=42,
         status="idle",
-        messages=messages["messages"],
+        messages=[busy_message, terminal_message],
         pending_approvals=[],
         latest_sequence=5,
     )
-    get_messages.assert_called_once_with(42, after_sequence=3)
+    assert get_messages.call_args_list == [
+        call(42, after_sequence=3),
+        call(42, after_sequence=4),
+    ]
+    detailed_status.assert_not_called()
+
+
+def test_wait_for_chat_streams_only_new_messages_and_returns_all_observed_messages(
+    credential_path,
+):
+    client = SkyportalClient("https://app.skyportal.ai")
+    first = {"sequence": 4, "role": "assistant", "content": "first"}
+    second = {"sequence": 5, "role": "tool", "content": "second"}
+    final = {"sequence": 6, "role": "assistant", "content": "final"}
+    delivered = []
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [first], "has_more": False},
+            # Deliberately replay sequence 4 even though the cursor is 4.
+            {"messages": [first, second, second], "has_more": False},
+            {"messages": [final], "has_more": False},
+        ],
+    ) as get_messages, patch.object(client, "get_execution_status") as detailed_status, patch(
+        "skyportal.portal.time.sleep"
+    ):
+        result = client.wait_for_chat(
+            42,
+            after_sequence=3,
+            poll_interval=0,
+            on_progress=delivered.append,
+        )
+
+    assert delivered == [[first], [second]]
+    assert result.messages == [first, second, final]
+    assert result.latest_sequence == 6
+    assert get_messages.call_args_list == [
+        call(42, after_sequence=3),
+        call(42, after_sequence=4),
+        call(42, after_sequence=5),
+    ]
+    detailed_status.assert_not_called()
+
+
+def test_wait_for_chat_preserves_batch_when_progress_callback_fails(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    message = {"sequence": 4, "role": "assistant", "content": "still visible"}
+
+    def fail_to_render(_messages):
+        raise RuntimeError("renderer failed")
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [message], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [], "has_more": False},
+        ],
+    ), patch("skyportal.portal.time.sleep"):
+        result = client.wait_for_chat(
+            42,
+            after_sequence=3,
+            poll_interval=0,
+            on_progress=fail_to_render,
+        )
+
+    assert result.messages == [message]
+    assert result.latest_sequence == 4
+
+
+def test_wait_for_chat_retries_once_when_only_earlier_messages_were_observed(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    prompt = {"sequence": 4, "role": "user", "content": "inspect the host"}
+    final = {"sequence": 5, "role": "assistant", "content": "finished"}
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [prompt], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [final], "has_more": False},
+        ],
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+        result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
+
+    assert result.messages == [prompt, final]
+    assert get_messages.call_count == 3
+    # Main poll plus exactly one short terminal-settlement retry.
+    assert [item.args[0] for item in sleep.call_args_list] == [0, 0.25]
 
 
 def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
@@ -319,9 +455,8 @@ def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
     awaiting_input) before the message that justifies it is queryable via
     chat_messages() — a fast, LLM-free turn (one host-collection step) can
     win that race and come back empty on the first fetch. wait_for_chat
-    must keep retrying (with backoff, bounded by the same deadline as the
-    status poll) rather than report an empty turn for a response that
-    exists but isn't visible yet."""
+    must keep retrying with its own bounded settlement budget rather than
+    report an empty turn for a response that exists but isn't visible yet."""
     client = SkyportalClient("https://app.skyportal.ai")
     real_messages = {
         "messages": [
@@ -331,17 +466,11 @@ def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
     }
     empty_messages = {"messages": [], "has_more": False}
 
-    # monotonic() is called once for the initial deadline, then once per
-    # loop-condition check in each while loop — keep it comfortably inside
-    # the deadline throughout so the retry loop runs on chat_messages'
-    # side_effect exhausting, not on hitting the (mocked) clock.
     with patch.object(
         client, "chat_status", return_value={"status": "awaiting_input", "pending_approvals": []},
     ), patch.object(
         client, "chat_messages", side_effect=[empty_messages, empty_messages, real_messages],
-    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep, patch(
-        "skyportal.portal.time.monotonic", return_value=0.0,
-    ):
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
         result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=300)
 
     assert result.messages == real_messages["messages"]
@@ -351,33 +480,181 @@ def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
     assert [call.args[0] for call in sleep.call_args_list] == [0.25, 0.5]
 
 
-def test_wait_for_chat_gives_up_at_deadline_on_genuinely_empty_turn(credential_path):
-    """A turn that really did produce no new messages must still return an
-    empty result once the deadline passes, not hang or raise."""
+def test_wait_for_chat_terminal_message_settlement_is_independently_bounded(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     empty_messages = {"messages": [], "has_more": False}
-
-    # First monotonic() call sets the deadline (0.0 + timeout); the status
-    # loop's own condition check needs to stay under that deadline so
-    # chat_status() gets a chance to report "idle" and break out normally.
-    # Only once we reach the messages-retry loop does the clock jump past
-    # the deadline, so it exits on its first empty fetch instead of
-    # looping (or sleeping) in the test.
-    clock = iter([0.0, 0.1] + [1000.0] * 10)
 
     with patch.object(
         client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
     ), patch.object(
         client, "chat_messages", return_value=empty_messages,
     ) as get_messages, patch("skyportal.portal.time.sleep") as sleep, patch(
-        "skyportal.portal.time.monotonic", side_effect=lambda: next(clock),
+        "skyportal.portal.time.monotonic", return_value=0.0,
     ):
         result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=1)
 
     assert result.messages == []
     assert result.latest_sequence == 10
-    assert get_messages.call_count == 1
+    assert get_messages.call_count == 5
+    assert [item.args[0] for item in sleep.call_args_list] == [0.25, 0.5, 1.0, 2.0]
+
+
+@pytest.mark.parametrize("status", ["awaiting_approval", "error"])
+def test_wait_for_chat_approval_and_error_return_after_one_message_fetch(
+    credential_path,
+    status,
+):
+    client = SkyportalClient("https://app.skyportal.ai")
+    pending = [{"approval_id": "a1"}] if status == "awaiting_approval" else []
+
+    with patch.object(
+        client,
+        "chat_status",
+        return_value={"status": status, "pending_approvals": pending},
+    ), patch.object(
+        client,
+        "chat_messages",
+        return_value={"messages": [], "has_more": False},
+    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+        result = client.wait_for_chat(42, after_sequence=7)
+
+    assert result.status == status
+    assert result.pending_approvals == pending
+    get_messages.assert_called_once_with(42, after_sequence=7)
     sleep.assert_not_called()
+
+
+def test_wait_for_chat_new_messages_extend_idle_deadline(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    now = [0.0]
+    progress = {"sequence": 4, "role": "assistant", "content": "working"}
+    final = {"sequence": 5, "role": "assistant", "content": "done"}
+
+    def advance(seconds):
+        now[0] += seconds
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [], "has_more": False},
+            {"messages": [progress], "has_more": False},
+            {"messages": [final], "has_more": False},
+        ],
+    ), patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportal.portal.time.sleep", side_effect=advance
+    ):
+        result = client.wait_for_chat(42, after_sequence=3, timeout=3, poll_interval=2)
+
+    # The second poll's new message at t=2 extends the original t=3 deadline,
+    # allowing the terminal status to be observed at t=4.
+    assert result.messages == [progress, final]
+    assert result.latest_sequence == 5
+
+
+def test_wait_for_chat_duplicate_message_snapshot_does_not_extend_idle_deadline(
+    credential_path,
+):
+    client = SkyportalClient("https://app.skyportal.ai")
+    now = [0.0]
+    progress = {"sequence": 4, "role": "assistant", "content": "working"}
+    delivered = []
+
+    def advance(seconds):
+        now[0] += seconds
+
+    with patch.object(
+        client,
+        "chat_status",
+        return_value={"status": "processing", "pending_approvals": []},
+    ) as get_status, patch.object(
+        client,
+        "chat_messages",
+        return_value={"messages": [progress], "has_more": False},
+    ) as get_messages, patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportal.portal.time.sleep", side_effect=advance
+    ):
+        with pytest.raises(PortalError, match="no progress for 3 seconds"):
+            client.wait_for_chat(
+                42,
+                after_sequence=3,
+                timeout=3,
+                poll_interval=2,
+                on_progress=delivered.append,
+            )
+
+    assert delivered == [[progress]]
+    assert get_status.call_count == 2
+    assert get_messages.call_args_list == [
+        call(42, after_sequence=3),
+        call(42, after_sequence=4),
+    ]
+
+
+def test_wait_for_chat_status_transition_extends_idle_deadline(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    now = [0.0]
+    final = {"sequence": 1, "role": "assistant", "content": "done"}
+
+    def advance(seconds):
+        now[0] += seconds
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "uninitialized", "pending_approvals": []},
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [], "has_more": False},
+            {"messages": [], "has_more": False},
+            {"messages": [final], "has_more": False},
+        ],
+    ), patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportal.portal.time.sleep", side_effect=advance
+    ):
+        result = client.wait_for_chat(42, timeout=3, poll_interval=2)
+
+    assert result.messages == [final]
+
+
+def test_wait_for_chat_default_disables_idle_deadline(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    final = {"sequence": 1, "role": "assistant", "content": "done"}
+
+    with patch.object(
+        client,
+        "chat_status",
+        side_effect=[
+            {"status": "processing", "pending_approvals": []},
+            {"status": "idle", "pending_approvals": []},
+        ],
+    ), patch.object(
+        client,
+        "chat_messages",
+        side_effect=[
+            {"messages": [], "has_more": False},
+            {"messages": [final], "has_more": False},
+        ],
+    ), patch("skyportal.portal.time.monotonic", side_effect=AssertionError("deadline used")), patch(
+        "skyportal.portal.time.sleep"
+    ):
+        result = client.wait_for_chat(42, poll_interval=0)
+
+    assert result.messages == [final]
 
 
 def test_run_chat_turn_continues_existing_chat(credential_path):
@@ -396,7 +673,37 @@ def test_run_chat_turn_continues_existing_chat(credential_path):
 
     assert result is completed
     send.assert_called_once_with(42, "Continue")
-    wait.assert_called_once_with(42, after_sequence=8, timeout=300, poll_interval=0)
+    wait.assert_called_once_with(
+        42,
+        after_sequence=8,
+        timeout=None,
+        poll_interval=0,
+        on_progress=None,
+    )
+
+
+def test_run_chat_turn_forwards_progress_callback(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    completed = ChatTurnResult(42, "idle", [], [], 9)
+    progress_batches = []
+
+    with patch.object(client, "begin_chat_turn", return_value=42), patch.object(
+        client, "wait_for_chat", return_value=completed
+    ) as wait:
+        result = client.run_chat_turn(
+            "Continue",
+            chat_id=42,
+            on_progress=progress_batches.append,
+        )
+
+    assert result is completed
+    wait.assert_called_once_with(
+        42,
+        after_sequence=0,
+        timeout=None,
+        poll_interval=1,
+        on_progress=progress_batches.append,
+    )
 
 
 def test_approval_and_server_selection_use_headless_endpoints(credential_path):
@@ -412,6 +719,13 @@ def test_approval_and_server_selection_use_headless_endpoints(credential_path):
             "approved",
         )
         approval_request = call.call_args.args[0]
+        client.submit_chat_approval(
+            42,
+            {"approval_id": "auto", "type": "plan"},
+            "approved",
+            autoapproved=True,
+        )
+        autoapproval_request = call.call_args.args[0]
         client.select_chat_server(42, 7)
         server_request = call.call_args.args[0]
 
@@ -422,6 +736,11 @@ def test_approval_and_server_selection_use_headless_endpoints(credential_path):
         "decision": "approved",
         "type": "bash_command",
         "command": "df -h",
+    }
+    assert json.loads(autoapproval_request.data) == {
+        "decision": "approved",
+        "type": "plan",
+        "autoapproved": True,
     }
     assert server_request.full_url.endswith("/api/v1/agent/chat/42/select-server/")
     assert json.loads(server_request.data) == {"server_id": 7}
@@ -488,6 +807,17 @@ def test_missing_credentials_are_reported(credential_path):
 
     with pytest.raises(PortalError, match="Not connected"):
         client.servers()
+
+
+def test_raw_request_timeout_is_wrapped_as_portal_error(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch("skyportal.portal.urlopen", side_effect=TimeoutError("timed out")):
+        with pytest.raises(PortalError, match="request timed out"):
+            client.servers()
 
 
 def test_credentials_are_scoped_to_deployment(credential_path):
@@ -644,3 +974,42 @@ def test_delete_github_token_calls_delete_endpoint(credential_path):
     request = call.call_args.args[0]
     assert request.method == "DELETE"
     assert request.full_url == "https://app.skyportal.ai/api/v1/agent/github-token/delete/"
+
+
+def test_get_permission_mode_uses_shared_account_endpoint(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch(
+        "skyportal.portal.urlopen",
+        return_value=FakeResponse({"permission_mode": "ask", "read_only_mode": False}),
+    ) as call:
+        assert client.get_permission_mode() == "ask"
+
+    request = call.call_args.args[0]
+    assert request.method == "GET"
+    assert request.full_url == "https://app.skyportal.ai/api/v1/agent/permission/"
+
+
+def test_set_permission_mode_puts_only_supported_mode(credential_path):
+    CredentialStore.save(
+        {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
+    )
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch(
+        "skyportal.portal.urlopen",
+        return_value=FakeResponse({"permission_mode": "autoapprove"}),
+    ) as call:
+        assert client.set_permission_mode("autoapprove") == "autoapprove"
+
+    request = call.call_args.args[0]
+    assert request.method == "PUT"
+    assert json.loads(request.data) == {"permission_mode": "autoapprove"}
+
+    with patch("skyportal.portal.urlopen") as invalid_call:
+        with pytest.raises(PortalError, match="ask.*autoapprove"):
+            client.set_permission_mode("everything")
+    invalid_call.assert_not_called()

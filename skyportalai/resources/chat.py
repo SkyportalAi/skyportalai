@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from .._exceptions import WaitTimeoutError
+from .._exceptions import APIConnectionError, APIError, SkyportalError, WaitTimeoutError
 from ..chat import ApprovalCallback, Chat
 from ..types import ApprovalResult, ChatStatus, MessagesPage
 
@@ -104,13 +104,16 @@ class ChatResource:
     def submit_approval(self, chat_id: int, approval_id: str, *, decision: str,
                         approval_type: str = "bash_command",
                         command: str | None = None,
-                        reason: str | None = None) -> ApprovalResult:
+                        reason: str | None = None,
+                        autoapproved: bool = False) -> ApprovalResult:
         """Submit an approval decision (``approved`` or ``rejected``)."""
         body: dict = {"decision": decision, "type": approval_type}
         if command is not None:
             body["command"] = command
         if reason is not None:
             body["rejection_reason"] = reason
+        if autoapproved:
+            body["autoapproved"] = True
         data = self._client._request(
             "POST", self._approval_path(chat_id, approval_id), json=body,
         )
@@ -177,43 +180,147 @@ class ChatResource:
         )
 
     def wait(self, chat_id: int, *, poll_interval: float = 1.0,
-             timeout: float = 300.0,
+             timeout: float | None = None,
              on_approval: ApprovalCallback | None = None) -> ChatStatus:
         """Poll until the workflow settles, or raise ``WaitTimeoutError``.
 
         ``processing`` and ``uninitialized`` keep polling. On
         ``awaiting_approval``: with no callback the status is returned for the
-        caller to decide; with ``on_approval``, each pending approval is passed
-        to the callback — True approves, False rejects, None leaves it — and
-        polling continues if any decision was submitted.
+        caller to decide unless the account's shared permission mode is
+        ``autoapprove``. Autoapproval still submits each concrete approval to
+        the normal endpoint, one at a time, so server audit/checkpoint behavior
+        is preserved. An explicit ``on_approval`` callback takes precedence:
+        True approves, False rejects, and None leaves an approval pending.
+
+        If the permission setting cannot be read, this fails closed by
+        returning the awaiting-approval status. Approval ids already submitted
+        during this wait are never submitted twice, even if a status response
+        is stale.
         """
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        handled_approval_ids: set[str] = set()
         while True:
             current = self.get_status(chat_id)
             if current.status == "awaiting_approval":
+                visible_approval_ids = {
+                    approval.approval_id
+                    for approval in current.pending_approvals
+                    if approval.approval_id
+                }
+                # A status snapshot that still contains a submitted id is
+                # stale. Do not act on a second id from that same snapshot:
+                # the resumed workflow may not have reacquired its lease yet.
+                # Poll until every handled id disappears, then evaluate the
+                # next concrete approval.
+                if visible_approval_ids & handled_approval_ids:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise WaitTimeoutError(
+                            f"Chat {chat_id} was still busy after {timeout:.0f}s."
+                        )
+                    time.sleep(poll_interval)
+                    continue
+                if not current.pending_approvals:
+                    return current
+
+                # Approval order is checkpoint order. A malformed first entry
+                # cannot be skipped in favor of a later valid id without
+                # risking an out-of-order resume.
+                approval = current.pending_approvals[0]
+                if not approval.approval_id:
+                    return current
+                # Older deployments omit the type for bash approvals.
+                # Unknown non-empty types must never be silently coerced into
+                # bash requests by the server's compatibility path. Callers
+                # can still opt in explicitly through submit_approval().
+                if approval.type not in ("", "bash_command", "plan"):
+                    return current
+                decision = None
+                persisted_autoapproval = False
                 if on_approval is None:
-                    return current
-                acted = False
-                for approval in current.pending_approvals:
+                    try:
+                        autoapprove = self._client.get_permission_mode() == "autoapprove"
+                    except SkyportalError:
+                        autoapprove = False
+                    if not autoapprove:
+                        return current
+                    decision = True
+                    persisted_autoapproval = True
+                else:
                     decision = on_approval(approval)
-                    if decision is None:
-                        continue
-                    self.submit_approval(
-                        chat_id, approval.approval_id,
-                        decision="approved" if decision else "rejected",
-                        approval_type=approval.type or "bash_command",
-                        command=approval.command or None,
-                    )
-                    acted = True
-                if not acted:
+                if approval is None or decision is None:
                     return current
+
+                submitted = self._submit_wait_approval(
+                    chat_id,
+                    approval.approval_id,
+                    decision="approved" if decision else "rejected",
+                    approval_type=approval.type or "bash_command",
+                    command=approval.command or None,
+                    autoapproved=persisted_autoapproval,
+                )
+                if not submitted:
+                    # The shared policy changed after it was read. The server
+                    # guarantees the marked decision had no side effects, so
+                    # return the still-pending status for an explicit choice.
+                    return current
+                handled_approval_ids.add(approval.approval_id)
+                if timeout is not None:
+                    deadline = time.monotonic() + timeout
             elif current.status not in BUSY_STATUSES:
                 return current
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise WaitTimeoutError(
                     f"Chat {chat_id} was still busy after {timeout:.0f}s."
                 )
             time.sleep(poll_interval)
+
+    def _submit_wait_approval(
+        self,
+        chat_id: int,
+        approval_id: str,
+        *,
+        decision: str,
+        approval_type: str,
+        command: str | None,
+        autoapproved: bool,
+    ) -> bool:
+        """Submit once and reconcile an ambiguous transport timeout."""
+        try:
+            self.submit_approval(
+                chat_id,
+                approval_id,
+                decision=decision,
+                approval_type=approval_type,
+                command=command,
+                autoapproved=autoapproved,
+            )
+            return True
+        except APIError as error:
+            code = error.body.get("code") if isinstance(error.body, dict) else None
+            if (
+                autoapproved
+                and error.status_code == 409
+                and code == "autoapproval_policy_conflict"
+            ):
+                return False
+            raise
+        except APIConnectionError as error:
+            original_error = error
+
+        try:
+            current = self.get_status(chat_id)
+        except SkyportalError as reconciliation_error:
+            raise original_error from reconciliation_error
+        still_pending = (
+            current.status == "awaiting_approval"
+            and any(
+                approval.approval_id == approval_id
+                for approval in current.pending_approvals
+            )
+        )
+        if still_pending:
+            raise original_error
+        return True
 
     # -- read-only observability ----------------------------------------------
 
