@@ -13,6 +13,7 @@ from .chat import Chat
 from .types import (
     ApprovalResult,
     ChatStatus,
+    KubernetesCluster,
     Message,
     MessagesPage,
     PendingApproval,
@@ -24,6 +25,7 @@ __all__ = [
     "User",
     "Chat",
     "ChatStatus",
+    "KubernetesCluster",
     "PendingApproval",
     "ApprovalResult",
     "Message",

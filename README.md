@@ -138,6 +138,31 @@ Use `--clear-scope` to remove every selected server explicitly.
 
 Run `skyportalai --help` for the complete command reference.
 
+## Kubernetes clusters
+
+Connect a cluster with its kubeconfig. The CLI sends the credential only to the
+authenticated SkyPortal API, where the same validation and encrypted storage as
+the web application are used; kubeconfigs are never returned by lifecycle APIs.
+
+```bash
+skyportalai kubernetes connect production --kubeconfig ~/.kube/config --environment Production
+skyportalai kubernetes list
+```
+
+Use the returned cluster ID as a normal chat target. Namespace scope is an
+allowlist and every mutating command keeps the existing approval gate:
+
+```bash
+skyportalai chat send --server 17 --namespace 17=default --wait \
+  "Restart the api deployment and verify the rollout"
+```
+
+Remove the stored cluster credential when it is no longer needed:
+
+```bash
+skyportalai kubernetes disconnect 17
+```
+
 ## Observability agent
 
 Install the collector dependencies and review the deployment guide before
