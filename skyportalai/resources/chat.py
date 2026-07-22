@@ -247,7 +247,7 @@ class ChatResource:
                     persisted_autoapproval = True
                 else:
                     decision = on_approval(approval)
-                if approval is None or decision is None:
+                if decision is None:
                     return current
 
                 submitted = self._submit_wait_approval(

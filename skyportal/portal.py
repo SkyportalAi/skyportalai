@@ -453,7 +453,7 @@ class SkyportalClient:
             if deadline is not None and time.monotonic() >= deadline:
                 raise PortalError(
                     "Skyportal has made no progress for {} seconds. Chat #{} remains available.".format(
-                        int(timeout), chat_id
+                        f"{timeout:g}", chat_id
                     )
                 )
 

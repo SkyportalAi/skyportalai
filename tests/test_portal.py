@@ -582,11 +582,11 @@ def test_wait_for_chat_duplicate_message_snapshot_does_not_extend_idle_deadline(
     ) as get_messages, patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
         "skyportal.portal.time.sleep", side_effect=advance
     ):
-        with pytest.raises(PortalError, match="no progress for 3 seconds"):
+        with pytest.raises(PortalError, match="no progress for 3.5 seconds"):
             client.wait_for_chat(
                 42,
                 after_sequence=3,
-                timeout=3,
+                timeout=3.5,
                 poll_interval=2,
                 on_progress=delivered.append,
             )
