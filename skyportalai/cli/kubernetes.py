@@ -67,7 +67,7 @@ def connect(
     """Validate, encrypt, and connect a Kubernetes cluster."""
     name = name.strip()
     if not name:
-        raise typer.BadParameter("Cluster name cannot be empty.", param_hint="'NAME'")
+        raise typer.BadParameter("Cluster name cannot be empty.", param_hint="NAME")
     contents = _read_kubeconfig(kubeconfig)
     cluster = run_command(
         context,

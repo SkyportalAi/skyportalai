@@ -44,7 +44,7 @@ class KubernetesCluster:
             status=str(data.get("status") or ""),
             api_endpoint=str(data.get("api_endpoint") or ""),
             namespaces=[str(item) for item in (ns_raw if isinstance(ns_raw, list) else [])],
-            connection_verified=bool(verified) if verified is not None else None,
+            connection_verified=verified if isinstance(verified, bool) else (bool(verified) if isinstance(verified, int) else None),
             raw={key: value for key, value in data.items() if key != "kubeconfig"},
         )
 

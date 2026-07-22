@@ -197,6 +197,7 @@ class Skyportal:
     def _handle_response(response: requests.Response) -> Any:
         if 200 <= response.status_code < 300:
             if response.status_code in (204, 205):
+                response.close()
                 return {}
             if not response.content:
                 raise APIError(
