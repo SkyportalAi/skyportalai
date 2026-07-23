@@ -93,8 +93,8 @@ def test_multi_server_scope_is_sent_atomically_with_first_turn(shell):
     assert client.begin_calls == [
         ("compare every selected host", None, None, [7, 9], 7),
     ]
-    assert "Servers 7, 9 selected; 7 is the default" in console.file.getvalue()
-    assert "servers#7,9" in "".join(part[1] for part in instance._prompt_fragments())
+    assert "Servers gpu-7, gpu-9 selected; gpu-7 is the default" in console.file.getvalue()
+    assert "servers#gpu-7,gpu-9" in "".join(part[1] for part in instance._prompt_fragments())
 
 
 def test_multi_server_scope_updates_existing_chat(shell):
@@ -151,11 +151,22 @@ def test_new_chat_scope_rejects_unowned_server(shell):
     assert instance.selected_server_ids == []
 
 
-@pytest.mark.parametrize("arguments", [[], ["auto", "7"], ["bad"], ["0"]])
+@pytest.mark.parametrize("arguments", [[], ["auto", "7"]])
 def test_invalid_multi_server_syntax_does_not_change_scope(shell, arguments):
     instance, client, _console = shell
 
     instance._cmd_server(arguments)
+
+    assert instance.selected_server_ids == []
+    assert client.scope_calls == []
+
+
+@pytest.mark.parametrize("arguments", [["bad"], ["0"]])
+def test_unresolvable_server_raises_and_does_not_change_scope(shell, arguments):
+    instance, client, _console = shell
+
+    with pytest.raises(PortalError, match="not found"):
+        instance._cmd_server(arguments)
 
     assert instance.selected_server_ids == []
     assert client.scope_calls == []

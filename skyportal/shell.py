@@ -46,8 +46,8 @@ COMMANDS: Dict[str, CommandInfo] = {
     ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
     "/server": CommandInfo(
-        "/server <id> [id ...] | auto",
-        "Select one or more servers for agent execution",
+        "/server <name> [name ...] | auto",
+        "Select one or more servers by name for agent execution",
     ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
     "/about": CommandInfo("/about", "Show Skyportal CLI information"),
@@ -119,6 +119,7 @@ class InteractiveShell:
         self.last_sequence = 0
         self.selected_server_id: Optional[int] = None
         self.selected_server_ids: List[int] = []
+        self.selected_server_names: List[str] = []
         self.previous_chat_id: Optional[int] = self._load_previous_chat_id()
         self._token_prompt = token_prompt or self._default_token_prompt
         self.session = session or self._create_prompt_session()
@@ -243,11 +244,11 @@ class InteractiveShell:
         ]
         if self.chat_id is not None:
             fragments.append(("class:context", " chat#{}".format(self.chat_id)))
-        if len(self.selected_server_ids) > 1:
-            fragments.append((
-                "class:context",
-                " servers#{}".format(",".join(str(value) for value in self.selected_server_ids)),
-            ))
+        labels = self.selected_server_names or [str(value) for value in self.selected_server_ids]
+        if len(labels) > 1:
+            fragments.append(("class:context", " servers#{}".format(",".join(labels))))
+        elif labels:
+            fragments.append(("class:context", " server#{}".format(labels[0])))
         elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
         fragments.append(("class:arrow", "  > "))
@@ -363,6 +364,7 @@ class InteractiveShell:
         self.last_sequence = 0
         self.selected_server_id = None
         self.selected_server_ids = []
+        self.selected_server_names = []
         self._forget_chat()
         self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
 
@@ -428,14 +430,13 @@ class InteractiveShell:
             "Chat",
             "#{}".format(self.chat_id) if self.chat_id is not None else "[dim]new chat[/dim]",
         )
+        labels = self.selected_server_names or [str(value) for value in self.selected_server_ids]
         rows.add_row(
             "Servers",
-            ", ".join(str(value) for value in self.selected_server_ids)
-            if self.selected_server_ids
-            else "[dim]automatic[/dim]",
+            ", ".join(labels) if labels else "[dim]automatic[/dim]",
         )
-        if len(self.selected_server_ids) > 1:
-            rows.add_row("Default", str(self.selected_server_id))
+        if len(labels) > 1:
+            rows.add_row("Default", labels[0])
         rows.add_row("Credentials", str(CredentialStore.get_path()))
         self._print_section("Session status", style="#3b82f6")
         self.console.print(rows)
@@ -504,9 +505,7 @@ class InteractiveShell:
             self.console.print("[yellow]No servers found.[/yellow]")
             return
         table = Table(title="Skyportal servers", border_style="blue", header_style="bold cyan")
-        table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Name", style="bold")
-        table.add_column("Kind", no_wrap=True)
         table.add_column("Status")
         table.add_column("Environment")
         table.add_column("Resources")
@@ -516,9 +515,7 @@ class InteractiveShell:
                 "green" if status.lower() in ("connected", "running", "ready", "online") else "yellow"
             )
             table.add_row(
-                str(server.get("id", "-")),
                 str(server.get("name") or server.get("hostname") or "Unnamed"),
-                str(server.get("target_kind") or "ssh"),
                 "[{}]{}[/{}]".format(status_style, status, status_style),
                 str(server.get("host_type") or server.get("location") or "Custom"),
                 "{} vCPU / {} GB RAM / {} GPU".format(
@@ -527,13 +524,13 @@ class InteractiveShell:
             )
         self.console.print(table)
         self.console.print(
-            "[dim]Select one or more with /server <id> [id ...], "
+            "[dim]Select one or more with /server <name> [name ...], "
             "or reset with /server auto.[/dim]"
         )
 
     def _cmd_server(self, args: List[str]) -> None:
         if not args:
-            self.console.print("[yellow]Usage:[/yellow] /server <id> [id ...] | auto")
+            self.console.print("[yellow]Usage:[/yellow] /server <name> [name ...] | auto")
             return
         if len(args) == 1 and args[0].lower() == "auto":
             if self.chat_id is not None:
@@ -541,21 +538,27 @@ class InteractiveShell:
                     self.client.select_chat_servers(self.chat_id, [])
             self.selected_server_id = None
             self.selected_server_ids = []
+            self.selected_server_names = []
             self.console.print("[green]✓ Server selection set to automatic.[/green]")
             return
         if any(argument.lower() == "auto" for argument in args):
-            self.console.print("[yellow]Use 'auto' by itself, or provide server IDs.[/yellow]")
+            self.console.print("[yellow]Use 'auto' by itself, or provide server names.[/yellow]")
             return
         self._require_api_connection()
-        raw_ids = [part for argument in args for part in argument.split(",") if part]
-        try:
-            server_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-        except ValueError:
-            self.console.print("[yellow]Server IDs must be numbers, or use 'auto'.[/yellow]")
-            return
-        if not server_ids or any(server_id < 1 for server_id in server_ids):
-            self.console.print("[yellow]Server IDs must be positive numbers.[/yellow]")
-            return
+        tokens = [part.strip() for argument in args for part in argument.split(",") if part.strip()]
+        with self.console.status("[cyan]Resolving servers…[/cyan]", spinner="dots"):
+            servers = self._items(self.client.servers())
+        resolved, unknown = self._resolve_server_tokens(tokens, servers)
+        if unknown:
+            raise PortalError(
+                "Server{} {} {} not found in your account. Run /servers to see available names.".format(
+                    "s" if len(unknown) > 1 else "",
+                    ", ".join(unknown),
+                    "were" if len(unknown) > 1 else "was",
+                )
+            )
+        server_ids = [server_id for server_id, _ in resolved]
+        names = [name for _, name in resolved]
         if self.chat_id is not None:
             if len(server_ids) == 1:
                 # Keep the one-host path compatible with older website
@@ -569,28 +572,53 @@ class InteractiveShell:
                         server_ids,
                         active_server_id=server_ids[0],
                     )
-        else:
-            servers = self._items(self.client.servers())
-            available_ids = {str(server.get("id")) for server in servers}
-            missing = [server_id for server_id in server_ids if str(server_id) not in available_ids]
-            if missing:
-                raise PortalError(
-                    "Server{} {} {} not found in your account".format(
-                        "s" if len(missing) > 1 else "",
-                        ", ".join(str(server_id) for server_id in missing),
-                        "were" if len(missing) > 1 else "was",
-                    )
-                )
         self.selected_server_ids = server_ids
         self.selected_server_id = server_ids[0]
-        if len(server_ids) == 1:
-            message = "Server {} selected.".format(server_ids[0])
+        self.selected_server_names = names
+        if len(names) == 1:
+            message = "Server {} selected.".format(names[0])
         else:
             message = "Servers {} selected; {} is the default.".format(
-                ", ".join(str(server_id) for server_id in server_ids),
-                server_ids[0],
+                ", ".join(names),
+                names[0],
             )
         self.console.print("[green]✓ {}[/green]".format(message))
+
+    @staticmethod
+    def _resolve_server_tokens(
+        tokens: List[str], servers: List[Dict[str, Any]]
+    ) -> Tuple[List[Tuple[int, str]], List[str]]:
+        """Resolve /server arguments to unique (id, name) pairs; names win over numeric ids."""
+        by_name: Dict[str, Tuple[int, str]] = {}
+        by_folded: Dict[str, Optional[Tuple[int, str]]] = {}
+        by_id: Dict[str, Tuple[int, str]] = {}
+        for server in servers:
+            raw_id = server.get("id")
+            if raw_id is None:
+                continue
+            try:
+                server_id = int(raw_id)
+            except (ValueError, TypeError):
+                continue
+            name = str(server.get("name") or server.get("hostname") or server_id)
+            entry = (server_id, name)
+            by_id[str(server_id)] = entry
+            by_name.setdefault(name, entry)
+            folded = name.casefold()
+            # None marks an ambiguous case-insensitive name; exact match still works.
+            by_folded[folded] = None if folded in by_folded else entry
+        resolved: List[Tuple[int, str]] = []
+        seen: set = set()
+        unknown: List[str] = []
+        for token in tokens:
+            entry = by_name.get(token) or by_folded.get(token.casefold()) or by_id.get(token)
+            if entry is None:
+                unknown.append(token)
+                continue
+            if entry[0] not in seen:
+                seen.add(entry[0])
+                resolved.append(entry)
+        return resolved, unknown
 
     def _cmd_clear(self, args: List[str]) -> None:
         self.console.clear()
