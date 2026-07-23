@@ -2,7 +2,9 @@
 
 import json
 import os
+import re
 import shlex
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -20,6 +22,15 @@ from rich.table import Table
 from rich.text import Text
 
 from skyportal.portal import ChatTurnResult, CredentialStore, PortalError, SkyportalClient
+
+_PERMISSION_MODES = frozenset({"ask", "autoapprove"})
+_AUTOAPPROVE_TYPES = frozenset({"", "bash_command", "plan"})
+_APPROVAL_SETTLEMENT_TIMEOUT = 300.0
+_APPROVAL_SETTLEMENT_POLL_INTERVAL = 0.25
+
+
+class _AutoapprovalPolicyConflict(RuntimeError):
+    """The shared mode changed between its GET and marked approval POST."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,10 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/github-token <set|status|remove>", "Manage the GitHub PAT used for git clone"
     ),
     "/status": CommandInfo("/status", "Show connection, chat, and server status"),
+    "/permission": CommandInfo(
+        "/permission [autoapprove|ask]",
+        "Show or change the shared account approval policy",
+    ),
     "/new": CommandInfo("/new", "Start a fresh Skyportal chat"),
     "/resume": CommandInfo(
         "/resume [chat_id] [--verbose]",
@@ -86,6 +101,11 @@ class SkyportalCompleter(Completer):
                 ("status", "show whether a PAT is saved"),
                 ("remove", "delete the saved PAT"),
             )
+        elif command == "/permission":
+            options = (
+                ("autoapprove", "approve supported pending actions automatically"),
+                ("ask", "prompt before each gated action"),
+            )
         for value, metadata in options:
             if value.startswith(word.lower()):
                 yield Completion(value, start_position=-len(word), display_meta=metadata)
@@ -93,6 +113,17 @@ class SkyportalCompleter(Completer):
 
 class InteractiveShell:
     """Resilient command center that remains active after request failures."""
+
+    _THINKING_STATUS = (
+        "[bold cyan]Skyportal is thinking…[/bold cyan]  "
+        "[dim](press Ctrl-C to stop)[/dim]"
+    )
+    _CONTINUING_STATUS = (
+        "[bold cyan]Skyportal is continuing…[/bold cyan]  "
+        "[dim](press Ctrl-C to stop)[/dim]"
+    )
+    _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
     PROMPT_STYLE = Style.from_dict(
         {
@@ -129,6 +160,7 @@ class InteractiveShell:
             "/logout": self._cmd_logout,
             "/github-token": self._cmd_github_token,
             "/status": self._cmd_status,
+            "/permission": self._cmd_permission,
             "/new": self._cmd_new,
             "/resume": self._cmd_resume,
             "/servers": self._cmd_servers,
@@ -256,6 +288,62 @@ class InteractiveShell:
     def _print_section(self, title: str, style: str = "#6b7280") -> None:
         """Print a lightweight terminal section divider."""
         self.console.print(Rule(title, characters="─", style=style, align="center"))
+
+    @classmethod
+    def _clean_terminal_text(cls, value: Any) -> str:
+        """Remove terminal control sequences from server-supplied display text."""
+        text = str(value) if value is not None else ""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = cls._ANSI_ESCAPE_RE.sub("", text)
+        return cls._CONTROL_CHAR_RE.sub("", text)
+
+    @classmethod
+    def _bounded_one_line(cls, value: Any, limit: int) -> str:
+        text = " ".join(cls._clean_terminal_text(value).splitlines()).strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)] + "…"
+
+    @classmethod
+    def _bounded_multiline(cls, value: Any, max_lines: int = 24, max_chars: int = 4096) -> str:
+        """Keep command results useful while bounding terminal transcript size."""
+        cleaned = cls._clean_terminal_text(value).strip()
+        if not cleaned:
+            return ""
+        lines = cleaned.splitlines()
+        truncated = len(lines) > max_lines
+        visible = lines[:max_lines]
+        rendered = "\n".join(visible)
+        if len(rendered) > max_chars:
+            truncated = True
+            rendered = rendered[:max_chars]
+        if truncated:
+            marker = "… output truncated"
+            rendered = rendered.rstrip()
+            if len(rendered) + len(marker) + 1 > max_chars:
+                rendered = rendered[: max(0, max_chars - len(marker) - 1)].rstrip()
+            rendered = (rendered + "\n" + marker).lstrip("\n")
+        return rendered
+
+    @staticmethod
+    def _sequence(message: Dict[str, Any]) -> Optional[int]:
+        try:
+            return int(message.get("sequence"))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _message_key(cls, message: Dict[str, Any]) -> Tuple[str, Any]:
+        sequence = cls._sequence(message)
+        if sequence is not None:
+            return ("sequence", sequence)
+        # Persisted messages should always have a sequence, but exact-payload
+        # identity keeps a malformed/replayed row from scrolling forever.
+        try:
+            payload = json.dumps(message, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            payload = repr(message)
+        return ("payload", payload)
 
     def _show_onboarding(self) -> None:
         status = (
@@ -412,7 +500,94 @@ class InteractiveShell:
                 "[yellow]Usage:[/yellow] /github-token <set [owner/repo] | status | remove>"
             )
 
+    @staticmethod
+    def _permission_mode_value(value: Any) -> str:
+        mode = value.get("permission_mode") if isinstance(value, dict) else value
+        if mode not in _PERMISSION_MODES:
+            raise PortalError("Skyportal returned an invalid permission mode")
+        return str(mode)
+
+    @staticmethod
+    def _approval_id_value(value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+    def _fetch_permission_mode(self) -> str:
+        getter = getattr(self.client, "get_permission_mode", None)
+        if getter is None:
+            raise PortalError("This Skyportal deployment does not expose permission settings")
+        return self._permission_mode_value(getter())
+
+    def _permission_mode_for_approval(self) -> str:
+        """Read the shared mode, failing closed to an interactive prompt."""
+        try:
+            return self._fetch_permission_mode()
+        except PortalError as error:
+            self.console.print(
+                "[yellow]Could not verify autoapprove ({}); asking for safety.[/yellow]".format(
+                    self._bounded_one_line(error, 160)
+                )
+            )
+            return "ask"
+
+    def _cmd_permission(self, args: List[str]) -> None:
+        if len(args) > 1 or (args and args[0].lower() not in _PERMISSION_MODES):
+            self.console.print(
+                "[yellow]Usage:[/yellow] /permission [autoapprove|ask]"
+            )
+            return
+        self._require_api_connection()
+        requested = args[0].lower() if args else None
+        with self.console.status("[cyan]Checking approval policy…[/cyan]", spinner="dots"):
+            if requested is None:
+                mode = self._fetch_permission_mode()
+            else:
+                setter = getattr(self.client, "set_permission_mode", None)
+                if setter is None:
+                    raise PortalError(
+                        "This Skyportal deployment does not expose permission settings"
+                    )
+                mode = self._permission_mode_value(setter(requested))
+
+        if mode == "autoapprove":
+            self.console.print(
+                "[yellow]Permission mode: autoapprove.[/yellow] Supported pending actions "
+                "will be submitted automatically; server safety policies still apply."
+            )
+        else:
+            self.console.print(
+                "[green]Permission mode: ask.[/green] Gated actions will prompt for a decision."
+            )
+
     def _cmd_status(self, args: List[str]) -> None:
+        connected = self.client.is_authenticated()
+        remote: Optional[Dict[str, Any]] = None
+        remote_error: Optional[str] = None
+        permission_mode: Optional[str] = None
+        permission_error: Optional[str] = None
+        if connected:
+            try:
+                permission_mode = self._fetch_permission_mode()
+            except PortalError as error:
+                permission_error = str(error)
+        if connected and self.chat_id is not None:
+            try:
+                detailed_status = getattr(self.client, "get_execution_status", None)
+                if detailed_status is None:
+                    remote = self.client.chat_status(self.chat_id)
+                else:
+                    remote = detailed_status(self.chat_id)
+            except PortalError as error:
+                # Older deployments may not expose /execution-status/. The
+                # lightweight status endpoint still gives useful workflow and
+                # approval state, so degrade to it for that compatibility case.
+                if error.status_code in (404, 405):
+                    try:
+                        remote = self.client.chat_status(self.chat_id)
+                    except PortalError as fallback_error:
+                        remote_error = str(fallback_error)
+                else:
+                    remote_error = str(error)
+
         rows = Table.grid(padding=(0, 2))
         rows.add_column(style="dim")
         rows.add_column()
@@ -420,10 +595,20 @@ class InteractiveShell:
         rows.add_row(
             "API",
             "[green]connected[/green]"
-            if self.client.is_authenticated()
+            if connected
             else "[yellow]not connected[/yellow]",
         )
         rows.add_row("Agent", "Skyportal Agent")
+        if permission_mode is not None:
+            permission_style = "yellow" if permission_mode == "autoapprove" else "green"
+            rows.add_row("Permission", Text(permission_mode, style=permission_style))
+        elif permission_error:
+            rows.add_row(
+                "Permission",
+                Text("ask (unverified; prompting for safety)", style="yellow"),
+            )
+        else:
+            rows.add_row("Permission", "[dim]unknown (not connected)[/dim]")
         rows.add_row(
             "Chat",
             "#{}".format(self.chat_id) if self.chat_id is not None else "[dim]new chat[/dim]",
@@ -436,6 +621,47 @@ class InteractiveShell:
         )
         if len(self.selected_server_ids) > 1:
             rows.add_row("Default", str(self.selected_server_id))
+        if isinstance(remote, dict):
+            workflow_status = self._clean_terminal_text(remote.get("status", "unknown"))
+            status_style = {
+                "processing": "cyan",
+                "awaiting_approval": "yellow",
+                "error": "red",
+                "cancelled": "yellow",
+            }.get(workflow_status, "green")
+            rows.add_row("Workflow", Text(workflow_status or "unknown", style=status_style))
+
+            pending = remote.get("pending_approvals", [])
+            pending = pending if isinstance(pending, list) else []
+            rows.add_row("Approvals", Text(str(len(pending))))
+            if pending and isinstance(pending[0], dict):
+                detail = (
+                    pending[0].get("command")
+                    or pending[0].get("reason")
+                    or pending[0].get("type")
+                    or pending[0].get("approval_id")
+                    or "pending decision"
+                )
+                rows.add_row("Next approval", Text(self._bounded_one_line(detail, 160)))
+
+            live_command = remote.get("live_command_output")
+            if isinstance(live_command, dict) and live_command.get("command"):
+                # Deliberately do not render raw live output here. Older server
+                # versions expose an unredacted Redis preview; persisted tool
+                # messages are the safe/authoritative output surface.
+                rows.add_row(
+                    "Running",
+                    Text("$ " + self._bounded_one_line(live_command.get("command"), 160)),
+                )
+
+            live_plan = remote.get("live_plan")
+            if isinstance(live_plan, dict):
+                current = live_plan.get("current_step_index")
+                total = live_plan.get("total_steps")
+                if isinstance(current, int) and isinstance(total, int) and total > 0:
+                    rows.add_row("Plan", Text("step {}/{}".format(current + 1, total)))
+        elif remote_error:
+            rows.add_row("Remote", Text("unavailable: " + self._bounded_one_line(remote_error, 160), style="yellow"))
         rows.add_row("Credentials", str(CredentialStore.get_path()))
         self._print_section("Session status", style="#3b82f6")
         self.console.print(rows)
@@ -625,16 +851,21 @@ class InteractiveShell:
                 server_id=self.selected_server_id,
             )
         self.chat_id = chat_id
+        render_state = self._new_render_state()
         try:
-            with self.console.status(
-                "[bold cyan]Skyportal is thinking…[/bold cyan]  [dim](press Ctrl-C to stop)[/dim]",
-                spinner="dots12",
-            ):
-                turn = self.client.wait_for_chat(chat_id, after_sequence=self.last_sequence)
+            with self.console.status(self._THINKING_STATUS, spinner="dots12"):
+                turn = self.client.wait_for_chat(
+                    chat_id,
+                    after_sequence=self.last_sequence,
+                    timeout=None,
+                    on_progress=lambda messages: self._render_incremental_messages(
+                        messages, render_state
+                    ),
+                )
         except KeyboardInterrupt:
             self._cancel_active_turn(chat_id)
             return
-        self._process_turn(turn)
+        self._process_turn(turn, render_state=render_state)
 
     def _cancel_active_turn(self, chat_id: int) -> None:
         """Stop the running agent turn after a Ctrl-C, then keep the prompt."""
@@ -649,19 +880,138 @@ class InteractiveShell:
             "[yellow]■ Stopped.[/yellow] Chat #{} is still open; type to continue.".format(chat_id)
         )
 
-    def _process_turn(self, turn: ChatTurnResult) -> None:
+    @staticmethod
+    def _new_render_state() -> Dict[str, Any]:
+        return {"seen": set(), "rendered": False}
+
+    def _render_incremental_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        render_state: Dict[str, Any],
+    ) -> bool:
+        """Render one persisted-message batch once and advance the local cursor."""
+        seen = render_state.setdefault("seen", set())
+        fresh: List[Dict[str, Any]] = []
+        fresh_keys: List[Tuple[str, Any]] = []
+        sequences: List[int] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            key = self._message_key(message)
+            if key in seen:
+                continue
+            fresh.append(message)
+            fresh_keys.append(key)
+            sequence = self._sequence(message)
+            if sequence is not None:
+                sequences.append(sequence)
+
+        rendered = self._render_assistant_messages(
+            fresh,
+            show_section=not bool(render_state.get("rendered")),
+        )
+        if rendered:
+            render_state["rendered"] = True
+        # Commit dedupe/cursor state only after the renderer accepted the
+        # whole batch. If a callback render raises, PortalClient retains every
+        # message in ChatTurnResult so the final pass can safely retry it.
+        seen.update(fresh_keys)
+        if sequences:
+            self.last_sequence = max(self.last_sequence, max(sequences))
+        return rendered
+
+    def _approval_was_accepted(
+        self,
+        chat_id: int,
+        approval_id: str,
+    ) -> bool:
+        """Reconcile an ambiguous approval POST timeout against server state."""
+        state = self.client.chat_status(chat_id)
+        if not isinstance(state, dict):
+            return False
+        if state.get("status") != "awaiting_approval":
+            return True
+        pending = state.get("pending_approvals", [])
+        if not isinstance(pending, list) or not pending:
+            return False
+        pending_ids = {
+            str(item.get("approval_id"))
+            for item in pending
+            if isinstance(item, dict) and item.get("approval_id") is not None
+        }
+        return approval_id not in pending_ids
+
+    def _submit_approval_with_recovery(
+        self,
+        chat_id: int,
+        approval: Dict[str, Any],
+        decision: str,
+        *,
+        autoapproved: bool = False,
+    ) -> bool:
+        """Submit a decision; recover when an older synchronous server times out.
+
+        Older deployments execute the resumed workflow inside the approval POST.
+        The client can therefore hit its request timeout after the decision was
+        durably accepted. A single status reconciliation avoids resubmitting (and
+        potentially re-running) that approval. Explicit HTTP failures still fail.
+        Returns True when timeout recovery was needed.
+        """
+        try:
+            if autoapproved:
+                self.client.submit_chat_approval(
+                    chat_id,
+                    approval,
+                    decision,
+                    autoapproved=True,
+                )
+            else:
+                self.client.submit_chat_approval(chat_id, approval, decision)
+            return False
+        except PortalError as error:
+            if (
+                autoapproved
+                and error.status_code == 409
+                and error.code == "autoapproval_policy_conflict"
+            ):
+                raise _AutoapprovalPolicyConflict from error
+            if error.status_code is not None:
+                raise
+            original_error: BaseException = error
+        except TimeoutError as error:
+            original_error = error
+
+        try:
+            accepted = self._approval_was_accepted(
+                chat_id, str(approval.get("approval_id", ""))
+            )
+        except (PortalError, TimeoutError) as reconciliation_error:
+            raise original_error from reconciliation_error
+        if not accepted:
+            raise original_error
+        return True
+
+    def _process_turn(
+        self,
+        turn: ChatTurnResult,
+        render_state: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Render a completed turn and resolve requested approvals."""
+        if render_state is None:
+            render_state = self._new_render_state()
+        handled_approvals: set[str] = set()
+        approval_settlement_deadline: Optional[float] = None
         while True:
             self.chat_id = turn.chat_id
             self._remember_chat(turn.chat_id)
+            self._render_incremental_messages(turn.messages, render_state)
             self.last_sequence = max(self.last_sequence, turn.latest_sequence)
-            rendered = self._render_assistant_messages(turn.messages)
             if turn.status == "error":
                 raise PortalError(
                     "The Skyportal agent reported an error for chat #{}".format(turn.chat_id)
                 )
             if turn.status != "awaiting_approval":
-                if not rendered:
+                if not render_state.get("rendered"):
                     # _render_assistant_messages() now surfaces thoughts,
                     # tool-call announcements, and generic tool results (not
                     # just a final text answer), so reaching here means the
@@ -684,7 +1034,59 @@ class InteractiveShell:
                     "Chat #{} is awaiting approval without approval details".format(turn.chat_id)
                 )
 
-            approval = turn.pending_approvals[0]
+            visible_approval_ids = {
+                self._approval_id_value(item.get("approval_id"))
+                for item in turn.pending_approvals
+                if isinstance(item, dict)
+                and self._approval_id_value(item.get("approval_id"))
+            }
+            if visible_approval_ids & handled_approvals:
+                # The approval POST can finish before the status snapshot that
+                # still advertises it is replaced. Do not submit a second id
+                # from that stale snapshot (or resubmit the first). Poll at a
+                # bounded cadence until the handled id disappears or the
+                # workflow advances.
+                if (
+                    approval_settlement_deadline is None
+                    or time.monotonic() >= approval_settlement_deadline
+                ):
+                    raise PortalError(
+                        "Skyportal did not clear an approval that was already submitted. "
+                        "Use /status before retrying; it will not be submitted twice."
+                    )
+                try:
+                    time.sleep(_APPROVAL_SETTLEMENT_POLL_INTERVAL)
+                    turn = self.client.wait_for_chat(
+                        turn.chat_id,
+                        after_sequence=self.last_sequence,
+                        timeout=None,
+                        on_progress=lambda messages: self._render_incremental_messages(
+                            messages, render_state
+                        ),
+                    )
+                except KeyboardInterrupt:
+                    self._cancel_active_turn(turn.chat_id)
+                    return
+                continue
+
+            remaining = [
+                item
+                for item in turn.pending_approvals
+                if self._approval_id_value(item.get("approval_id"))
+                not in handled_approvals
+            ]
+            if not remaining:
+                raise PortalError(
+                    "Chat #{} is awaiting approval without a usable approval ID".format(
+                        turn.chat_id
+                    )
+                )
+            approval = remaining[0]
+            approval_id = self._approval_id_value(approval.get("approval_id"))
+            if not approval_id:
+                raise PortalError(
+                    "Chat #{} returned an approval without an approval ID".format(turn.chat_id)
+                )
             description = (
                 approval.get("executed_command")
                 or approval.get("command")
@@ -692,29 +1094,85 @@ class InteractiveShell:
                 or json.dumps(approval, indent=2, sort_keys=True)
             )
             self._print_section("Approval requested", style="yellow")
-            self.console.print(str(description))
-            try:
-                answer = self.session.prompt("Approve this action? [y/N]: ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                answer = ""
-            decision = "approved" if answer in ("y", "yes") else "rejected"
-            try:
-                with self.console.status(
-                    "[cyan]Submitting {}…[/cyan] [dim](Ctrl-C to stop)[/dim]".format(decision),
-                    spinner="dots",
-                ):
-                    self.client.submit_chat_approval(turn.chat_id, approval, decision)
-                    turn = self.client.wait_for_chat(
-                        turn.chat_id,
-                        after_sequence=self.last_sequence,
+            self.console.print(Text(self._clean_terminal_text(description)))
+            approval_type = str(approval.get("type", "") or "")
+            autoapprove = (
+                approval_type in _AUTOAPPROVE_TYPES
+                and self._permission_mode_for_approval() == "autoapprove"
+            )
+            if autoapprove:
+                decision = "approved"
+                self.console.print(
+                    "[yellow]Auto-approving under the shared account policy.[/yellow]"
+                )
+            else:
+                if approval_type not in _AUTOAPPROVE_TYPES:
+                    self.console.print(
+                        "[dim]This approval type requires an explicit decision.[/dim]"
                     )
+                try:
+                    answer = self.session.prompt("Approve this action? [y/N]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    answer = ""
+                decision = "approved" if answer in ("y", "yes") else "rejected"
+            try:
+                while True:
+                    try:
+                        with self.console.status(
+                            "[cyan]Submitting {}…[/cyan] "
+                            "[dim](Ctrl-C to stop)[/dim]".format(decision),
+                            spinner="dots",
+                        ) as status:
+                            recovered = self._submit_approval_with_recovery(
+                                turn.chat_id,
+                                approval,
+                                decision,
+                                autoapproved=autoapprove,
+                            )
+                            handled_approvals.add(approval_id)
+                            approval_settlement_deadline = (
+                                time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
+                            )
+                            status.update(self._CONTINUING_STATUS)
+                            if recovered:
+                                self.console.print(
+                                    "[dim]Approval was accepted; reattached after the older "
+                                    "server's response timed out.[/dim]"
+                                )
+                            turn = self.client.wait_for_chat(
+                                turn.chat_id,
+                                after_sequence=self.last_sequence,
+                                timeout=None,
+                                on_progress=lambda messages: self._render_incremental_messages(
+                                    messages, render_state
+                                ),
+                            )
+                        break
+                    except _AutoapprovalPolicyConflict:
+                        autoapprove = False
+                        self.console.print(
+                            "[yellow]Autoapprove was disabled before this action was "
+                            "submitted; an explicit decision is required.[/yellow]"
+                        )
+                        try:
+                            answer = self.session.prompt(
+                                "Approve this action? [y/N]: "
+                            ).strip().lower()
+                        except (KeyboardInterrupt, EOFError):
+                            answer = ""
+                        decision = "approved" if answer in ("y", "yes") else "rejected"
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
 
-    def _render_assistant_messages(self, messages: List[Dict[str, Any]]) -> bool:
+    def _render_assistant_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        show_section: bool = True,
+    ) -> bool:
         rendered = False
-        for message in sorted(messages, key=lambda item: int(item.get("sequence", 0))):
+        for message in sorted(messages, key=lambda item: self._sequence(item) or 0):
             role = message.get("role")
             if role == "assistant":
                 line = self._assistant_message_line(message)
@@ -722,7 +1180,8 @@ class InteractiveShell:
                     continue
                 if not rendered:
                     self.console.print()
-                    self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                    if show_section:
+                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
             elif role == "tool":
@@ -731,7 +1190,8 @@ class InteractiveShell:
                     continue
                 if not rendered:
                     self.console.print()
-                    self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                    if show_section:
+                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
         if rendered:
@@ -753,10 +1213,14 @@ class InteractiveShell:
         metadata = message.get("metadata", {})
         msg_type = metadata.get("type") if isinstance(metadata, dict) else None
         if msg_type == "react_thought":
-            return Text.from_markup("[dim italic]· {}[/dim italic]".format(text))
+            line = Text("· ", style="dim italic")
+            line.append(self._clean_terminal_text(text), style="dim italic")
+            return line
         if msg_type == "react_action":
-            return Text.from_markup("[dim]→ calling[/dim] [bold]{}[/bold]".format(text))
-        return Markdown(text)
+            line = Text("→ calling ", style="dim")
+            line.append(self._clean_terminal_text(text), style="bold")
+            return line
+        return Markdown(self._clean_terminal_text(text))
 
     @staticmethod
     def _tool_result_line(message: Dict[str, Any]) -> Optional[Text]:
@@ -776,27 +1240,43 @@ class InteractiveShell:
             return None
         command = metadata.get("terminal_command")
         if command:
-            hostname = metadata.get("terminal_server_hostname") or "unknown host"
+            hostname = InteractiveShell._bounded_one_line(
+                metadata.get("terminal_server_hostname") or "unknown host", 120
+            )
+            command_text = InteractiveShell._bounded_one_line(command, 400)
             success = metadata.get("terminal_success")
-            marker = "[dim]?[/dim]" if success is None else ("[green]✓[/green]" if success else "[red]✗[/red]")
-            output = (metadata.get("terminal_output") or "").strip()
-            output = output.splitlines()[0] if output else ""
-            if len(output) > 120:
-                output = output[:117] + "..."
-            line = "[dim]\\[{}][/dim] {} [bold]$[/bold] {}".format(hostname, marker, command)
+            marker = "?" if success is None else ("✓" if success else "✗")
+            marker_style = "dim" if success is None else ("green" if success else "red")
+            output = InteractiveShell._bounded_multiline(
+                metadata.get("terminal_output") or ""
+            )
+            line = Text()
+            line.append("[{}]".format(hostname), style="dim")
+            line.append(" ")
+            line.append(marker, style=marker_style)
+            line.append(" $ ", style="bold")
+            line.append(command_text)
             if output:
-                line += "  [dim]-> {}[/dim]".format(output)
-            return Text.from_markup(line)
+                for output_line in output.splitlines():
+                    line.append("\n  ")
+                    line.append(output_line, style="dim")
+            return line
 
         tool_name = metadata.get("tool_name")
         if not tool_name:
             return None
         success = metadata.get("success")
-        marker = "[dim]?[/dim]" if success is None else ("[green]✓[/green]" if success else "[red]✗[/red]")
-        return Text.from_markup("[dim]tool[/dim] {} [bold]{}[/bold]".format(marker, tool_name))
+        marker = "?" if success is None else ("✓" if success else "✗")
+        marker_style = "dim" if success is None else ("green" if success else "red")
+        line = Text("tool", style="dim")
+        line.append(" ")
+        line.append(marker, style=marker_style)
+        line.append(" ")
+        line.append(InteractiveShell._bounded_one_line(tool_name, 160), style="bold")
+        return line
 
     def _render_history(self, messages: List[Dict[str, Any]]) -> None:
-        ordered = sorted(messages, key=lambda item: int(item.get("sequence", 0)))
+        ordered = sorted(messages, key=lambda item: self._sequence(item) or 0)
         printable = []
         for m in ordered:
             role = m.get("role")
@@ -819,15 +1299,19 @@ class InteractiveShell:
             if role == "user":
                 line = Text()
                 line.append("you  ", style="bold #f0b429")
-                line.append(text)
+                line.append(self._clean_terminal_text(text))
                 self.console.print(line)
             elif msg_type == "react_thought":
-                self.console.print(Text.from_markup("[dim italic]· {}[/dim italic]".format(text)))
+                line = Text("· ", style="dim italic")
+                line.append(self._clean_terminal_text(text), style="dim italic")
+                self.console.print(line)
             elif msg_type == "react_action":
-                self.console.print(Text.from_markup("[dim]→ calling[/dim] [bold]{}[/bold]".format(text)))
+                line = Text("→ calling ", style="dim")
+                line.append(self._clean_terminal_text(text), style="bold")
+                self.console.print(line)
             else:
                 self.console.print("[bold #3b82f6]agent[/bold #3b82f6]")
-                self.console.print(Markdown(text))
+                self.console.print(Markdown(self._clean_terminal_text(text)))
         self.console.print()
 
     @staticmethod

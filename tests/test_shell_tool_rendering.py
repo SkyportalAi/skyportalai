@@ -111,9 +111,35 @@ class TestToolResultLine:
         assert ok_line.plain != fail_line.plain
 
     def test_long_output_is_truncated(self):
-        long_output = "x" * 500
+        long_output = "x" * 6000
         line = InteractiveShell._tool_result_line(_tool_message(output=long_output))
-        assert len(line.plain) < 500
+        assert len(line.plain) < len(long_output)
+        assert "output truncated" in line.plain
+
+    def test_multiline_inventory_output_remains_useful(self):
+        output = "\n".join("field-{}: value".format(index) for index in range(16))
+
+        line = InteractiveShell._tool_result_line(_tool_message(output=output))
+
+        assert line is not None
+        assert "field-0: value" in line.plain
+        assert "field-15: value" in line.plain
+        assert "output truncated" not in line.plain
+
+    def test_server_text_is_literal_and_terminal_controls_are_removed(self):
+        line = InteractiveShell._tool_result_line(
+            _tool_message(
+                hostname="[red]host[/red]",
+                command="printf '[bold]not markup[/bold]'",
+                output="\x1b[31m[green]literal[/green]\x1b[0m",
+            )
+        )
+
+        assert line is not None
+        assert "[red]host[/red]" in line.plain
+        assert "[bold]not markup[/bold]" in line.plain
+        assert "[green]literal[/green]" in line.plain
+        assert "\x1b" not in line.plain
 
 
 class TestRenderAssistantMessagesIncludesToolLines:

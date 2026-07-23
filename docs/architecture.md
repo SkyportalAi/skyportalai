@@ -35,11 +35,19 @@ an unexpected origin or sent in cleartext.
 ## Conversation flow
 
 1. The first message calls `POST /api/v1/agent/chat/` and stores the returned chat ID.
-2. The CLI polls `GET /api/v1/agent/chat/{id}/status/` with a bounded timeout.
-3. It fetches new messages from `GET /api/v1/agent/chat/{id}/messages/` using the last sequence as a cursor.
+2. The CLI polls `GET /api/v1/agent/chat/{id}/status/` until the turn settles;
+   a finite timeout is opt-in for automation.
+3. While it polls, it fetches and renders new messages from
+   `GET /api/v1/agent/chat/{id}/messages/` using the last sequence as a cursor.
 4. Follow-up messages call `POST /api/v1/agent/chat/{id}/message/`.
 5. If status is `awaiting_approval`, the CLI shows the requested action and submits the user's decision to the approval endpoint.
 6. `/new` clears only local chat context and starts a new chat on the next message.
+
+`/permission ask|autoapprove` reads or replaces the account-wide approval
+preference shared with the website and public SDK. Autoapproval still sends one
+typed decision at a time and waits for the durable checkpoint to advance before
+submitting another. Backend read-only, target scope, repository, and environment
+policy are always rechecked.
 
 ## Server context
 

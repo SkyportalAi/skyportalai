@@ -2,7 +2,7 @@ import pytest
 import requests
 
 from skyportalai._client import DEFAULT_BASE_URL, Skyportal
-from skyportalai._exceptions import SkyportalError
+from skyportalai._exceptions import APIError, SkyportalError
 
 
 def test_api_key_from_argument():
@@ -187,3 +187,36 @@ def test_allow_insecure_other_values_still_raise(monkeypatch):
     monkeypatch.setenv("SKYPORTAL_ALLOW_INSECURE", "true")
     with pytest.raises(SkyportalError, match="non-HTTPS"):
         Skyportal(api_key="sk-x", base_url="http://internal.corp:8000")
+
+
+def test_permission_mode_get_and_put_use_shared_account_endpoint(requests_mock):
+    endpoint = "https://api.test/api/v1/agent/permission/"
+    requests_mock.get(endpoint, json={"permission_mode": "ask", "read_only_mode": False})
+    requests_mock.put(
+        endpoint,
+        json={"permission_mode": "autoapprove", "read_only_mode": False},
+    )
+    client = Skyportal(api_key="sk-test", base_url="https://api.test")
+
+    assert client.get_permission_mode() == "ask"
+    assert client.set_permission_mode("autoapprove") == "autoapprove"
+    assert requests_mock.last_request.json() == {"permission_mode": "autoapprove"}
+
+
+def test_permission_mode_rejects_invalid_input_before_request(requests_mock):
+    client = Skyportal(api_key="sk-test", base_url="https://api.test")
+
+    with pytest.raises(ValueError, match="ask.*autoapprove"):
+        client.set_permission_mode("everything")
+
+    assert not requests_mock.called
+
+
+def test_permission_mode_rejects_malformed_server_response(requests_mock):
+    requests_mock.get(
+        "https://api.test/api/v1/agent/permission/",
+        json={"permission_mode": "unexpected"},
+    )
+
+    with pytest.raises(APIError, match="invalid permission mode"):
+        Skyportal(api_key="sk-test", base_url="https://api.test").get_permission_mode()

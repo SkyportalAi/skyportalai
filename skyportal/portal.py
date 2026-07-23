@@ -20,6 +20,13 @@ PRODUCTION_MARKETING_URL = "https://skyportal.ai"
 PRODUCTION_APP_URL = "https://app.skyportal.ai"
 CLI_USER_AGENT = f"Skyportal-CLI/{__version__} (+https://app.skyportal.ai)"
 
+_BUSY_CHAT_STATUSES = {"processing", "uninitialized"}
+_IMMEDIATE_CHAT_STATUSES = {"awaiting_approval", "error"}
+_PERMISSION_MODES = frozenset({"ask", "autoapprove"})
+_TERMINAL_MESSAGE_SETTLEMENT_ATTEMPTS = 5
+_TERMINAL_MESSAGE_SETTLEMENT_INITIAL_DELAY = 0.25
+_TERMINAL_MESSAGE_SETTLEMENT_MAX_DELAY = 2.0
+
 
 class _NoRedirectHandler(HTTPRedirectHandler):
     """Keep Bearer credentials from being forwarded through HTTP redirects."""
@@ -37,9 +44,15 @@ urlopen = build_opener(_NoRedirectHandler).open
 class PortalError(RuntimeError):
     """Raised when communication with Skyportal fails."""
 
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        code: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -216,6 +229,29 @@ class SkyportalClient:
         """Remove the stored GitHub Personal Access Token from the server."""
         self._request("DELETE", "/api/v1/agent/github-token/delete/")
 
+    def get_permission_mode(self) -> str:
+        """Return the account's shared agent-approval mode."""
+        payload = self._request("GET", "/api/v1/agent/permission/")
+        return self._parse_permission_mode(payload)
+
+    def set_permission_mode(self, mode: str) -> str:
+        """Persist ``ask`` or ``autoapprove`` for the authenticated account."""
+        if mode not in _PERMISSION_MODES:
+            raise PortalError("Permission mode must be 'ask' or 'autoapprove'")
+        payload = self._request(
+            "PUT",
+            "/api/v1/agent/permission/",
+            json_body={"permission_mode": mode},
+        )
+        return self._parse_permission_mode(payload)
+
+    @staticmethod
+    def _parse_permission_mode(payload: Any) -> str:
+        mode = payload.get("permission_mode") if isinstance(payload, dict) else None
+        if mode not in _PERMISSION_MODES:
+            raise PortalError("Skyportal returned an invalid permission mode")
+        return str(mode)
+
     def agents(self) -> List[Dict[str, str]]:
         """Describe the single Skyportal ReAct agent."""
         return [{"id": "skyportal", "name": "Skyportal Agent", "status": "ready"}]
@@ -274,6 +310,13 @@ class SkyportalClient:
         """Get current headless workflow status."""
         return self._request("GET", "/api/v1/agent/chat/{}/status/".format(chat_id))
 
+    def get_execution_status(self, chat_id: int) -> Dict[str, Any]:
+        """Get detailed execution state for an explicit status inspection."""
+        return self._request(
+            "GET",
+            "/api/v1/agent/chat/{}/execution-status/".format(chat_id),
+        )
+
     def chat_messages(self, chat_id: int, after_sequence: int = 0) -> Dict[str, Any]:
         """Get messages created after the supplied sequence cursor."""
         query = urlencode({"after_sequence": after_sequence, "limit": 500})
@@ -287,6 +330,8 @@ class SkyportalClient:
         chat_id: int,
         approval: Dict[str, Any],
         decision: str,
+        *,
+        autoapproved: bool = False,
     ) -> Dict[str, Any]:
         """Approve or reject one pending headless-agent action."""
         approval_id = quote(str(approval.get("approval_id", "")), safe="")
@@ -296,6 +341,8 @@ class SkyportalClient:
         }
         if approval.get("command"):
             body["command"] = approval["command"]
+        if autoapproved:
+            body["autoapproved"] = True
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/approve/{}/".format(chat_id, approval_id),
@@ -340,64 +387,136 @@ class SkyportalClient:
         self,
         chat_id: int,
         after_sequence: int = 0,
-        timeout: float = 300,
+        timeout: Optional[float] = None,
         poll_interval: float = 1,
+        on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> ChatTurnResult:
-        """Poll a headless chat until it completes, pauses, or fails."""
-        deadline = time.monotonic() + timeout
-        state: Dict[str, Any] = {"status": "processing", "pending_approvals": []}
-        while time.monotonic() < deadline:
-            state = self.chat_status(chat_id)
-            if state.get("status") not in ("processing", "uninitialized"):
-                break
-            time.sleep(poll_interval)
-        else:
-            raise PortalError(
-                "Skyportal is still working after {} seconds. Chat #{} remains available.".format(
-                    int(timeout), chat_id
-                )
-            )
+        """Poll a headless chat until it completes, pauses, or fails.
 
-        # chat_status() reporting a terminal status doesn't guarantee the
-        # message(s) that status is about are queryable yet — reproduced
-        # live: a fast, LLM-free turn (e.g. one host-collection step) can
-        # flip status to "awaiting_input" and still lose the race against a
-        # single immediate chat_messages() call, which then comes back
-        # empty even though the turn produced a real response. A browser
-        # polling continuously never hits this (it just picks the message
-        # up on the next tick); a one-shot fetch here needs to keep trying
-        # instead of reporting "no response" for a response that exists
-        # but isn't visible yet. How long that takes varies (near-instant
-        # for most turns, longer under load), so this backs off up to 2s
-        # between attempts and keeps going until the SAME deadline already
-        # governing the status poll above — not a separate fixed budget —
-        # rather than guessing a fixed number of retries that could still
-        # be too short some of the time and wasted work the rest.
-        valid_messages: List[Dict[str, Any]] = []
-        messages_retry_delay = 0.25
+        While the workflow is busy, persisted messages are fetched alongside
+        its lightweight status. ``on_progress`` receives each newly observed
+        message batch at most once. The returned result retains all observed
+        messages regardless of callback delivery, and ``latest_sequence``
+        covers that complete set so renderers can deduplicate by sequence. The
+        timeout is an idle deadline and is extended by a new message batch or
+        a real workflow-status transition. ``None`` disables that deadline.
+        """
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        state: Dict[str, Any] = {"status": "processing", "pending_approvals": []}
+        previous_status: Optional[str] = None
+        latest_sequence = after_sequence
+        result_messages: List[Dict[str, Any]] = []
+
+        def fetch_new_messages(*, deliver_progress: bool) -> tuple[List[Dict[str, Any]], bool]:
+            """Fetch, order, and record messages strictly beyond the local cursor."""
+            nonlocal deadline, latest_sequence
+
+            payload = self.chat_messages(chat_id, after_sequence=latest_sequence)
+            raw_messages = payload.get("messages", []) if isinstance(payload, dict) else []
+            sequenced: List[tuple[int, Dict[str, Any]]] = []
+            for message in raw_messages if isinstance(raw_messages, list) else []:
+                if not isinstance(message, dict):
+                    continue
+                try:
+                    sequence = int(message.get("sequence"))
+                except (TypeError, ValueError):
+                    continue
+                if sequence > latest_sequence:
+                    sequenced.append((sequence, message))
+
+            batch: List[Dict[str, Any]] = []
+            batch_sequences = set()
+            for sequence, message in sorted(sequenced, key=lambda item: item[0]):
+                if sequence in batch_sequences:
+                    continue
+                batch_sequences.add(sequence)
+                batch.append(message)
+
+            if batch:
+                latest_sequence = max(batch_sequences)
+                if timeout is not None:
+                    deadline = time.monotonic() + timeout
+
+                result_messages.extend(batch)
+                if deliver_progress and on_progress is not None:
+                    try:
+                        on_progress(batch)
+                    except Exception:
+                        # Progress rendering is additive and the complete
+                        # batch remains available in the final result.
+                        pass
+
+            has_more = bool(payload.get("has_more")) if isinstance(payload, dict) else False
+            return batch, has_more
+
         while True:
-            payload = self.chat_messages(chat_id, after_sequence=after_sequence)
-            messages = payload.get("messages", []) if isinstance(payload, dict) else []
-            valid_messages = [message for message in messages if isinstance(message, dict)]
-            if valid_messages or time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise PortalError(
+                    "Skyportal has made no progress for {} seconds. Chat #{} remains available.".format(
+                        f"{timeout:g}", chat_id
+                    )
+                )
+
+            state = self.chat_status(chat_id)
+            status = str(state.get("status", "unknown"))
+            if (
+                timeout is not None
+                and previous_status is not None
+                and status != previous_status
+            ):
+                deadline = time.monotonic() + timeout
+            previous_status = status
+
+            if status not in _BUSY_CHAT_STATUSES:
                 break
-            time.sleep(messages_retry_delay)
-            messages_retry_delay = min(messages_retry_delay * 2, 2.0)
-        sequences = [after_sequence]
-        for message in valid_messages:
-            try:
-                sequences.append(int(message.get("sequence", 0)))
-            except (TypeError, ValueError):
-                continue
+
+            while True:
+                batch, has_more = fetch_new_messages(deliver_progress=True)
+                if not has_more or not batch:
+                    break
+            time.sleep(poll_interval)
+
+        # Approval and error states already contain the information the caller
+        # needs to act. One persisted-message fetch is useful context, but a
+        # consistency-settlement delay would only make the prompt/error noisy.
+        if status in _IMMEDIATE_CHAT_STATUSES:
+            fetch_new_messages(deliver_progress=False)
+        else:
+            # A terminal status write can win a short race with its final
+            # persisted message. Settle that race with a small fixed budget
+            # independent of the (possibly disabled or exhausted) idle timeout.
+            settlement_delay = _TERMINAL_MESSAGE_SETTLEMENT_INITIAL_DELAY
+            messages_seen_before_terminal = bool(result_messages)
+            for attempt in range(_TERMINAL_MESSAGE_SETTLEMENT_ATTEMPTS):
+                batch, has_more = fetch_new_messages(deliver_progress=False)
+                if batch:
+                    while has_more:
+                        next_batch, has_more = fetch_new_messages(deliver_progress=False)
+                        if not next_batch:
+                            break
+                    break
+                # Earlier rows can be only the user's own prompt or an
+                # intermediate thought/tool call. Always allow one short
+                # retry after an empty terminal fetch so those rows cannot
+                # suppress the final assistant-message settlement entirely.
+                if messages_seen_before_terminal and attempt >= 1:
+                    break
+                if attempt + 1 < _TERMINAL_MESSAGE_SETTLEMENT_ATTEMPTS:
+                    time.sleep(settlement_delay)
+                    settlement_delay = min(
+                        settlement_delay * 2,
+                        _TERMINAL_MESSAGE_SETTLEMENT_MAX_DELAY,
+                    )
+
         pending = state.get("pending_approvals", [])
         if not isinstance(pending, list):
             pending = []
         return ChatTurnResult(
             chat_id=chat_id,
-            status=str(state.get("status", "unknown")),
-            messages=valid_messages,
+            status=status,
+            messages=result_messages,
             pending_approvals=[item for item in pending if isinstance(item, dict)],
-            latest_sequence=max(sequences),
+            latest_sequence=latest_sequence,
         )
 
     def begin_chat_turn(
@@ -457,8 +576,9 @@ class SkyportalClient:
         chat_id: Optional[int] = None,
         after_sequence: int = 0,
         server_id: Optional[int] = None,
-        timeout: float = 300,
+        timeout: Optional[float] = None,
         poll_interval: float = 1,
+        on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
         *,
         server_ids: Optional[List[int]] = None,
         active_server_id: Optional[int] = None,
@@ -480,6 +600,7 @@ class SkyportalClient:
             after_sequence=after_sequence,
             timeout=timeout,
             poll_interval=poll_interval,
+            on_progress=on_progress,
         )
 
     @staticmethod
@@ -575,8 +696,10 @@ class SkyportalClient:
                         status_code=status,
                     ) from error
         except HTTPError as error:
+            code = None
             try:
                 payload = json.loads(error.read().decode())
+                code = payload.get("code") if isinstance(payload, dict) else None
                 message = (
                     payload.get("error_description")
                     or payload.get("error")
@@ -588,6 +711,9 @@ class SkyportalClient:
             raise PortalError(
                 str(message) if message else "Skyportal request failed ({})".format(error.code),
                 status_code=error.code,
+                code=str(code) if code else None,
             ) from error
         except URLError as error:
             raise PortalError("Could not connect to Skyportal: {}".format(error.reason)) from error
+        except TimeoutError as error:
+            raise PortalError("Could not connect to Skyportal: request timed out") from error

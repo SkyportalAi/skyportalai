@@ -70,7 +70,7 @@ class Chat:
     def cancel(self, reason: str | None = None) -> dict:
         return self._client.chat.cancel(self.chat_id, reason=reason)
 
-    def wait(self, poll_interval: float = 1.0, timeout: float = 300.0,
+    def wait(self, poll_interval: float = 1.0, timeout: float | None = None,
              on_approval: ApprovalCallback | None = None) -> ChatStatus:
         return self._client.chat.wait(
             self.chat_id, poll_interval=poll_interval, timeout=timeout,
