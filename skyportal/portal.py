@@ -306,9 +306,17 @@ class SkyportalClient:
             json_body={"message": message},
         )
 
-    def chat_status(self, chat_id: int) -> Dict[str, Any]:
-        """Get current headless workflow status."""
-        return self._request("GET", "/api/v1/agent/chat/{}/status/".format(chat_id))
+    def chat_status(
+        self,
+        chat_id: int,
+        *,
+        after_sequence: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Get workflow status, optionally with incremental messages."""
+        path = "/api/v1/agent/chat/{}/status/".format(chat_id)
+        if after_sequence is not None:
+            path += "?" + urlencode({"after_sequence": after_sequence})
+        return self._request("GET", path)
 
     def get_execution_status(self, chat_id: int) -> Dict[str, Any]:
         """Get detailed execution state for an explicit status inspection."""
@@ -412,11 +420,16 @@ class SkyportalClient:
         latest_sequence = after_sequence
         result_messages: List[Dict[str, Any]] = []
 
-        def fetch_new_messages(*, deliver_progress: bool) -> tuple[List[Dict[str, Any]], bool]:
+        def fetch_new_messages(
+            *,
+            deliver_progress: bool,
+            payload: Optional[Dict[str, Any]] = None,
+        ) -> tuple[List[Dict[str, Any]], bool]:
             """Fetch, order, and record messages strictly beyond the local cursor."""
             nonlocal deadline, latest_sequence
 
-            payload = self.chat_messages(chat_id, after_sequence=latest_sequence)
+            if not isinstance(payload, dict) or "messages" not in payload:
+                payload = self.chat_messages(chat_id, after_sequence=latest_sequence)
             raw_messages = payload.get("messages", []) if isinstance(payload, dict) else []
             sequenced: List[tuple[int, Dict[str, Any]]] = []
             for message in raw_messages if isinstance(raw_messages, list) else []:
@@ -462,7 +475,7 @@ class SkyportalClient:
                     )
                 )
 
-            state = self.chat_status(chat_id)
+            state = self.chat_status(chat_id, after_sequence=latest_sequence)
             if on_status is not None:
                 try:
                     on_status(state)
@@ -481,7 +494,11 @@ class SkyportalClient:
                 break
 
             while True:
-                batch, has_more = fetch_new_messages(deliver_progress=True)
+                batch, has_more = fetch_new_messages(
+                    deliver_progress=True,
+                    payload=state,
+                )
+                state = {}
                 if not has_more or not batch:
                     break
             time.sleep(poll_interval)
@@ -490,7 +507,7 @@ class SkyportalClient:
         # needs to act. One persisted-message fetch is useful context, but a
         # consistency-settlement delay would only make the prompt/error noisy.
         if status in _IMMEDIATE_CHAT_STATUSES:
-            fetch_new_messages(deliver_progress=False)
+            fetch_new_messages(deliver_progress=False, payload=state)
         else:
             # A terminal status write can win a short race with its final
             # persisted message. Settle that race with a small fixed budget
@@ -498,7 +515,11 @@ class SkyportalClient:
             settlement_delay = _TERMINAL_MESSAGE_SETTLEMENT_INITIAL_DELAY
             messages_seen_before_terminal = bool(result_messages)
             for attempt in range(_TERMINAL_MESSAGE_SETTLEMENT_ATTEMPTS):
-                batch, has_more = fetch_new_messages(deliver_progress=False)
+                batch, has_more = fetch_new_messages(
+                    deliver_progress=False,
+                    payload=state,
+                )
+                state = {}
                 if batch:
                     while has_more:
                         next_batch, has_more = fetch_new_messages(deliver_progress=False)

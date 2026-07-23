@@ -582,6 +582,47 @@ def test_wait_for_chat_streams_public_status_snapshots(credential_path):
     assert snapshots == [processing, idle]
 
 
+def test_wait_for_chat_uses_combined_status_message_payload(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    thought = {
+        "sequence": 4,
+        "role": "assistant",
+        "content": "I’ll prepare the plan.",
+        "metadata": {"type": "react_thought"},
+    }
+    action = {
+        "sequence": 5,
+        "role": "assistant",
+        "content": "generate_plan(task=Deploy Kubernetes, steps=13 steps)",
+        "metadata": {"type": "react_action"},
+    }
+    plan = {
+        "sequence": 6,
+        "role": "assistant",
+        "content": "Deploy Kubernetes\n\n1. Check hosts",
+        "metadata": {
+            "type": "plan_approval_requested",
+            "approval_id": "a1",
+        },
+    }
+    combined = {
+        "status": "awaiting_approval",
+        "pending_approvals": [{"approval_id": "a1", "type": "plan"}],
+        "messages": [thought, action, plan],
+        "has_more": False,
+    }
+
+    with patch.object(client, "chat_status", return_value=combined) as get_status, patch.object(
+        client, "chat_messages"
+    ) as get_messages:
+        result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
+
+    get_status.assert_called_once_with(42, after_sequence=3)
+    get_messages.assert_not_called()
+    assert result.messages == [thought, action, plan]
+    assert result.pending_approvals == [{"approval_id": "a1", "type": "plan"}]
+
+
 def test_wait_for_chat_duplicate_message_snapshot_does_not_extend_idle_deadline(
     credential_path,
 ):
