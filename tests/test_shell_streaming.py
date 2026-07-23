@@ -67,8 +67,15 @@ class StreamingClient:
     def begin_chat_turn(self, message, chat_id=None, server_id=None):
         return chat_id or 42
 
-    def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None):
+    def wait_for_chat(
+        self, chat_id, after_sequence=0, timeout=300, on_progress=None, on_status=None
+    ):
         self.wait_calls.append((chat_id, after_sequence, timeout, on_progress))
+        assert on_status is not None
+        on_status({
+            "status": "processing",
+            "activity": {"label": "Working on plan step 2/13: Install containerd"},
+        })
         first = _assistant("streamed first", 1)
         second = _tool("uptime", "up 10 days", 2)
         assert on_progress is not None
@@ -146,7 +153,9 @@ class ApprovalClient:
         self.status_calls.append(chat_id)
         return {"status": "processing", "pending_approvals": []}
 
-    def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None):
+    def wait_for_chat(
+        self, chat_id, after_sequence=0, timeout=300, on_progress=None, on_status=None
+    ):
         self.wait_calls.append((chat_id, after_sequence, timeout, on_progress))
         if self.stale:
             approval = {"approval_id": "approval-1", "command": "uptime"}

@@ -853,13 +853,16 @@ class InteractiveShell:
         self.chat_id = chat_id
         render_state = self._new_render_state()
         try:
-            with self.console.status(self._THINKING_STATUS, spinner="dots12"):
+            with self.console.status(self._THINKING_STATUS, spinner="dots12") as status:
                 turn = self.client.wait_for_chat(
                     chat_id,
                     after_sequence=self.last_sequence,
                     timeout=None,
                     on_progress=lambda messages: self._render_incremental_messages(
                         messages, render_state
+                    ),
+                    on_status=lambda snapshot: status.update(
+                        self._live_status_line(snapshot)
                     ),
                 )
         except KeyboardInterrupt:
@@ -883,6 +886,16 @@ class InteractiveShell:
     @staticmethod
     def _new_render_state() -> Dict[str, Any]:
         return {"seen": set(), "rendered": False}
+
+    def _live_status_line(self, snapshot: Dict[str, Any]) -> Text:
+        """Build a safe live activity line from the server's public status."""
+        activity = snapshot.get("activity") if isinstance(snapshot, dict) else None
+        label = activity.get("label") if isinstance(activity, dict) else None
+        if not label:
+            label = "Skyportal is thinking…"
+        line = Text(self._bounded_one_line(label, 180), style="bold cyan")
+        line.append("  Ctrl-C to stop", style="dim")
+        return line
 
     def _render_incremental_messages(
         self,
@@ -1145,6 +1158,9 @@ class InteractiveShell:
                                 timeout=None,
                                 on_progress=lambda messages: self._render_incremental_messages(
                                     messages, render_state
+                                ),
+                                on_status=lambda snapshot: status.update(
+                                    self._live_status_line(snapshot)
                                 ),
                             )
                         break

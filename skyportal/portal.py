@@ -390,16 +390,21 @@ class SkyportalClient:
         timeout: Optional[float] = None,
         poll_interval: float = 1,
         on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        on_status: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> ChatTurnResult:
         """Poll a headless chat until it completes, pauses, or fails.
 
         While the workflow is busy, persisted messages are fetched alongside
         its lightweight status. ``on_progress`` receives each newly observed
-        message batch at most once. The returned result retains all observed
-        messages regardless of callback delivery, and ``latest_sequence``
-        covers that complete set so renderers can deduplicate by sequence. The
-        timeout is an idle deadline and is extended by a new message batch or
-        a real workflow-status transition. ``None`` disables that deadline.
+        message batch at most once, while ``on_status`` receives each current
+        workflow snapshot so interactive clients can display the active plan
+        step or command without exposing private model reasoning. Callback
+        failures never interrupt the remote turn. The returned result retains
+        all observed messages regardless of callback delivery, and
+        ``latest_sequence`` covers that complete set so renderers can
+        deduplicate by sequence. The timeout is an idle deadline and is
+        extended by a new message batch or a real workflow-status transition.
+        ``None`` disables that deadline.
         """
         deadline = time.monotonic() + timeout if timeout is not None else None
         state: Dict[str, Any] = {"status": "processing", "pending_approvals": []}
@@ -458,6 +463,11 @@ class SkyportalClient:
                 )
 
             state = self.chat_status(chat_id)
+            if on_status is not None:
+                try:
+                    on_status(state)
+                except Exception:
+                    pass
             status = str(state.get("status", "unknown"))
             if (
                 timeout is not None
@@ -579,6 +589,7 @@ class SkyportalClient:
         timeout: Optional[float] = None,
         poll_interval: float = 1,
         on_progress: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+        on_status: Optional[Callable[[Dict[str, Any]], None]] = None,
         *,
         server_ids: Optional[List[int]] = None,
         active_server_id: Optional[int] = None,
@@ -601,6 +612,7 @@ class SkyportalClient:
             timeout=timeout,
             poll_interval=poll_interval,
             on_progress=on_progress,
+            on_status=on_status,
         )
 
     @staticmethod

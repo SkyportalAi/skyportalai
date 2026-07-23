@@ -68,7 +68,9 @@ class PermissionClient:
             )
         return {"success": True}
 
-    def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None):
+    def wait_for_chat(
+        self, chat_id, after_sequence=0, timeout=300, on_progress=None, on_status=None
+    ):
         self.wait_calls.append((chat_id, after_sequence, timeout, on_progress))
         return next(self.wait_results)
 
