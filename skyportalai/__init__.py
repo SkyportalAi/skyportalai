@@ -11,6 +11,8 @@ from ._exceptions import (
 from ._version import __version__
 from .chat import Chat
 from .types import (
+    AnsibleDeployment,
+    AnsiblePlaybook,
     ApprovalResult,
     ChatStatus,
     KubernetesCluster,
@@ -26,6 +28,8 @@ __all__ = [
     "User",
     "Chat",
     "ChatStatus",
+    "AnsiblePlaybook",
+    "AnsibleDeployment",
     "KubernetesCluster",
     "PendingApproval",
     "PermissionMode",

@@ -56,6 +56,54 @@ class KubernetesCluster:
 
 
 @dataclass(frozen=True)
+class AnsiblePlaybook:
+    """An account-owned Ansible playbook."""
+
+    id: int
+    name: str
+    description: str = ""
+    content: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AnsiblePlaybook":
+        return cls(
+            id=int(data.get("id", 0) or 0),
+            name=str(data.get("name") or ""),
+            description=str(data.get("description") or ""),
+            content=str(data.get("content") or ""),
+            created_at=str(data.get("created_at") or ""),
+            updated_at=str(data.get("updated_at") or ""),
+            raw=dict(data),
+        )
+
+
+@dataclass(frozen=True)
+class AnsibleDeployment:
+    """An asynchronous agent deployment started for an Ansible playbook."""
+
+    chat_id: int
+    playbook_id: int
+    server_id: int
+    status: str = "processing"
+    poll_url: str = ""
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AnsibleDeployment":
+        return cls(
+            chat_id=int(data.get("chat_id", 0) or 0),
+            playbook_id=int(data.get("playbook_id", 0) or 0),
+            server_id=int(data.get("server_id", 0) or 0),
+            status=str(data.get("status") or ""),
+            poll_url=str(data.get("poll_url") or ""),
+            raw=dict(data),
+        )
+
+
+@dataclass(frozen=True)
 class PendingApproval:
     """An approval the agent is blocked on (bash command or plan)."""
 

@@ -8,6 +8,8 @@ def test_public_exports_present():
         "User",
         "Chat",
         "ChatStatus",
+        "AnsiblePlaybook",
+        "AnsibleDeployment",
         "KubernetesCluster",
         "PendingApproval",
         "ApprovalResult",
