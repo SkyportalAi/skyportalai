@@ -67,7 +67,9 @@ class FakeClient:
         )
         return chat_id if chat_id is not None else 100
 
-    def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None):
+    def wait_for_chat(
+        self, chat_id, after_sequence=0, timeout=300, on_progress=None, on_status=None
+    ):
         self.wait_calls.append((chat_id, after_sequence, timeout, on_progress))
         if self.wait_results:
             return self.wait_results.pop(0)

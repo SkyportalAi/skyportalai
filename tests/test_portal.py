@@ -560,6 +560,69 @@ def test_wait_for_chat_new_messages_extend_idle_deadline(credential_path):
     assert result.latest_sequence == 5
 
 
+def test_wait_for_chat_streams_public_status_snapshots(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    processing = {
+        "status": "processing",
+        "pending_approvals": [],
+        "activity": {"phase": "executing_plan", "label": "Working on plan step 2/13"},
+    }
+    idle = {
+        "status": "idle",
+        "pending_approvals": [],
+        "activity": {"phase": "idle", "label": "Idle"},
+    }
+    snapshots = []
+
+    with patch.object(client, "chat_status", side_effect=[processing, idle]), patch.object(
+        client, "chat_messages", return_value={"messages": [], "has_more": False}
+    ), patch("skyportal.portal.time.sleep"):
+        client.wait_for_chat(42, poll_interval=0, on_status=snapshots.append)
+
+    assert snapshots == [processing, idle]
+
+
+def test_wait_for_chat_uses_combined_status_message_payload(credential_path):
+    client = SkyportalClient("https://app.skyportal.ai")
+    thought = {
+        "sequence": 4,
+        "role": "assistant",
+        "content": "I’ll prepare the plan.",
+        "metadata": {"type": "react_thought"},
+    }
+    action = {
+        "sequence": 5,
+        "role": "assistant",
+        "content": "generate_plan(task=Deploy Kubernetes, steps=13 steps)",
+        "metadata": {"type": "react_action"},
+    }
+    plan = {
+        "sequence": 6,
+        "role": "assistant",
+        "content": "Deploy Kubernetes\n\n1. Check hosts",
+        "metadata": {
+            "type": "plan_approval_requested",
+            "approval_id": "a1",
+        },
+    }
+    combined = {
+        "status": "awaiting_approval",
+        "pending_approvals": [{"approval_id": "a1", "type": "plan"}],
+        "messages": [thought, action, plan],
+        "has_more": False,
+    }
+
+    with patch.object(client, "chat_status", return_value=combined) as get_status, patch.object(
+        client, "chat_messages"
+    ) as get_messages:
+        result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
+
+    get_status.assert_called_once_with(42, after_sequence=3)
+    get_messages.assert_not_called()
+    assert result.messages == [thought, action, plan]
+    assert result.pending_approvals == [{"approval_id": "a1", "type": "plan"}]
+
+
 def test_wait_for_chat_duplicate_message_snapshot_does_not_extend_idle_deadline(
     credential_path,
 ):
@@ -679,6 +742,7 @@ def test_run_chat_turn_continues_existing_chat(credential_path):
         timeout=None,
         poll_interval=0,
         on_progress=None,
+        on_status=None,
     )
 
 
@@ -703,6 +767,7 @@ def test_run_chat_turn_forwards_progress_callback(credential_path):
         timeout=None,
         poll_interval=1,
         on_progress=progress_batches.append,
+        on_status=None,
     )
 
 

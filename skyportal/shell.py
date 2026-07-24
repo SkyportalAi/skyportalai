@@ -853,13 +853,16 @@ class InteractiveShell:
         self.chat_id = chat_id
         render_state = self._new_render_state()
         try:
-            with self.console.status(self._THINKING_STATUS, spinner="dots12"):
+            with self.console.status(self._THINKING_STATUS, spinner="dots12") as status:
                 turn = self.client.wait_for_chat(
                     chat_id,
                     after_sequence=self.last_sequence,
                     timeout=None,
                     on_progress=lambda messages: self._render_incremental_messages(
                         messages, render_state
+                    ),
+                    on_status=lambda snapshot: status.update(
+                        self._live_status_line(snapshot)
                     ),
                 )
         except KeyboardInterrupt:
@@ -883,6 +886,16 @@ class InteractiveShell:
     @staticmethod
     def _new_render_state() -> Dict[str, Any]:
         return {"seen": set(), "rendered": False}
+
+    def _live_status_line(self, snapshot: Dict[str, Any]) -> Text:
+        """Build a safe live activity line from the server's public status."""
+        activity = snapshot.get("activity") if isinstance(snapshot, dict) else None
+        label = activity.get("label") if isinstance(activity, dict) else None
+        if not label:
+            label = "Skyportal is thinking…"
+        line = Text(self._bounded_one_line(label, 180), style="bold cyan")
+        line.append("  Ctrl-C to stop", style="dim")
+        return line
 
     def _render_incremental_messages(
         self,
@@ -1087,15 +1100,13 @@ class InteractiveShell:
                 raise PortalError(
                     "Chat #{} returned an approval without an approval ID".format(turn.chat_id)
                 )
-            description = (
-                approval.get("executed_command")
-                or approval.get("command")
-                or approval.get("reason")
-                or json.dumps(approval, indent=2, sort_keys=True)
+            approval_type = str(approval.get("type", "") or "")
+            description = self._approval_description(
+                approval,
+                turn.messages,
             )
             self._print_section("Approval requested", style="yellow")
             self.console.print(Text(self._clean_terminal_text(description)))
-            approval_type = str(approval.get("type", "") or "")
             autoapprove = (
                 approval_type in _AUTOAPPROVE_TYPES
                 and self._permission_mode_for_approval() == "autoapprove"
@@ -1146,6 +1157,9 @@ class InteractiveShell:
                                 on_progress=lambda messages: self._render_incremental_messages(
                                     messages, render_state
                                 ),
+                                on_status=lambda snapshot: status.update(
+                                    self._live_status_line(snapshot)
+                                ),
                             )
                         break
                     except _AutoapprovalPolicyConflict:
@@ -1164,6 +1178,57 @@ class InteractiveShell:
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
+
+    @classmethod
+    def _approval_description(
+        cls,
+        approval: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        """Describe one approval without repeating its canonical plan message."""
+        approval_type = str(approval.get("type", "") or "")
+        if approval_type == "plan":
+            approval_id = cls._approval_id_value(approval.get("approval_id"))
+            plan_already_rendered = any(
+                isinstance(message, dict)
+                and isinstance(message.get("metadata"), dict)
+                and message["metadata"].get("type") == "plan_approval_requested"
+                and (
+                    not approval_id
+                    or cls._approval_id_value(
+                        message["metadata"].get("approval_id")
+                    )
+                    == approval_id
+                )
+                for message in messages
+            )
+            if plan_already_rendered:
+                return "Approve the execution plan shown above to begin."
+
+            plan = approval.get("plan")
+            if isinstance(plan, dict):
+                title = str(plan.get("title") or "Execution plan")
+                steps = plan.get("steps")
+                lines = [title]
+                if isinstance(steps, list):
+                    for index, step in enumerate(steps, start=1):
+                        if not isinstance(step, dict):
+                            continue
+                        name = str(step.get("name") or f"Step {index}")
+                        description = str(step.get("description") or "")
+                        lines.append(
+                            f"{index}. {name}"
+                            + (f": {description}" if description else "")
+                        )
+                return "\n".join(lines)
+            return "Approve this execution plan to begin."
+
+        return str(
+            approval.get("executed_command")
+            or approval.get("command")
+            or approval.get("reason")
+            or json.dumps(approval, indent=2, sort_keys=True)
+        )
 
     def _render_assistant_messages(
         self,
