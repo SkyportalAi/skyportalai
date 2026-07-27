@@ -140,6 +140,34 @@ def test_send_wait_targets_server_and_returns_json(fake_client):
     assert payload["data"]["messages"][0]["content"] == "done"
 
 
+def test_send_wait_defaults_to_indefinite_for_long_running_turns(fake_client):
+    result = runner.invoke(
+        app,
+        ["--json", "chat", "send", "inspect every host", "--server", "7", "--wait"],
+    )
+
+    assert result.exit_code == 0
+    assert fake_client.chat.calls[0:2] == [
+        ("create_chat", "inspect every host", 7, None, None, None, None),
+        ("wait", 42, None, 1.0),
+    ]
+
+
+def test_chat_wait_defaults_indefinite_and_keeps_finite_timeout_opt_in(fake_client):
+    indefinite = runner.invoke(app, ["--json", "chat", "wait", "42"])
+    finite = runner.invoke(
+        app,
+        ["--json", "chat", "wait", "42", "--timeout", "12", "--poll-interval", "0"],
+    )
+
+    assert indefinite.exit_code == 0
+    assert finite.exit_code == 0
+    assert fake_client.chat.calls == [
+        ("wait", 42, None, 1.0),
+        ("wait", 42, 12.0, 0.0),
+    ]
+
+
 def test_send_without_wait_does_not_fetch_messages(fake_client):
     result = runner.invoke(app, ["--json", "chat", "send", "inspect", "--server", "7"])
 

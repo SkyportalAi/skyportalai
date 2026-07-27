@@ -64,6 +64,7 @@ Useful commands:
 /login          Connect your Skyportal account
 /servers        List available infrastructure
 /server <id> [id ...]  Select one or more servers; the first is the default
+/permission [ask|autoapprove]  Show or change the shared approval setting
 /status         Show the active context
 /new            Start a new investigation
 /resume         Continue the previous investigation
@@ -78,13 +79,22 @@ Use the SDK when you want to start or automate an investigation from Python:
 from skyportalai import Skyportal
 
 with Skyportal(api_key="sk-...") as client:
+    client.set_permission_mode("autoapprove")
     chat = client.chat.create_chat(
         "What changed before GPU utilization dropped?",
         server_id=12,
     )
-    result = chat.wait(on_approval=lambda approval: True)
+    result = chat.wait()
     print(result.status)
 ```
+
+`ask` is the default. `autoapprove` submits each concrete approval through the
+normal audited approval endpoint; it does not bypass read-only environments,
+server scope, repository denials, or other backend safety policy. An explicit
+`on_approval` callback takes precedence over the stored account setting. Waits
+are indefinite by default so long-running single-host, multi-host, and
+Kubernetes turns can finish; pass `timeout=` when an automation job needs a
+finite deadline.
 
 To make the full multi-host scope available to the first turn, create the chat
 with repeatable server scope and an active default:

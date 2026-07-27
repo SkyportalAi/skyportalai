@@ -59,9 +59,13 @@ def send(
     ] = None,
     wait: Annotated[bool, typer.Option("--wait", help="Wait for the turn to settle.")] = False,
     timeout: Annotated[
-        float,
-        typer.Option("--timeout", min=0.001, help="Maximum wait in seconds."),
-    ] = 300.0,
+        float | None,
+        typer.Option(
+            "--timeout",
+            min=0.001,
+            help="Optional maximum wait in seconds; waits indefinitely when omitted.",
+        ),
+    ] = None,
     poll_interval: Annotated[
         float,
         typer.Option("--poll-interval", min=0.0, help="Seconds between status polls."),
@@ -376,7 +380,14 @@ def select_servers(
 def wait_for_chat(
     context: typer.Context,
     chat_id: Annotated[int, typer.Argument(min=1)],
-    timeout: Annotated[float, typer.Option("--timeout", min=0.001)] = 300.0,
+    timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--timeout",
+            min=0.001,
+            help="Optional maximum wait in seconds; waits indefinitely when omitted.",
+        ),
+    ] = None,
     poll_interval: Annotated[float, typer.Option("--poll-interval", min=0.0)] = 1.0,
 ) -> None:
     """Wait until a chat settles or needs approval."""

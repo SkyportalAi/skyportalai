@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from skyportalai._client import Skyportal
@@ -72,6 +74,66 @@ def test_create_chat_posts_atomic_multi_server_scope(requests_mock):
         "active_host_id": 9,
         "selected_namespaces": {"12": ["default", "vllm"]},
     }
+
+
+def test_multihost_kubernetes_scope_is_preserved_through_autoapproval_resume(
+    requests_mock,
+):
+    requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/",
+        status_code=202,
+        json={"chat_id": 5, "status": "processing"},
+    )
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        [
+            {"json": {"status": "awaiting_approval", "pending_approvals": [
+                {"approval_id": "k8s-1", "type": "bash_command", "command": "kubectl get pods"},
+            ]}},
+            {"json": {"status": "idle"}},
+        ],
+    )
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/permission/",
+        json={"permission_mode": "autoapprove"},
+    )
+    approval = requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/approve/k8s-1/",
+        json={"success": True, "decision": "approved"},
+    )
+
+    chat = _client().chat.create_chat(
+        "inspect both clusters",
+        server_ids=[9, 12],
+        active_server_id=9,
+        active_host_id=9,
+        selected_namespaces={9: ["default"], 12: ["vllm", "monitoring"]},
+    )
+    creation_body = requests_mock.request_history[0].json()
+    result = chat.wait(poll_interval=0.0)
+
+    assert result.status == "idle"
+    assert creation_body == {
+        "message": "inspect both clusters",
+        "selected_server_ids": [9, 12],
+        "active_server_id": 9,
+        "active_host_id": 9,
+        "selected_namespaces": {
+            "9": ["default"],
+            "12": ["vllm", "monitoring"],
+        },
+    }
+    assert approval.last_request.json() == {
+        "decision": "approved",
+        "type": "bash_command",
+        "command": "kubectl get pods",
+        "autoapproved": True,
+    }
+    assert not [
+        request
+        for request in requests_mock.request_history
+        if request.path.endswith("/select-servers/")
+    ]
 
 
 def test_create_chat_preserves_explicit_empty_multi_server_scope(requests_mock):
@@ -289,9 +351,138 @@ def test_wait_without_callback_returns_awaiting_approval(requests_mock):
     requests_mock.get(f"{BASE}/api/v1/agent/chat/5/status/",
                       json={"status": "awaiting_approval",
                             "pending_approvals": [{"approval_id": "a1"}]})
+    requests_mock.get(f"{BASE}/api/v1/agent/permission/",
+                      json={"permission_mode": "ask"})
     status = _client().chat.wait(5, timeout=30.0, poll_interval=0.0)
     assert status.status == "awaiting_approval"
+    assert requests_mock.call_count == 2
+
+
+def test_wait_autoapproves_consecutive_ids_one_authoritative_snapshot_at_a_time(
+    requests_mock,
+):
+    status_url = f"{BASE}/api/v1/agent/chat/5/status/"
+    requests_mock.get(
+        status_url,
+        [
+            {"json": {"status": "awaiting_approval", "pending_approvals": [
+                {"approval_id": "a1", "type": "bash_command", "command": "uptime"},
+                {"approval_id": "a2", "type": "plan"},
+            ]}},
+            # The first decision has not cleared from this snapshot, so a2
+            # must not be submitted behind the active resume lease.
+            {"json": {"status": "awaiting_approval", "pending_approvals": [
+                {"approval_id": "a1", "type": "bash_command", "command": "uptime"},
+                {"approval_id": "a2", "type": "plan"},
+            ]}},
+            {"json": {"status": "awaiting_approval", "pending_approvals": [
+                {"approval_id": "a2", "type": "plan"},
+            ]}},
+            {"json": {"status": "processing"}},
+            {"json": {"status": "idle"}},
+        ],
+    )
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/permission/",
+        json={"permission_mode": "autoapprove"},
+    )
+    first = requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/approve/a1/",
+        json={"success": True, "decision": "approved"},
+    )
+    second = requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/approve/a2/",
+        json={"success": True, "decision": "approved"},
+    )
+
+    result = _client().chat.wait(5, timeout=30.0, poll_interval=0.0)
+
+    assert result.status == "idle"
+    assert first.call_count == 1
+    assert second.call_count == 1
+    assert first.last_request.json()["autoapproved"] is True
+    assert second.last_request.json()["autoapproved"] is True
+    paths = [request.path for request in requests_mock.request_history]
+    first_index = paths.index("/api/v1/agent/chat/5/approve/a1/")
+    second_index = paths.index("/api/v1/agent/chat/5/approve/a2/")
+    assert "/api/v1/agent/chat/5/status/" in paths[first_index + 1:second_index]
+
+
+def test_wait_autoapproval_policy_conflict_returns_pending_without_retry(requests_mock):
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        json={"status": "awaiting_approval", "pending_approvals": [
+            {"approval_id": "a1", "type": "bash_command", "command": "uptime"},
+        ]},
+    )
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/permission/",
+        json={"permission_mode": "autoapprove"},
+    )
+    submit = requests_mock.post(
+        f"{BASE}/api/v1/agent/chat/5/approve/a1/",
+        status_code=409,
+        json={
+            "error": "Autoapproval is no longer enabled",
+            "code": "autoapproval_policy_conflict",
+        },
+    )
+
+    result = _client().chat.wait(5, poll_interval=0.0)
+
+    assert result.status == "awaiting_approval"
+    assert submit.call_count == 1
+    assert submit.last_request.json()["autoapproved"] is True
+
+
+def test_wait_autoapprove_fails_closed_for_unknown_approval_type(requests_mock):
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        json={"status": "awaiting_approval", "pending_approvals": [
+            {"approval_id": "future-1", "type": "future_privileged_action"},
+        ]},
+    )
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/permission/",
+        json={"permission_mode": "autoapprove"},
+    )
+
+    result = _client().chat.wait(5, timeout=30.0, poll_interval=0.0)
+
+    assert result.status == "awaiting_approval"
+    assert not [r for r in requests_mock.request_history if r.method == "POST"]
+
+
+def test_wait_does_not_skip_malformed_first_approval_to_autoapprove_later_id(
+    requests_mock,
+):
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        json={"status": "awaiting_approval", "pending_approvals": [
+            {"approval_id": None, "type": "bash_command"},
+            {"approval_id": "a2", "type": "bash_command", "command": "uptime"},
+        ]},
+    )
+
+    result = _client().chat.wait(5, poll_interval=0.0)
+
+    assert result.status == "awaiting_approval"
     assert requests_mock.call_count == 1
+
+
+def test_wait_fails_closed_when_permission_endpoint_is_unavailable(requests_mock):
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        json={"status": "awaiting_approval", "pending_approvals": [
+            {"approval_id": "a1", "type": "bash_command"},
+        ]},
+    )
+    requests_mock.get(f"{BASE}/api/v1/agent/permission/", status_code=404)
+
+    result = _client().chat.wait(5, timeout=30.0, poll_interval=0.0)
+
+    assert result.status == "awaiting_approval"
+    assert not [r for r in requests_mock.request_history if r.method == "POST"]
 
 
 def test_wait_on_approval_true_approves_and_keeps_polling(requests_mock):
@@ -347,6 +538,32 @@ def test_wait_times_out(requests_mock):
                       json={"status": "processing"})
     with pytest.raises(WaitTimeoutError):
         _client().chat.wait(5, timeout=0.0, poll_interval=0.0)
+
+
+def test_wait_default_is_indefinite(requests_mock):
+    requests_mock.get(
+        f"{BASE}/api/v1/agent/chat/5/status/",
+        [{"json": {"status": "processing"}}, {"json": {"status": "idle"}}],
+    )
+
+    with patch(
+        "skyportalai.resources.chat.time.monotonic",
+        side_effect=AssertionError("deadline used"),
+    ), patch("skyportalai.resources.chat.time.sleep"):
+        result = _client().chat.wait(5, poll_interval=0.0)
+
+    assert result.status == "idle"
+
+
+def test_bound_chat_wait_defaults_to_indefinite():
+    client = _client()
+    chat = Chat(client, 5)
+    settled = ChatStatus(status="idle")
+
+    with patch.object(client.chat, "wait", return_value=settled) as wait:
+        assert chat.wait() is settled
+
+    wait.assert_called_once_with(5, poll_interval=1.0, timeout=None, on_approval=None)
 
 
 @pytest.mark.parametrize(

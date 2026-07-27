@@ -78,6 +78,26 @@ def _react_action_message(text="run_command(command=ls -la)", sequence=1):
     }
 
 
+def _plan_approval_message(approval_id="plan-approval-1", sequence=2):
+    return {
+        "role": "assistant",
+        "sequence": sequence,
+        "content": [{
+            "type": "text",
+            "text": (
+                "**Deploy Kubernetes**\n\n"
+                "**Steps:**\n"
+                "1. Check hosts: Inspect both servers\n"
+                "2. Install runtime: Install containerd"
+            ),
+        }],
+        "metadata": {
+            "type": "plan_approval_requested",
+            "approval_id": approval_id,
+        },
+    }
+
+
 def _console():
     return Console(file=StringIO(), force_terminal=False, width=200)
 
@@ -111,9 +131,35 @@ class TestToolResultLine:
         assert ok_line.plain != fail_line.plain
 
     def test_long_output_is_truncated(self):
-        long_output = "x" * 500
+        long_output = "x" * 6000
         line = InteractiveShell._tool_result_line(_tool_message(output=long_output))
-        assert len(line.plain) < 500
+        assert len(line.plain) < len(long_output)
+        assert "output truncated" in line.plain
+
+    def test_multiline_inventory_output_remains_useful(self):
+        output = "\n".join("field-{}: value".format(index) for index in range(16))
+
+        line = InteractiveShell._tool_result_line(_tool_message(output=output))
+
+        assert line is not None
+        assert "field-0: value" in line.plain
+        assert "field-15: value" in line.plain
+        assert "output truncated" not in line.plain
+
+    def test_server_text_is_literal_and_terminal_controls_are_removed(self):
+        line = InteractiveShell._tool_result_line(
+            _tool_message(
+                hostname="[red]host[/red]",
+                command="printf '[bold]not markup[/bold]'",
+                output="\x1b[31m[green]literal[/green]\x1b[0m",
+            )
+        )
+
+        assert line is not None
+        assert "[red]host[/red]" in line.plain
+        assert "[bold]not markup[/bold]" in line.plain
+        assert "[green]literal[/green]" in line.plain
+        assert "\x1b" not in line.plain
 
 
 class TestRenderAssistantMessagesIncludesToolLines:
@@ -245,6 +291,60 @@ class TestAssistantMessageLine:
         assert "calling" in text
         assert "df -h" in text
         assert "Disk usage is at 50%." in text
+
+
+class TestPlanApprovalRendering:
+    def _shell(self):
+        console = _console()
+        shell = InteractiveShell(
+            console=console,
+            client_factory=lambda: object(),
+            session=object(),
+            token_prompt=lambda _prompt: "",
+        )
+        return shell, console
+
+    def test_canonical_plan_message_is_not_repeated_by_approval_prompt(self):
+        shell, console = self._shell()
+        message = _plan_approval_message()
+        approval = {
+            "approval_id": "plan-approval-1",
+            "type": "plan",
+            "plan": {
+                "title": "Deploy Kubernetes",
+                "steps": [
+                    {"name": "Check hosts", "description": "Inspect both servers"},
+                    {"name": "Install runtime", "description": "Install containerd"},
+                ],
+            },
+        }
+
+        shell._render_assistant_messages([message])
+        console.print(shell._approval_description(approval, [message]))
+
+        output = console.file.getvalue()
+        assert output.count("Inspect both servers") == 1
+        assert output.count("Install containerd") == 1
+        assert "Approve the execution plan shown above" in output
+        assert '"approval_id"' not in output
+
+    def test_plan_payload_is_rendered_once_when_message_has_not_arrived(self):
+        shell, _console = self._shell()
+        approval = {
+            "approval_id": "plan-approval-1",
+            "type": "plan",
+            "plan": {
+                "title": "Deploy Kubernetes",
+                "steps": [
+                    {"name": "Check hosts", "description": "Inspect both servers"},
+                ],
+            },
+        }
+
+        description = shell._approval_description(approval, [])
+
+        assert description.count("Inspect both servers") == 1
+        assert '"approval_id"' not in description
 
 
 class TestEmptyTurnMessage:
