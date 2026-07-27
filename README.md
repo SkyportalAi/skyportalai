@@ -173,6 +173,33 @@ Remove the stored cluster credential when it is no longer needed:
 skyportalai kubernetes disconnect 17
 ```
 
+## Ansible playbooks
+
+Store validated playbooks in SkyPortal and reuse them across account-owned SSH
+targets. List responses omit YAML bodies; `show` retrieves one playbook when
+you need to inspect or edit it.
+
+```bash
+skyportalai ansible create bootstrap --file playbook.yml --description "Base host setup"
+skyportalai ansible list
+skyportalai ansible show 4
+skyportalai ansible update 4 --file playbook.yml
+```
+
+Deployments run through the ops agent and the normal command-approval policy.
+The playbook executes on the selected SSH host with a temporary, mode-restricted
+file that is removed after `ansible-playbook` exits.
+
+```bash
+skyportalai ansible deploy 4 --server 12
+skyportalai chat wait 91
+skyportalai chat approve 91 APPROVAL_ID --command "COMMAND_FROM_STATUS"
+skyportalai ansible delete 4 --yes
+```
+
+The Python SDK exposes the same lifecycle as `client.ansible.create(...)`,
+`.list()`, `.get(...)`, `.update(...)`, `.deploy(...)`, and `.delete(...)`.
+
 ## Observability agent
 
 Install the collector dependencies and review the deployment guide before

@@ -104,10 +104,12 @@ def set_config(
     )
 
 
+from .ansible import ansible_app  # noqa: E402
 from .chat import chat_app  # noqa: E402
 from .kubernetes import kubernetes_app  # noqa: E402
 
 app.add_typer(chat_app, name="chat")
+app.add_typer(ansible_app, name="ansible")
 app.add_typer(kubernetes_app, name="kubernetes")
 
 

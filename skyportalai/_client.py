@@ -16,6 +16,7 @@ from ._exceptions import (
     SkyportalError,
 )
 from ._version import __version__
+from .resources.ansible import AnsibleResource
 from .resources.chat import ChatResource
 from .resources.kubernetes import KubernetesResource
 from .resources.me import fetch_me
@@ -153,6 +154,7 @@ class Skyportal:
         self._backoff_base = 0.5
 
         self.chat = ChatResource(self)
+        self.ansible = AnsibleResource(self)
         self.kubernetes = KubernetesResource(self)
 
     def _request(self, method: str, path: str, *, params: dict | None = None,
