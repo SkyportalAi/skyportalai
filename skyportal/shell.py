@@ -17,11 +17,18 @@ from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from skyportal.portal import ChatTurnResult, CredentialStore, PortalError, SkyportalClient
+from skyportal.portal import (
+    PRODUCTION_APP_URL,
+    ChatTurnResult,
+    CredentialStore,
+    PortalError,
+    SkyportalClient,
+)
 
 _PERMISSION_MODES = frozenset({"ask", "autoapprove"})
 _AUTOAPPROVE_TYPES = frozenset({"", "bash_command", "plan"})
@@ -1303,10 +1310,15 @@ class InteractiveShell:
         which lines were the agent's actual response versus its own internal
         narration of what it was about to do."""
         text = self._message_text(message)
-        if not text:
-            return None
         metadata = message.get("metadata", {})
         msg_type = metadata.get("type") if isinstance(metadata, dict) else None
+        if msg_type == "prompt_limit_reached":
+            # Keyed on metadata alone: the structured quota payload can stand
+            # in for an empty content string, and an empty content string must
+            # not hide the one message that explains why the turn was refused.
+            return self._prompt_limit_notice(text, metadata)
+        if not text:
+            return None
         if msg_type == "react_thought":
             line = Text("· ", style="dim italic")
             line.append(self._clean_terminal_text(text), style="dim italic")
@@ -1316,6 +1328,58 @@ class InteractiveShell:
             line.append(self._clean_terminal_text(text), style="bold")
             return line
         return Markdown(self._clean_terminal_text(text))
+
+    def _prompt_limit_notice(self, text: str, metadata: Dict[str, Any]) -> Panel:
+        """Panel for the quota notice a rate-limited turn persists (metadata
+        type prompt_limit_reached, quota/upgrade_suggestion payloads — see
+        agent_service.py's rate-limit branch server-side). The web chat shows
+        the same numbers in a blocking modal with a /billing/ CTA; the
+        terminal equivalent renders usage from the structured payload (the
+        content string is only a fallback) and always ends with the billing
+        URL so hitting the limit is never a dead end."""
+        quota = metadata.get("quota")
+        tier_used = quota.get("tier_used") if isinstance(quota, dict) else None
+        tier_limit = quota.get("tier_limit") if isinstance(quota, dict) else None
+        body = Text()
+        if tier_used is not None and tier_limit is not None:
+            body.append(
+                "You've used {} of {} prompts this month.".format(
+                    self._bounded_one_line(tier_used, 40),
+                    self._bounded_one_line(tier_limit, 40),
+                )
+            )
+        elif text:
+            body.append(self._bounded_multiline(text))
+        suggestion = metadata.get("upgrade_suggestion")
+        suggestion_text = (
+            self._bounded_one_line(suggestion.get("message"), 300)
+            if isinstance(suggestion, dict) and suggestion.get("message")
+            else ""
+        )
+        if suggestion_text and suggestion_text not in body.plain:
+            if body.plain:
+                body.append("\n")
+            body.append(suggestion_text)
+        if body.plain:
+            body.append("\n")
+        body.append("→ Upgrade or buy more prompts: ", style="bold")
+        body.append(self._billing_upgrade_url(), style="bold #3b82f6")
+        return Panel(
+            body,
+            border_style="red",
+            title="Prompt limit reached",
+            title_align="left",
+            expand=False,
+        )
+
+    def _billing_upgrade_url(self) -> str:
+        """The client owns URL derivation so custom deployments point at
+        their own billing page; fall back to production when the shell was
+        built around a client stub without billing_url()."""
+        billing_url = getattr(self.client, "billing_url", None)
+        if callable(billing_url):
+            return str(billing_url())
+        return "{}/billing/?upgrade=true".format(PRODUCTION_APP_URL)
 
     @staticmethod
     def _tool_result_line(message: Dict[str, Any]) -> Optional[Text]:
@@ -1381,10 +1445,18 @@ class InteractiveShell:
                     printable.append(("user", text, None))
             elif role == "assistant":
                 text = self._message_text(m)
-                if not text:
-                    continue
                 metadata = m.get("metadata", {})
                 msg_type = metadata.get("type") if isinstance(metadata, dict) else None
+                if msg_type == "prompt_limit_reached":
+                    # Replays with the full panel (already a renderable, not
+                    # prose) — and, like the live path, an empty content
+                    # string must not drop the notice from the replay.
+                    printable.append(
+                        ("assistant", self._prompt_limit_notice(text, metadata), msg_type)
+                    )
+                    continue
+                if not text:
+                    continue
                 printable.append(("assistant", text, msg_type))
         if not printable:
             self.console.print("[dim]This chat has no earlier messages yet.[/dim]")
@@ -1404,6 +1476,8 @@ class InteractiveShell:
                 line = Text("→ calling ", style="dim")
                 line.append(self._clean_terminal_text(text), style="bold")
                 self.console.print(line)
+            elif msg_type == "prompt_limit_reached":
+                self.console.print(text)
             else:
                 self.console.print("[bold #3b82f6]agent[/bold #3b82f6]")
                 self.console.print(Markdown(self._clean_terminal_text(text)))

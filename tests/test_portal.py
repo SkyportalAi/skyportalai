@@ -1078,3 +1078,15 @@ def test_set_permission_mode_puts_only_supported_mode(credential_path):
         with pytest.raises(PortalError, match="ask.*autoapprove"):
             client.set_permission_mode("everything")
     invalid_call.assert_not_called()
+
+
+def test_billing_url_targets_the_billing_upgrade_page(credential_path):
+    client = SkyportalClient("https://skyportal.example/")
+
+    assert client.billing_url() == "https://skyportal.example/billing/?upgrade=true"
+
+
+def test_billing_url_on_the_marketing_host_normalizes_to_app(credential_path):
+    client = SkyportalClient("https://skyportal.ai/")
+
+    assert client.billing_url() == "https://app.skyportal.ai/billing/?upgrade=true"

@@ -169,6 +169,10 @@ class SkyportalClient:
         """Return the account API-key page used by the CLI."""
         return "{}/keys/?{}".format(self.base_url, urlencode({"source": "cli"}))
 
+    def billing_url(self) -> str:
+        """Return the billing/upgrade page the web chat's quota modal links to."""
+        return "{}/billing/?{}".format(self.base_url, urlencode({"upgrade": "true"}))
+
     def set_access_token(self, access_token: str, validate: bool = True) -> None:
         """Validate and persist an API key or short-lived access token."""
         token = access_token.strip()
