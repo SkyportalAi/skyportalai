@@ -1078,6 +1078,10 @@ class InteractiveShell:
                             turn.chat_id, turn.status
                         )
                     )
+                # The turn is over; if it stopped only because nothing was in
+                # scope, offer the choice here rather than leaving the user to
+                # retype a /server command from the prose.
+                self._offer_server_choice(turn.messages)
                 return
             if not turn.pending_approvals:
                 raise PortalError(
@@ -1299,6 +1303,58 @@ class InteractiveShell:
         if rendered:
             self.console.print()
         return rendered
+
+    def _no_server_choices(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """The server options the newest react_no_server pause offered, if any.
+
+        Read from metadata rather than the prose: the message text names both
+        the web Scope pill and /server because nothing server-side can tell the
+        clients apart, so the terminal renders its own picker from the data.
+        An older website that doesn't send available_servers yields [], and the
+        plain message stands on its own — the CLI ships independently of it.
+        """
+        for message in sorted(messages, key=lambda item: self._sequence(item) or 0, reverse=True):
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict) or metadata.get("type") != "react_no_server":
+                continue
+            choices = metadata.get("available_servers")
+            if not isinstance(choices, list):
+                return []
+            return [c for c in choices if isinstance(c, dict) and c.get("hostname")]
+        return []
+
+    def _offer_server_choice(self, messages: List[Dict[str, Any]]) -> None:
+        """Let the user pick a server by number when a turn paused for scope."""
+        choices = self._no_server_choices(messages)
+        if not choices:
+            return
+        self.console.print()
+        for index, choice in enumerate(choices, start=1):
+            kind = "kubernetes" if choice.get("target_kind") == "kubernetes" else "ssh"
+            line = Text("  {}. ".format(index), style="dim")
+            line.append(str(choice["hostname"]), style="bold")
+            line.append("  {}".format(kind), style="dim")
+            self.console.print(line)
+        try:
+            answer = self.session.prompt(
+                "Which server? [1-{}, or Enter to skip]: ".format(len(choices))
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            answer = ""
+        if not answer:
+            self.console.print("[dim]No server selected — use /server <name> when you're ready.[/dim]")
+            return
+        try:
+            picked = choices[int(answer) - 1] if 1 <= int(answer) <= len(choices) else None
+        except ValueError:
+            # A name is as good as a number; _cmd_server resolves either.
+            picked = {"hostname": answer}
+        if picked is None:
+            self.console.print("[yellow]That wasn't one of the listed servers.[/yellow]")
+            return
+        # Reuse /server so scope-setting has exactly one implementation.
+        self._cmd_server([str(picked["hostname"])])
+        self.console.print("[dim]Send your message again and I'll run it there.[/dim]")
 
     def _assistant_message_line(self, message: Dict[str, Any]) -> Optional[Any]:
         """Render one assistant-role message, distinguishing the three kinds
