@@ -1078,6 +1078,10 @@ class InteractiveShell:
                             turn.chat_id, turn.status
                         )
                     )
+                # The turn is over; if it stopped only because nothing was in
+                # scope, offer the choice here rather than leaving the user to
+                # retype a /server command from the prose.
+                self._offer_server_choice(turn.messages)
                 return
             if not turn.pending_approvals:
                 raise PortalError(
@@ -1299,6 +1303,98 @@ class InteractiveShell:
         if rendered:
             self.console.print()
         return rendered
+
+    def _turn_paused_for_scope(self, messages: List[Dict[str, Any]]) -> bool:
+        """True when the turn stopped only because nothing was in scope.
+
+        Keyed on the metadata type, not the prose: the message text names both
+        the web Scope pill and /server, because nothing server-side can tell
+        the clients apart.
+        """
+        return any(
+            isinstance(message.get("metadata"), dict)
+            and message["metadata"].get("type") == "react_no_server"
+            for message in messages
+        )
+
+    def _no_server_choices(self) -> List[Dict[str, Any]]:
+        """The user's servers, read live — the same list /servers and /server use.
+
+        Deliberately NOT the copy the pause message carries: that one is built
+        from the chat's cached metadata, so a host added after the chat started
+        is missing from it. The CLI already owns a live list; asking for it here
+        means the picker offers exactly what /servers would.
+        """
+        choices = []
+        for server in self._items(self.client.servers()):
+            if not isinstance(server, dict):
+                continue
+            name = server.get("name") or server.get("hostname")
+            if not name:
+                continue
+            choices.append({
+                "id": server.get("id"),
+                "hostname": name,
+                "target_kind": server.get("target_kind") or "ssh",
+            })
+        return choices
+
+    def _offer_server_choice(self, messages: List[Dict[str, Any]]) -> None:
+        """Let the user pick a server by number when a turn paused for scope."""
+        if not self._turn_paused_for_scope(messages):
+            return
+        try:
+            with self.console.status("[cyan]Loading your servers…[/cyan]", spinner="dots"):
+                choices = self._no_server_choices()
+        except PortalError as exc:
+            # The pause message already said what to do; a failed lookup here
+            # must not bury it under a stack trace.
+            self.console.print("[dim]Couldn't load your servers ({}).[/dim]".format(exc))
+            return
+        if not choices:
+            return
+        self.console.print()
+        for index, choice in enumerate(choices, start=1):
+            kind = "kubernetes" if choice.get("target_kind") == "kubernetes" else "ssh"
+            line = Text("  {}. ".format(index), style="dim")
+            line.append(str(choice["hostname"]), style="bold")
+            line.append("  {}".format(kind), style="dim")
+            self.console.print(line)
+        try:
+            answer = self.session.prompt(
+                "Which server? [1-{}, or Enter to skip]: ".format(len(choices))
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            answer = ""
+        if not answer:
+            self.console.print("[dim]No server selected — use /server <name> when you're ready.[/dim]")
+            return
+        try:
+            index = int(answer)
+        except ValueError:
+            # Not a number: treat it as a name and let /server resolve it.
+            token = answer
+        else:
+            if not 1 <= index <= len(choices):
+                self.console.print("[yellow]That wasn't one of the listed servers.[/yellow]")
+                return
+            picked = choices[index - 1]
+            # The ID, not the hostname. Server.hostname has no unique constraint,
+            # and _resolve_server_tokens' name map is first-wins — so with two
+            # hosts both named "box", picking the SECOND line would silently scope
+            # to the first and print a success message naming it.
+            token = str(picked.get("id") or picked["hostname"])
+        # Reuse /server so scope-setting has exactly one implementation. Its
+        # PortalError for an unresolvable token is handled here: unhandled it
+        # escapes _process_turn into run()'s "Skyportal request failed" banner,
+        # which is a heavy response to a mistyped hostname — and the guidance
+        # below would never print.
+        try:
+            self._cmd_server([token])
+        except PortalError as exc:
+            self.console.print("[yellow]{}[/yellow]".format(exc))
+            return
+        self.console.print("[dim]Send your message again and I'll run it there.[/dim]")
 
     def _assistant_message_line(self, message: Dict[str, Any]) -> Optional[Any]:
         """Render one assistant-role message, distinguishing the three kinds
