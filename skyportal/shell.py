@@ -1370,15 +1370,30 @@ class InteractiveShell:
             self.console.print("[dim]No server selected — use /server <name> when you're ready.[/dim]")
             return
         try:
-            picked = choices[int(answer) - 1] if 1 <= int(answer) <= len(choices) else None
+            index = int(answer)
         except ValueError:
-            # A name is as good as a number; _cmd_server resolves either.
-            picked = {"hostname": answer}
-        if picked is None:
-            self.console.print("[yellow]That wasn't one of the listed servers.[/yellow]")
+            # Not a number: treat it as a name and let /server resolve it.
+            token = answer
+        else:
+            if not 1 <= index <= len(choices):
+                self.console.print("[yellow]That wasn't one of the listed servers.[/yellow]")
+                return
+            picked = choices[index - 1]
+            # The ID, not the hostname. Server.hostname has no unique constraint,
+            # and _resolve_server_tokens' name map is first-wins — so with two
+            # hosts both named "box", picking the SECOND line would silently scope
+            # to the first and print a success message naming it.
+            token = str(picked.get("id") or picked["hostname"])
+        # Reuse /server so scope-setting has exactly one implementation. Its
+        # PortalError for an unresolvable token is handled here: unhandled it
+        # escapes _process_turn into run()'s "Skyportal request failed" banner,
+        # which is a heavy response to a mistyped hostname — and the guidance
+        # below would never print.
+        try:
+            self._cmd_server([token])
+        except PortalError as exc:
+            self.console.print("[yellow]{}[/yellow]".format(exc))
             return
-        # Reuse /server so scope-setting has exactly one implementation.
-        self._cmd_server([str(picked["hostname"])])
         self.console.print("[dim]Send your message again and I'll run it there.[/dim]")
 
     def _assistant_message_line(self, message: Dict[str, Any]) -> Optional[Any]:

@@ -12,7 +12,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from skyportal.portal import PortalError
+from skyportal.portal import ChatTurnResult, PortalError
 from skyportal.shell import InteractiveShell
 
 SERVERS = [
@@ -167,3 +167,53 @@ def test_a_failed_server_lookup_does_not_bury_the_message(make_shell):
     assert session.prompts == []
     assert client.single_scope_calls == []
     assert "Couldn't load your servers" in out.getvalue()
+
+
+def test_the_picker_actually_fires_from_process_turn(make_shell):
+    """End to end through _process_turn, which is the ONLY place the picker fires.
+
+    Every other test here calls _offer_server_choice directly, so deleting that
+    single call site would leave the feature dead for real users while the suite
+    stayed green — verified: it does. This test fails when the WIRING goes, not
+    only when the method does.
+    """
+    instance, client, session, out = make_shell("2")
+    turn = ChatTurnResult(1251, "idle", [_pause_message(AVAILABLE)], [], 3)
+
+    instance._process_turn(turn)
+
+    assert session.prompts and "Which server?" in session.prompts[0]
+    assert "k8s-cp-01" in out.getvalue()
+    assert client.single_scope_calls == [(1251, 67)]
+
+
+def test_duplicate_hostnames_select_the_line_the_user_pointed_at(make_shell):
+    """Server.hostname has no unique constraint and _resolve_server_tokens' name
+    map is first-wins, so resolving a numeric pick BY NAME scoped the chat to the
+    wrong host — while printing a success message naming it."""
+    instance, client, _, _ = make_shell("2")
+    instance.client._payload = [
+        {"id": "66", "name": "box", "status": "connected", "host_type": "Dev",
+         "target_kind": "ssh", "vcpu": 8, "ram": 16, "gpus": 0},
+        {"id": "67", "name": "box", "status": "connected", "host_type": "Dev",
+         "target_kind": "ssh", "vcpu": 8, "ram": 16, "gpus": 0},
+    ]
+
+    instance._offer_server_choice([_pause_message(AVAILABLE)])
+
+    # Line 2 must scope to 67, not to the first "box".
+    assert client.single_scope_calls == [(1251, 67)]
+
+
+def test_a_mistyped_hostname_stays_inside_the_picker(make_shell):
+    """_cmd_server raises PortalError for an unresolvable token. Unhandled it
+    escaped _process_turn into run()'s red "Skyportal request failed" banner — a
+    heavy response to a typo, and inconsistent with the graceful message an
+    out-of-range NUMBER gets."""
+    instance, client, _, out = make_shell("buidl-box-01")
+
+    instance._offer_server_choice([_pause_message(AVAILABLE)])
+
+    assert client.single_scope_calls == []
+    assert "not found in your account" in out.getvalue()
+    assert "Send your message again" not in out.getvalue()
