@@ -1304,28 +1304,53 @@ class InteractiveShell:
             self.console.print()
         return rendered
 
-    def _no_server_choices(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """The server options the newest react_no_server pause offered, if any.
+    def _turn_paused_for_scope(self, messages: List[Dict[str, Any]]) -> bool:
+        """True when the turn stopped only because nothing was in scope.
 
-        Read from metadata rather than the prose: the message text names both
-        the web Scope pill and /server because nothing server-side can tell the
-        clients apart, so the terminal renders its own picker from the data.
-        An older website that doesn't send available_servers yields [], and the
-        plain message stands on its own — the CLI ships independently of it.
+        Keyed on the metadata type, not the prose: the message text names both
+        the web Scope pill and /server, because nothing server-side can tell
+        the clients apart.
         """
-        for message in sorted(messages, key=lambda item: self._sequence(item) or 0, reverse=True):
-            metadata = message.get("metadata")
-            if not isinstance(metadata, dict) or metadata.get("type") != "react_no_server":
+        return any(
+            isinstance(message.get("metadata"), dict)
+            and message["metadata"].get("type") == "react_no_server"
+            for message in messages
+        )
+
+    def _no_server_choices(self) -> List[Dict[str, Any]]:
+        """The user's servers, read live — the same list /servers and /server use.
+
+        Deliberately NOT the copy the pause message carries: that one is built
+        from the chat's cached metadata, so a host added after the chat started
+        is missing from it. The CLI already owns a live list; asking for it here
+        means the picker offers exactly what /servers would.
+        """
+        choices = []
+        for server in self._items(self.client.servers()):
+            if not isinstance(server, dict):
                 continue
-            choices = metadata.get("available_servers")
-            if not isinstance(choices, list):
-                return []
-            return [c for c in choices if isinstance(c, dict) and c.get("hostname")]
-        return []
+            name = server.get("name") or server.get("hostname")
+            if not name:
+                continue
+            choices.append({
+                "id": server.get("id"),
+                "hostname": name,
+                "target_kind": server.get("target_kind") or "ssh",
+            })
+        return choices
 
     def _offer_server_choice(self, messages: List[Dict[str, Any]]) -> None:
         """Let the user pick a server by number when a turn paused for scope."""
-        choices = self._no_server_choices(messages)
+        if not self._turn_paused_for_scope(messages):
+            return
+        try:
+            with self.console.status("[cyan]Loading your servers…[/cyan]", spinner="dots"):
+                choices = self._no_server_choices()
+        except PortalError as exc:
+            # The pause message already said what to do; a failed lookup here
+            # must not bury it under a stack trace.
+            self.console.print("[dim]Couldn't load your servers ({}).[/dim]".format(exc))
+            return
         if not choices:
             return
         self.console.print()

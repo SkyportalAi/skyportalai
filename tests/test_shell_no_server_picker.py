@@ -1,9 +1,10 @@
 """A turn that paused for scope offers a numbered picker, not just prose.
 
 The server-side message names both the web Scope pill and `/server <name>`
-because nothing at that layer can tell the clients apart. The terminal reads
-the same choices out of metadata['available_servers'] and renders its own
-picker, so a CLI user never has to retype a command out of the prose.
+because nothing at that layer can tell the clients apart. The terminal spots
+the pause from the metadata type and then builds the picker from its OWN live
+/servers call — the same list /server resolves against — so the options are
+never a stale snapshot of the chat's cached metadata.
 """
 
 from io import StringIO
@@ -11,6 +12,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
+from skyportal.portal import PortalError
 from skyportal.shell import InteractiveShell
 
 SERVERS = [
@@ -45,11 +47,14 @@ class FakeClient:
     def __init__(self):
         self.single_scope_calls = []
         self.scope_calls = []
+        self.fail_with = None
 
     def is_authenticated(self):
         return True
 
     def servers(self):
+        if self.fail_with is not None:
+            raise self.fail_with
         return SERVERS
 
     def select_chat_server(self, chat_id, server_id):
@@ -131,22 +136,34 @@ def test_silent_when_the_turn_did_not_pause_for_scope(make_shell):
     assert out.getvalue() == ""
 
 
-def test_older_website_without_available_servers_falls_back_to_prose(make_shell):
-    # The CLI ships independently of the website: a deployment that predates
-    # available_servers must not get a picker with nothing in it.
-    instance, client, session, out = make_shell("1")
+def test_offers_hosts_the_pause_message_never_listed(make_shell):
+    # The whole reason the list is fetched rather than read off the message:
+    # the message's copy comes from the chat's cached metadata, so a host added
+    # after the chat started is missing from it. /servers has it, so we do too.
+    instance, client, _, out = make_shell("2")
+    instance._offer_server_choice([
+        _pause_message([{"id": 66, "hostname": "build-box-01", "target_kind": "ssh"}]),
+    ])
+
+    assert "k8s-cp-01" in out.getvalue()
+    assert client.single_scope_calls == [(1251, 67)]
+
+
+def test_works_against_a_website_that_sends_no_server_list(make_shell):
+    # available_servers is not required — the metadata type alone marks the
+    # pause, so the picker works against a backend that never ships the field.
+    instance, client, _, out = make_shell("1")
     instance._offer_server_choice([_pause_message(available=None)])
+
+    assert "build-box-01" in out.getvalue()
+    assert client.single_scope_calls == [(1251, 66)]
+
+
+def test_a_failed_server_lookup_does_not_bury_the_message(make_shell):
+    instance, client, session, out = make_shell("1")
+    client.fail_with = PortalError("portal unreachable")
+    instance._offer_server_choice([_pause_message(AVAILABLE)])
 
     assert session.prompts == []
     assert client.single_scope_calls == []
-    assert out.getvalue() == ""
-
-
-def test_reads_the_newest_pause_when_a_chat_has_several(make_shell):
-    instance, client, _, _ = make_shell("1")
-    instance._offer_server_choice([
-        _pause_message([{"id": 9, "hostname": "stale-host", "target_kind": "ssh"}], sequence=1),
-        _pause_message(AVAILABLE, sequence=5),
-    ])
-
-    assert client.single_scope_calls == [(1251, 66)]
+    assert "Couldn't load your servers" in out.getvalue()
