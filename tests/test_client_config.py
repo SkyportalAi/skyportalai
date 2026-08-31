@@ -11,32 +11,32 @@ def test_api_key_from_argument():
 
 
 def test_api_key_from_env(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk-env")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-env")
     client = Skyportal()
     assert client.api_key == "sk-env"
 
 
 def test_argument_beats_env(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk-env")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-env")
     client = Skyportal(api_key="sk-arg")
     assert client.api_key == "sk-arg"
 
 
 def test_missing_api_key_raises(monkeypatch):
-    monkeypatch.delenv("SKYPORTAL_API_KEY", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
     with pytest.raises(SkyportalError):
         Skyportal()
 
 
 def test_default_base_url(monkeypatch):
-    monkeypatch.delenv("SKYPORTAL_BASE_URL", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_BASE_URL", raising=False)
     client = Skyportal(api_key="sk-x")
     assert DEFAULT_BASE_URL == "https://app.skyportal.ai"
     assert client.base_url == DEFAULT_BASE_URL
 
 
 def test_base_url_from_env(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_BASE_URL", "http://localhost:8000/")
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "http://localhost:8000/")
     client = Skyportal(api_key="sk-x")
     assert client.base_url == "http://localhost:8000"
 
@@ -115,7 +115,7 @@ def test_http_non_loopback_base_url_raises():
 
 
 def test_http_non_loopback_env_base_url_raises(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_BASE_URL", "http://internal.corp:8000")
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "http://internal.corp:8000")
     with pytest.raises(SkyportalError, match="non-HTTPS"):
         Skyportal(api_key="sk-x")
 
@@ -137,7 +137,7 @@ def test_non_default_https_base_url_does_not_warn(recwarn):
 
 
 def test_default_base_url_does_not_warn(monkeypatch, recwarn):
-    monkeypatch.delenv("SKYPORTAL_BASE_URL", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_BASE_URL", raising=False)
     Skyportal(api_key="sk-x")
     assert not [w for w in recwarn if "base URL" in str(w.message)]
 
@@ -164,27 +164,27 @@ def test_zero_host_rejected():
 
 
 def test_allow_insecure_escape_hatch(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_ALLOW_INSECURE", "1")
-    with pytest.warns(UserWarning, match="SKYPORTAL_ALLOW_INSECURE"):
+    monkeypatch.setenv("SKYPORTALAI_ALLOW_INSECURE", "1")
+    with pytest.warns(UserWarning, match="SKYPORTALAI_ALLOW_INSECURE"):
         client = Skyportal(api_key="sk-x", base_url="http://internal.corp:8000")
     assert client.base_url == "http://internal.corp:8000"
 
 
 def test_rejection_mentions_escape_hatch(monkeypatch):
-    monkeypatch.delenv("SKYPORTAL_ALLOW_INSECURE", raising=False)
-    with pytest.raises(SkyportalError, match="SKYPORTAL_ALLOW_INSECURE"):
+    monkeypatch.delenv("SKYPORTALAI_ALLOW_INSECURE", raising=False)
+    with pytest.raises(SkyportalError, match="SKYPORTALAI_ALLOW_INSECURE"):
         Skyportal(api_key="sk-x", base_url="http://internal.corp:8000")
 
 
 def test_allow_insecure_env_overrides_with_warning(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_ALLOW_INSECURE", "1")
-    with pytest.warns(UserWarning, match="SKYPORTAL_ALLOW_INSECURE"):
+    monkeypatch.setenv("SKYPORTALAI_ALLOW_INSECURE", "1")
+    with pytest.warns(UserWarning, match="SKYPORTALAI_ALLOW_INSECURE"):
         client = Skyportal(api_key="sk-x", base_url="http://internal.corp:8000")
     assert client.base_url == "http://internal.corp:8000"
 
 
 def test_allow_insecure_other_values_still_raise(monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_ALLOW_INSECURE", "true")
+    monkeypatch.setenv("SKYPORTALAI_ALLOW_INSECURE", "true")
     with pytest.raises(SkyportalError, match="non-HTTPS"):
         Skyportal(api_key="sk-x", base_url="http://internal.corp:8000")
 

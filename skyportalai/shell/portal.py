@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from skyportalai import _env
 from skyportalai._client import _validate_base_url
 from skyportalai._exceptions import SkyportalError
 from skyportalai._version import __version__
@@ -69,12 +70,9 @@ class ChatTurnResult:
 class CredentialStore:
     """Persist API credentials with user-only file permissions."""
 
-    DEFAULT_PATH = Path.home() / ".skyportal" / "credentials.json"
-
     @classmethod
     def get_path(cls) -> Path:
-        path = os.environ.get("SKYPORTAL_CREDENTIALS_PATH")
-        return Path(path).expanduser() if path else cls.DEFAULT_PATH
+        return _env.config_path("credentials.json", "SKYPORTALAI_CREDENTIALS_PATH")
 
     @classmethod
     def load(cls) -> Optional[Dict[str, Any]]:
@@ -663,11 +661,11 @@ class SkyportalClient:
         if not token:
             credentials = CredentialStore.load()
             if not credentials or not credentials.get("access_token"):
-                raise PortalError("Not connected. Run 'skyportal login' first.")
+                raise PortalError("Not connected. Run 'skyportalai login' first.")
             if credentials.get("base_url") not in (None, self.base_url):
                 raise PortalError(
                     "Stored credentials belong to another Skyportal deployment. "
-                    "Run 'skyportal login' again."
+                    "Run 'skyportalai login' again."
                 )
             token = str(credentials["access_token"])
         self._reject_agent_token(token)
@@ -675,10 +673,10 @@ class SkyportalClient:
 
     @staticmethod
     def _env_access_token() -> Optional[str]:
-        token = os.environ.get("SKYPORTAL_ACCESS_TOKEN")
+        token = _env.get("SKYPORTALAI_ACCESS_TOKEN")
         if token:
             return token
-        return os.environ.get("SKYPORTAL_API_KEY")
+        return _env.get("SKYPORTALAI_API_KEY")
 
     def _reject_agent_token(self, token: str) -> None:
         if token.startswith("agt_"):

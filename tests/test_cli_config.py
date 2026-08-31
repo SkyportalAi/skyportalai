@@ -14,21 +14,21 @@ from skyportalai.cli.config import resolve_settings, save_connection_config
 
 @pytest.fixture(autouse=True)
 def isolated_cli_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_CONFIG_PATH", str(tmp_path / "config.yaml"))
-    monkeypatch.setenv("SKYPORTAL_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
-    for name in ("SKYPORTAL_API_KEY", "SKYPORTAL_ACCESS_TOKEN", "SKYPORTAL_BASE_URL", "SKYPORTAL_URL"):
+    monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
+    for name in ("SKYPORTALAI_API_KEY", "SKYPORTALAI_ACCESS_TOKEN", "SKYPORTALAI_BASE_URL", "SKYPORTALAI_URL"):
         monkeypatch.delenv(name, raising=False)
 
 
 def test_environment_api_key_has_precedence(tmp_path, monkeypatch):
     credentials = tmp_path / "credentials.json"
     credentials.write_text(json.dumps({"access_token": "sk-file"}))
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk-env")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-env")
 
     settings = resolve_settings()
 
     assert settings.api_key == "sk-env"
-    assert settings.api_key_source == "SKYPORTAL_API_KEY"
+    assert settings.api_key_source == "SKYPORTALAI_API_KEY"
 
 
 def test_existing_cli_files_are_supported(tmp_path):
@@ -47,7 +47,7 @@ def test_existing_cli_files_are_supported(tmp_path):
 def test_credentials_are_scoped_to_the_selected_deployment(tmp_path, monkeypatch):
     credentials = tmp_path / "credentials.json"
     credentials.write_text(json.dumps({"access_token": "sk-file", "base_url": "https://one.example"}))
-    monkeypatch.setenv("SKYPORTAL_BASE_URL", "https://two.example")
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "https://two.example")
 
     with pytest.raises(SkyportalError, match="another SkyPortal deployment"):
         resolve_settings()

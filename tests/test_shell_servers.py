@@ -5,8 +5,8 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from skyportal.portal import PortalError
-from skyportal.shell import InteractiveShell
+from skyportalai.shell.interactive import InteractiveShell
+from skyportalai.shell.portal import PortalError
 
 PAYLOAD = [
     {"id": "102", "name": "cluster-dev", "status": "connected", "host_type": "Staging",
@@ -39,7 +39,7 @@ class FakeClient:
 
 @pytest.fixture
 def shell(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
     out = StringIO()
     console = Console(file=out, width=160, force_terminal=False)
     client = FakeClient(PAYLOAD)

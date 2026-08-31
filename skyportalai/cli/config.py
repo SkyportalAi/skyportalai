@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from skyportalai import _env
 from skyportalai._client import DEFAULT_BASE_URL
 from skyportalai._exceptions import SkyportalError
 
@@ -27,13 +28,11 @@ class CLISettings:
 
 
 def get_config_path() -> Path:
-    override = os.environ.get("SKYPORTAL_CONFIG_PATH")
-    return Path(override).expanduser() if override else Path.home() / ".skyportal" / "config.yaml"
+    return _env.config_path("config.yaml", "SKYPORTALAI_CONFIG_PATH")
 
 
 def get_credentials_path() -> Path:
-    override = os.environ.get("SKYPORTAL_CREDENTIALS_PATH")
-    return Path(override).expanduser() if override else Path.home() / ".skyportal" / "credentials.json"
+    return _env.config_path("credentials.json", "SKYPORTALAI_CREDENTIALS_PATH")
 
 
 def resolve_settings(*, base_url: str | None = None) -> CLISettings:
@@ -50,8 +49,8 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
     stored_url = credentials.get("base_url")
     effective_url = (
         base_url
-        or os.environ.get("SKYPORTAL_BASE_URL")
-        or os.environ.get("SKYPORTAL_URL")
+        or _env.get("SKYPORTALAI_BASE_URL")
+        or _env.get("SKYPORTALAI_URL")
         or (str(configured_url) if configured_url else None)
         or (str(stored_url) if stored_url else None)
         or DEFAULT_BASE_URL
@@ -65,16 +64,17 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
     if timeout <= 0:
         raise SkyportalError(f"Invalid request timeout in {config_path}: it must be greater than zero.")
 
-    api_key = os.environ.get("SKYPORTAL_API_KEY")
-    source = "SKYPORTAL_API_KEY" if api_key else None
+    # ACCESS_TOKEN first, matching shell/portal.py._env_access_token and what
+    # docs/deployment.md states. This path preferred API_KEY, so with both set the CLI
+    # could authenticate as a different identity than the shell did.
+    api_key, source = _env.lookup("SKYPORTALAI_ACCESS_TOKEN")
     if not api_key:
-        api_key = os.environ.get("SKYPORTAL_ACCESS_TOKEN")
-        source = "SKYPORTAL_ACCESS_TOKEN" if api_key else None
+        api_key, source = _env.lookup("SKYPORTALAI_API_KEY")
     if not api_key and credentials.get("access_token"):
         if stored_url and str(stored_url).rstrip("/") != effective_url:
             raise SkyportalError(
                 "Stored credentials belong to another SkyPortal deployment. "
-                "Set SKYPORTAL_API_KEY or update the selected base URL."
+                "Set SKYPORTALAI_API_KEY or update the selected base URL."
             )
         api_key = str(credentials["access_token"])
         source = str(credentials_path)

@@ -42,9 +42,9 @@ class FakeAnsibleResource:
 
 
 def _fake_client(monkeypatch, tmp_path):
-    monkeypatch.setenv("SKYPORTAL_CONFIG_PATH", str(tmp_path / "config.yaml"))
-    monkeypatch.setenv("SKYPORTAL_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk-test")
+    monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-test")
     resource = FakeAnsibleResource()
     monkeypatch.setattr(
         CLIContext,

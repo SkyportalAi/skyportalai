@@ -74,7 +74,7 @@ the project is created on the first successful upload.
    /tmp/skyportal-check/bin/pip install \
      --index-url https://test.pypi.org/simple/ \
      --extra-index-url https://pypi.org/simple/ skyportalai
-   /tmp/skyportal-check/bin/skyportal --help
+   /tmp/skyportal-check/bin/skyportalai --help
    ```
 
    The extra index is needed because TestPyPI does not mirror the runtime
@@ -97,10 +97,11 @@ the project is created on the first successful upload.
 
 - The workflow attaches [PEP 740](https://peps.python.org/pep-0740/) digital
   attestations automatically; no extra configuration is required.
-- The distribution is named `skyportalai`, but it also installs a top-level
-  `skyportal` import package. An unrelated astronomy project owns the
-  `skyportal` *distribution* name on PyPI, so installing both in one
-  environment would collide on that import name.
+- The distribution is named `skyportalai`. Through 0.2.x it still installs a
+  deprecated top-level `skyportal` import shim. An unrelated astronomy project
+  owns the `skyportal` *distribution* name on PyPI, so installing both in one
+  environment collides on that import name; dropping the shim in 0.3.0 removes
+  the collision.
 - A "pending" publisher does not reserve the project name. If someone else
   registers `skyportalai` before the first successful upload, the pending
   publisher is invalidated. The name is only held once a release actually

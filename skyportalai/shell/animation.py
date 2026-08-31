@@ -1,6 +1,5 @@
 """Skyportal terminal branding and startup animation."""
 
-import os
 import time
 from math import hypot
 from typing import Dict, List, Tuple
@@ -9,6 +8,8 @@ from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.text import Text
+
+from skyportalai import _env
 
 _PIXEL_STYLES: Dict[str, Tuple[str, str]] = {
     "O": ("██", "bold #052e7a"),
@@ -208,13 +209,13 @@ def show_startup_animation(console: Console, delay: float = 0.035) -> None:
         console.print("[bold cyan]Skyportal[/bold cyan] — your AI command center")
         return
 
-    if os.environ.get("SKYPORTAL_NO_ANIMATION"):
+    if _env.get("SKYPORTALAI_NO_ANIMATION"):
         show_static_banner(console)
         console.print()
         return
 
     try:
-        speed = max(0.0, float(os.environ.get("SKYPORTAL_ANIMATION_SPEED", "1")))
+        speed = max(0.0, float(_env.get("SKYPORTALAI_ANIMATION_SPEED", "1") or "1"))
     except ValueError:
         speed = 1.0
 

@@ -4,7 +4,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from skyportal.animation import (
+from skyportalai.shell.animation import (
     _ASTRONAUT_PIXELS,
     _PIXEL_STYLES,
     _final_banner,

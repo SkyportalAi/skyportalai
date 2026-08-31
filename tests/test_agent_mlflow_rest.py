@@ -254,7 +254,7 @@ def test_config_defaults_to_filesystem_mode() -> None:
 
 
 def test_config_default_mode_from_env_unset() -> None:
-    cfg = AgentConfig.from_env({"SKYPORTAL_AGENT_TOKEN": "t"})
+    cfg = AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": "t"})
     assert cfg.mlflow_mode == "filesystem"
     assert cfg.mlflow_tracking_uri is None
 
@@ -262,9 +262,9 @@ def test_config_default_mode_from_env_unset() -> None:
 def test_config_parses_rest_mode_and_uri() -> None:
     cfg = AgentConfig.from_env(
         {
-            "SKYPORTAL_AGENT_TOKEN": "t",
-            "SKYPORTAL_AGENT_MLFLOW_MODE": "rest",
-            "SKYPORTAL_AGENT_MLFLOW_TRACKING_URI": URI,
+            "SKYPORTALAI_AGENT_TOKEN": "t",
+            "SKYPORTALAI_AGENT_MLFLOW_MODE": "rest",
+            "SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI": URI,
         }
     )
     assert cfg.mlflow_mode == "rest"
@@ -274,7 +274,7 @@ def test_config_parses_rest_mode_and_uri() -> None:
 def test_config_warns_when_rest_mode_without_tracking_uri(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="skyportalai.agent.config"):
         cfg = AgentConfig.from_env(
-            {"SKYPORTAL_AGENT_TOKEN": "t", "SKYPORTAL_AGENT_MLFLOW_MODE": "rest"}
+            {"SKYPORTALAI_AGENT_TOKEN": "t", "SKYPORTALAI_AGENT_MLFLOW_MODE": "rest"}
         )
     assert cfg.mlflow_mode == "rest"
     assert cfg.mlflow_tracking_uri is None
@@ -285,9 +285,9 @@ def test_config_no_warning_when_rest_mode_with_uri(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="skyportalai.agent.config"):
         AgentConfig.from_env(
             {
-                "SKYPORTAL_AGENT_TOKEN": "t",
-                "SKYPORTAL_AGENT_MLFLOW_MODE": "rest",
-                "SKYPORTAL_AGENT_MLFLOW_TRACKING_URI": URI,
+                "SKYPORTALAI_AGENT_TOKEN": "t",
+                "SKYPORTALAI_AGENT_MLFLOW_MODE": "rest",
+                "SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI": URI,
             }
         )
     assert not any("TRACKING_URI" in r.getMessage() for r in caplog.records)
@@ -295,7 +295,7 @@ def test_config_no_warning_when_rest_mode_with_uri(caplog) -> None:
 
 def test_config_unknown_mode_coerced_to_filesystem() -> None:
     cfg = AgentConfig.from_env(
-        {"SKYPORTAL_AGENT_TOKEN": "t", "SKYPORTAL_AGENT_MLFLOW_MODE": "databricks"}
+        {"SKYPORTALAI_AGENT_TOKEN": "t", "SKYPORTALAI_AGENT_MLFLOW_MODE": "databricks"}
     )
     assert cfg.mlflow_mode == "filesystem"
 

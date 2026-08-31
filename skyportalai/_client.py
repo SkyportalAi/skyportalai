@@ -1,7 +1,6 @@
 """The SkyPortal API client."""
 from __future__ import annotations
 
-import os
 import time
 import warnings
 from typing import Any
@@ -9,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
+from . import _env
 from ._exceptions import (
     APIConnectionError,
     APIError,
@@ -89,9 +89,9 @@ def _validate_base_url(base_url: str) -> None:
 
     loopback = host in _LOOPBACK_HOSTS or host.endswith(".localhost")
     if parts.scheme != "https" and not loopback:
-        if os.environ.get("SKYPORTAL_ALLOW_INSECURE") == "1":
+        if _env.get("SKYPORTALAI_ALLOW_INSECURE") == "1":
             warnings.warn(
-                f"SKYPORTAL_ALLOW_INSECURE=1: sending the API key over "
+                f"SKYPORTALAI_ALLOW_INSECURE=1: sending the API key over "
                 f"non-HTTPS base URL {shown}",
                 stacklevel=3,
             )
@@ -99,7 +99,7 @@ def _validate_base_url(base_url: str) -> None:
             raise SkyportalError(
                 f"Refusing non-HTTPS base_url {shown!r}: the API key would be "
                 "sent in cleartext. Use an https:// URL (plain http:// is "
-                "allowed for loopback hosts, or set SKYPORTAL_ALLOW_INSECURE=1 "
+                "allowed for loopback hosts, or set SKYPORTALAI_ALLOW_INSECURE=1 "
                 "to override for a trusted internal setup)."
             )
 
@@ -113,8 +113,8 @@ class Skyportal:
     """Synchronous SkyPortal API client.
 
     Args:
-        api_key: Bearer credential. Falls back to ``SKYPORTAL_API_KEY``.
-        base_url: API root. Falls back to ``SKYPORTAL_BASE_URL`` then
+        api_key: Bearer credential. Falls back to ``SKYPORTALAI_API_KEY``.
+        base_url: API root. Falls back to ``SKYPORTALAI_BASE_URL`` then
             ``DEFAULT_BASE_URL``. A trailing slash is stripped.
         timeout: per-request timeout in seconds.
         max_retries: retry budget for idempotent (GET) requests on network
@@ -130,11 +130,11 @@ class Skyportal:
         max_retries: int = 2,
         session: requests.Session | None = None,
     ):
-        api_key = api_key or os.environ.get("SKYPORTAL_API_KEY")
+        api_key = api_key or _env.get("SKYPORTALAI_API_KEY")
         if not api_key:
             raise SkyportalError(
                 "No API key provided. Pass api_key=... or set the "
-                "SKYPORTAL_API_KEY environment variable."
+                "SKYPORTALAI_API_KEY environment variable."
             )
         self.api_key = api_key
 
@@ -143,7 +143,7 @@ class Skyportal:
         if max_retries < 0:
             raise ValueError(f"max_retries must be >= 0, got {max_retries}")
 
-        base_url = base_url or os.environ.get("SKYPORTAL_BASE_URL") or DEFAULT_BASE_URL
+        base_url = base_url or _env.get("SKYPORTALAI_BASE_URL") or DEFAULT_BASE_URL
         self.base_url = base_url.rstrip("/")
         _check_base_url(self.base_url)
 

@@ -9,7 +9,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from skyportal.shell import InteractiveShell
+from skyportalai.shell.interactive import InteractiveShell
 
 
 def _tool_message(
@@ -355,7 +355,7 @@ class TestEmptyTurnMessage:
     that rather than a bare dead end."""
 
     def test_empty_turn_message_names_chat_and_status(self):
-        from skyportal.portal import ChatTurnResult
+        from skyportalai.shell.portal import ChatTurnResult
 
         console = _console()
         shell = InteractiveShell(
