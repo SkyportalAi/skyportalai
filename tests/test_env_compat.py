@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import warnings
 
 import pytest
@@ -111,3 +114,83 @@ def test_legacy_package_import_warns():
     with pytest.warns(DeprecationWarning, match="skyportalai"):
         module = importlib.import_module("skyportal")
     assert module.__version__
+
+
+def _run_probe(tmp_path, *, enable_filter: bool, trigger: str) -> str:
+    """Trigger a warning from a real module, not from ``__main__``.
+
+    Python's default filter shows DeprecationWarning attributed to
+    ``__main__``, so a ``python -c`` probe would report warnings as visible
+    even with no filter installed and prove nothing about library code.
+    """
+    (tmp_path / "probe_module.py").write_text(
+        "import warnings\n"
+        "from skyportalai import _env\n"
+        "def go():\n"
+        f"    {trigger}\n"
+    )
+    driver = (
+        "import io, contextlib, sys;"
+        f"sys.path.insert(0, {str(tmp_path)!r});"
+        "from skyportalai import _env;"
+        + ("_env.enable_deprecation_warnings();" if enable_filter else "")
+        + "import probe_module;"
+        "buf = io.StringIO();"
+        "ctx = contextlib.redirect_stderr(buf);"
+        "ctx.__enter__();"
+        "probe_module.go();"
+        "ctx.__exit__(None, None, None);"
+        "print(buf.getvalue())"
+    )
+    environment = {**os.environ, "SKYPORTAL_API_KEY": "x"}
+    environment.pop("SKYPORTALAI_API_KEY", None)
+    result = subprocess.run(
+        [sys.executable, "-c", driver], capture_output=True, text=True, env=environment
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_deprecation_warnings_are_hidden_by_default(tmp_path):
+    """Baseline: without the filter the notice is emitted and swallowed."""
+    output = _run_probe(tmp_path, enable_filter=False, trigger="_env.get('SKYPORTALAI_API_KEY')")
+    assert "SKYPORTAL_API_KEY" not in output
+
+
+def test_enable_deprecation_warnings_makes_them_visible(tmp_path):
+    """The entry points call this so users actually see what to migrate."""
+    output = _run_probe(tmp_path, enable_filter=True, trigger="_env.get('SKYPORTALAI_API_KEY')")
+    assert "SKYPORTAL_API_KEY is deprecated" in output
+    assert "use SKYPORTALAI_API_KEY instead" in output
+
+
+def test_enable_deprecation_warnings_does_not_unsilence_unrelated_warnings(tmp_path):
+    """The filter is scoped to this package's 0.3.0 removal notices."""
+    output = _run_probe(
+        tmp_path,
+        enable_filter=True,
+        trigger="warnings.warn('some unrelated library notice', DeprecationWarning)",
+    )
+    assert "unrelated" not in output
+
+
+def test_console_script_surfaces_a_legacy_variable(tmp_path):
+    """End to end through the real entry point, as a user would hit it."""
+    environment = {
+        **os.environ,
+        "SKYPORTAL_CONFIG_PATH": str(tmp_path / "config.yaml"),
+        "SKYPORTAL_CREDENTIALS_PATH": str(tmp_path / "credentials.json"),
+    }
+    environment.pop("SKYPORTALAI_CONFIG_PATH", None)
+    environment.pop("SKYPORTALAI_CREDENTIALS_PATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "from skyportalai.cli import main; main()", "config", "show"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SKYPORTAL_CONFIG_PATH is deprecated" in result.stderr
+    assert "use SKYPORTALAI_CONFIG_PATH instead" in result.stderr

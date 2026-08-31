@@ -10,6 +10,7 @@ migrated in place the first time it is needed.
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
@@ -17,8 +18,27 @@ from pathlib import Path
 PREFIX = "SKYPORTALAI_"
 LEGACY_PREFIX = "SKYPORTAL_"
 
+REMOVAL_RELEASE = "0.3.0"
+_REMOVAL_NOTICE = f"will be removed in {REMOVAL_RELEASE}"
+
 CONFIG_DIR_NAME = ".skyportalai"
 LEGACY_CONFIG_DIR_NAME = ".skyportal"
+
+
+def enable_deprecation_warnings() -> None:
+    """Make this package's deprecation notices visible to CLI users.
+
+    Python silences :class:`DeprecationWarning` outside ``__main__`` by
+    default, so without this every "will be removed in 0.3.0" notice is
+    emitted and then swallowed — the people who need to migrate before 0.3.0
+    would never see one. Entry points call this; library importers keep
+    Python's default behaviour.
+    """
+    warnings.filterwarnings(
+        "always",
+        category=DeprecationWarning,
+        message=rf".*{re.escape(_REMOVAL_NOTICE)}.*",
+    )
 
 
 def legacy_name(name: str) -> str:
@@ -42,7 +62,7 @@ def lookup(name: str, default: str | None = None) -> tuple[str | None, str | Non
     value = os.environ.get(legacy)
     if value is not None:
         warnings.warn(
-            f"{legacy} is deprecated and will be removed in 0.3.0; use {name} instead.",
+            f"{legacy} is deprecated and {_REMOVAL_NOTICE}; use {name} instead.",
             DeprecationWarning,
             stacklevel=3,
         )
@@ -70,7 +90,7 @@ def get_from(environ: Mapping[str, str], name: str, default: str | None = None) 
     value = environ.get(legacy)
     if value is not None:
         warnings.warn(
-            f"{legacy} is deprecated and will be removed in 0.3.0; use {name} instead.",
+            f"{legacy} is deprecated and {_REMOVAL_NOTICE}; use {name} instead.",
             DeprecationWarning,
             stacklevel=3,
         )
@@ -100,7 +120,7 @@ def config_dir() -> Path:
     except OSError:
         warnings.warn(
             f"Could not migrate {legacy} to {current}; continuing to use {legacy}. "
-            "Move it manually before 0.3.0.",
+            f"It {_REMOVAL_NOTICE}; move it manually before then.",
             DeprecationWarning,
             stacklevel=2,
         )

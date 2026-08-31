@@ -19,7 +19,9 @@ Everything user-facing is now named `skyportalai`.
 ### Deprecated
 
 These keep working in 0.2.x and will be removed in 0.3.0. Each emits a
-`DeprecationWarning` naming its replacement.
+`DeprecationWarning` naming its replacement. Both console scripts enable that
+warning explicitly, because Python hides `DeprecationWarning` by default and
+the notices would otherwise never reach the people who need to migrate.
 
 - `SKYPORTAL_*` environment variables — use `SKYPORTALAI_*`. All 24 are
   supported, and the canonical name wins when both are set.

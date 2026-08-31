@@ -11,6 +11,7 @@ import logging
 import signal
 import threading
 
+from .. import _env
 from .._client import Skyportal
 from .config import AgentConfig
 from .health import HealthServer
@@ -70,6 +71,9 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Surface legacy SKYPORTAL_AGENT_* notices; Python hides them by default.
+    _env.enable_deprecation_warnings()
+    logging.captureWarnings(True)
     config = AgentConfig.from_env()
     runner = build_runner(config)
     _install_signal_handlers(runner)

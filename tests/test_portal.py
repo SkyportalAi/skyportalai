@@ -171,7 +171,7 @@ def test_saved_agent_token_does_not_report_connected(credential_path):
     assert SkyportalClient("https://app.skyportal.ai").is_authenticated() is False
 
 
-def test_api_key_env_alias_is_used_for_authentication(credential_path, monkeypatch):
+def test_api_key_env_is_used_for_authentication(credential_path, monkeypatch):
     monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_env_alias")
 
     client = SkyportalClient("https://app.skyportal.ai")
@@ -182,6 +182,38 @@ def test_api_key_env_alias_is_used_for_authentication(credential_path, monkeypat
 
     request = call.call_args.args[0]
     assert request.get_header("Authorization") == "Bearer " + "sk_env_alias"
+
+
+def test_legacy_api_key_env_still_authenticates(credential_path, monkeypatch):
+    """Pre-0.2.0 SKYPORTAL_API_KEY keeps working through the real client."""
+    monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_legacy")
+
+    with pytest.warns(DeprecationWarning, match="SKYPORTAL_API_KEY"):
+        client = SkyportalClient("https://app.skyportal.ai")
+        assert client.is_authenticated() is True
+
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
+        assert client.servers() == []
+
+    request = call.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer " + "sk_legacy"
+
+
+def test_legacy_access_token_env_still_authenticates(credential_path, monkeypatch):
+    """Pre-0.2.0 SKYPORTAL_ACCESS_TOKEN keeps its precedence over the API key."""
+    monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_canonical")
+    monkeypatch.setenv("SKYPORTAL_ACCESS_TOKEN", "skt_legacy")
+
+    with pytest.warns(DeprecationWarning, match="SKYPORTAL_ACCESS_TOKEN"):
+        client = SkyportalClient("https://app.skyportal.ai")
+        with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
+            assert client.servers() == []
+
+    request = call.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer " + "skt_legacy"
 
 
 def test_access_token_env_precedes_api_key_alias(credential_path, monkeypatch):
