@@ -27,6 +27,15 @@ poetry run ruff check .
 poetry check --strict
 ```
 
+`./run.sh` is a launcher for running the CLI from a checkout; it uses uv and
+installs runtime dependencies only. Both it and Poetry default to `.venv`, so
+running the launcher after `poetry install` prunes the dev tools from that
+environment. Set `SKYPORTAL_VENV` to keep them apart:
+
+```console
+SKYPORTAL_VENV=~/.cache/skyportal-cli ./run.sh
+```
+
 The normal test suite must not contact live services. Use `requests-mock`,
 temporary paths, and environment isolation.
 

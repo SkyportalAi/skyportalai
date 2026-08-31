@@ -12,6 +12,15 @@ The launcher installs [uv](https://docs.astral.sh/uv/) if it is missing, provisi
 
 Set `SKYPORTAL_VENV` to place the environment somewhere other than `.venv`.
 
+Contributors who also run `poetry install` should do so: both tools default to
+`.venv`, and the launcher installs runtime dependencies only, so running it
+afterwards prunes `pytest`, `ruff` and the `agent` extra from that environment.
+Either point the launcher elsewhere, or rerun `poetry install --all-extras`.
+
+```bash
+SKYPORTAL_VENV=~/.cache/skyportal-cli ./run.sh
+```
+
 ## Manual installation
 
 ```bash
