@@ -1,6 +1,6 @@
 # Observability agent
 
-`skyportal-agent` discovers local Weights & Biases and MLflow runs, stores new
+`skyportalai-agent` discovers local Weights & Biases and MLflow runs, stores new
 run batches in a bounded disk queue, and sends them to SkyPortal. It is intended
 for a dedicated host or container with only the experiment volumes it needs.
 
@@ -9,7 +9,7 @@ for a dedicated host or container with only the experiment volumes it needs.
 ```console
 pip install "skyportalai[agent]"
 export SKYPORTAL_AGENT_TOKEN='agt_...'
-skyportal-agent
+skyportalai-agent
 ```
 
 The agent exposes `GET /healthz` on port 8080 and handles `SIGTERM`/`SIGINT` with
@@ -22,7 +22,7 @@ a final delivery attempt.
 | `SKYPORTAL_AGENT_TOKEN` | required | Host-bound observability upload token |
 | `SKYPORTAL_BASE_URL` | `https://app.skyportal.ai` | SkyPortal API root |
 | `SKYPORTAL_AGENT_INTERVAL_SECONDS` | `60` | Seconds between scans |
-| `SKYPORTAL_AGENT_STATE_DIR` | `/var/lib/skyportal-agent` | Catalog and delivery spool |
+| `SKYPORTAL_AGENT_STATE_DIR` | `/var/lib/skyportalai-agent` | Catalog and delivery spool |
 | `SKYPORTAL_AGENT_QUEUE_MAX_BATCHES` | `1000` | Maximum on-disk batches |
 | `SKYPORTAL_AGENT_HEALTHZ_PORT` | `8080` | Liveness endpoint port |
 | `SKYPORTAL_AGENT_ENABLE_WANDB` | `true` | Enable W&B discovery |
@@ -38,7 +38,7 @@ For REST-backed MLflow discovery:
 ```console
 export SKYPORTAL_AGENT_MLFLOW_MODE=rest
 export SKYPORTAL_AGENT_MLFLOW_TRACKING_URI=https://mlflow.example
-skyportal-agent
+skyportalai-agent
 ```
 
 ## Data and privacy

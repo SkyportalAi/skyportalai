@@ -276,7 +276,7 @@ class InteractiveShell:
         else:
             state_style, state = "class:guest", "guest"
         fragments: List[Tuple[str, str]] = [
-            ("class:brand", "skyportal"),
+            ("class:brand", "skyportalai"),
             ("", " ["),
             (state_style, state),
             ("", "]"),

@@ -33,9 +33,8 @@ dependencies = [
 agent = ["wandb>=0.28.1,<1.0"]
 
 [project.scripts]
-skyportal-agent = "skyportalai.agent.__main__:main"
-skyportal = "skyportal.cli:main"
 skyportalai = "skyportalai.cli:main"
+skyportalai-agent = "skyportalai.agent.__main__:main"
 
 [project.urls]
 Homepage = "https://skyportal.ai"

@@ -121,4 +121,4 @@ ensure_venv() {
 ensure_venv
 
 "$VENV_DIR/bin/python" -m pip install -q -e "$ROOT_DIR"
-exec "$VENV_DIR/bin/skyportal" start
+exec "$VENV_DIR/bin/skyportalai" start

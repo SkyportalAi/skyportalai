@@ -55,7 +55,7 @@ Inside the terminal, run `/login` once, list infrastructure with `/servers`,
 select one or more hosts with `/server`, and ask what changed:
 
 ```text
-skyportal [connected] > diagnose the latest deployment
+skyportalai [connected] > diagnose the latest deployment
 ```
 
 Useful commands:

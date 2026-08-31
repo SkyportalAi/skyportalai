@@ -1,6 +1,6 @@
 # Skyportal CLI architecture
 
-The distribution exposes two frontends. `skyportal` is the persistent Click /
+The distribution exposes two frontends. `skyportalai` is the persistent Click /
 prompt-toolkit terminal described below. `skyportalai` is a Typer interface for
 automation and calls the public `skyportalai.Skyportal` SDK resources, with
 optional stable JSON output.
@@ -74,8 +74,8 @@ website serializes REST and browser turns and scope mutations with the same
 token-owned Redis lease, rejects changes while approvals are pending, and
 renews the lease during long turns; losing ownership cancels the local worker
 instead of allowing two clients to execute against different scopes.
-The interactive `skyportal` shell accepts multiple IDs with `/server 12 18`,
-and the one-shot `skyportal ask` command accepts repeated `--server` options.
+The interactive `skyportalai` shell accepts multiple IDs with `/server 12 18`,
+and the one-shot `skyportalai ask` command accepts repeated `--server` options.
 
 ## Local state
 
