@@ -1,12 +1,14 @@
 # Skyportal Agent
 
 [![CI](https://github.com/SkyportalAi/skyportalai/actions/workflows/ci.yml/badge.svg)](https://github.com/SkyportalAi/skyportalai/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/skyportalai.svg)](https://pypi.org/project/skyportalai/)
+[![Python versions](https://img.shields.io/pypi/pyversions/skyportalai.svg)](https://pypi.org/project/skyportalai/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/SkyportalAi/skyportalai/blob/main/LICENSE)
 
 An open-source AI infrastructure engineer that explains what changed before
 production breaks.
 
-![Skyportal diagnosing an infrastructure regression](docs/assets/skyportal-diagnose.gif)
+![Skyportal diagnosing an infrastructure regression](https://raw.githubusercontent.com/SkyportalAi/skyportalai/main/docs/assets/skyportal-diagnose.gif)
 
 Skyportal continuously builds a timeline of your AI infrastructure by observing
 deployments, Kubernetes events, GPU metrics, configuration changes, logs, and
@@ -44,6 +46,13 @@ the most likely change, and report its confidence.
 ## Get started
 
 Requires Python 3.11 or newer.
+
+```bash
+pip install skyportalai
+skyportal
+```
+
+Or run from a checkout:
 
 ```bash
 git clone https://github.com/SkyportalAi/skyportalai.git
@@ -209,7 +218,7 @@ running the agent on experiment volumes:
 pip install "skyportalai[agent]"
 ```
 
-See [agent deployment and data handling](docs/agent.md).
+See [agent deployment and data handling](https://github.com/SkyportalAi/skyportalai/blob/main/docs/agent.md).
 
 ## Development
 
@@ -220,9 +229,10 @@ poetry run ruff check .
 poetry check --strict
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute. Report security issues
-privately using [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](https://github.com/SkyportalAi/skyportalai/blob/main/CONTRIBUTING.md) to contribute, and
+[RELEASING.md](https://github.com/SkyportalAi/skyportalai/blob/main/docs/RELEASING.md) to cut a release. Report security issues
+privately using [SECURITY.md](https://github.com/SkyportalAi/skyportalai/blob/main/SECURITY.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/SkyportalAi/skyportalai/blob/main/LICENSE)
