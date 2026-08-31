@@ -8,13 +8,25 @@ From a source checkout:
 ./run.sh
 ```
 
-The launcher creates `.venv`, installs missing Debian/Ubuntu virtual-environment or pip support when possible, installs the package in editable mode, and starts `skyportal`.
+The launcher installs [uv](https://docs.astral.sh/uv/) if it is missing, provisions the Python version pinned in `.python-version`, installs the project and its dependencies, and starts `skyportal`.
+
+Set `SKYPORTAL_VENV` to place the environment somewhere other than `.venv`.
 
 ## Manual installation
 
 ```bash
+uv sync --no-dev
+uv run skyportal
+```
+
+Without uv, note that an editable install needs a pip new enough to support
+[PEP 660](https://peps.python.org/pep-0660/) (pip 21.3+), because this project
+builds with `poetry-core` rather than setuptools:
+
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e .
 skyportal
 ```
@@ -72,9 +84,16 @@ Use `skyportal ask` for a one-shot agent request. Interactive approvals require 
 
 ## Troubleshooting
 
-### Virtual environment has no pip
+### Virtual environment is broken or has no pip
 
-Rerun `./run.sh`; it tries `ensurepip`, Debian/Ubuntu Python packages, and the official pip bootstrap in sequence.
+Delete `.venv` and rerun `./run.sh`. uv rebuilds the environment from scratch
+and does not depend on the interpreter's bundled pip.
+
+### `Directory cannot be installed in editable mode`
+
+Raised by a pip older than 21.3, which predates PEP 660 and cannot install a
+`poetry-core` project in editable mode. Use `./run.sh`, or upgrade pip first
+with `python -m pip install --upgrade pip`.
 
 ### Access denied
 
@@ -89,4 +108,4 @@ Return to the `/keys/` URL printed in the terminal. The product website also pre
 
 ### Cloudflare blocks the request
 
-Current releases send an explicit `Skyportal-CLI` user agent. Reinstall the editable package with `./run.sh` if an older process still identifies itself as Python's default URL client.
+Current releases send an explicit `Skyportal-CLI` user agent. Reinstall with `./run.sh` if an older process still identifies itself as Python's default URL client.
