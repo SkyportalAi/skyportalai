@@ -43,6 +43,17 @@ jobs:
             exit 1
           fi
 
+      # workflow_dispatch skips the tag guard above (there is no tag to check),
+      # so a dispatch aimed at real PyPI would otherwise publish an unguarded
+      # version from any branch. PyPI never allows re-uploading a version, so
+      # restrict that combination to the default branch. TestPyPI stays open:
+      # dry-running a branch is the point.
+      - name: Refuse a PyPI dispatch from outside the default branch
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          echo "::error::publishing to PyPI by hand is only allowed from ${{ github.event.repository.default_branch }} (got ${GITHUB_REF_NAME}). Tag a release instead, or dispatch against testpypi."
+          exit 1
+
       - name: Build
         run: uv build
 
