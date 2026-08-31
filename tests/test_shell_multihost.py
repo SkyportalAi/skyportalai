@@ -5,8 +5,8 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from skyportal.portal import ChatTurnResult, PortalError
-from skyportal.shell import InteractiveShell
+from skyportalai.shell.interactive import InteractiveShell
+from skyportalai.shell.portal import ChatTurnResult, PortalError
 
 
 class FakeClient:
@@ -89,7 +89,7 @@ class FakeClient:
 
 @pytest.fixture
 def shell(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
     client = FakeClient()
     console = Console(file=StringIO(), force_terminal=False, width=100)
     instance = InteractiveShell(

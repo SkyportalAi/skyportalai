@@ -16,31 +16,31 @@ The launcher creates `.venv`, installs missing Debian/Ubuntu virtual-environment
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
-skyportal
+skyportalai
 ```
 
 Python 3.11 or newer is required.
 
 ## Connect to production
 
-The default application URL is `https://app.skyportal.ai`. Run `skyportal login`, create an account API key on the browser page, and paste the `sk_` value into the hidden prompt.
+The default application URL is `https://app.skyportal.ai`. Run `skyportalai login`, create an account API key on the browser page, and paste the `sk_` value into the hidden prompt.
 
 To use an existing key non-persistently:
 
 ```bash
-export SKYPORTAL_API_KEY='sk_...'
-skyportal
+export SKYPORTALAI_API_KEY='sk_...'
+skyportalai
 ```
 
-`skyportal` also accepts `SKYPORTAL_ACCESS_TOKEN` for compatibility.
+`skyportalai` also accepts `SKYPORTALAI_ACCESS_TOKEN` for compatibility.
 
 Avoid putting credentials directly in shell history. Do not use `agt_` observability-agent tokens with the CLI.
 
 ## Self-hosted deployment
 
 ```bash
-skyportal configure --portal-url https://skyportal.example
-skyportal login
+skyportalai configure --portal-url https://skyportal.example
+skyportalai login
 ```
 
 The configured deployment and credential deployment must match.
@@ -57,7 +57,7 @@ skyportalai config show
 skyportalai --json chat send --server 42 "Show disk usage"
 ```
 
-Use the interactive `skyportal` command when a chat may require an approval
+Use the interactive `skyportalai` command when a chat may require an approval
 prompt.
 
 ## Noninteractive terminals
@@ -65,10 +65,10 @@ prompt.
 Disable animation for logs or automation:
 
 ```bash
-SKYPORTAL_NO_ANIMATION=1 skyportal servers
+SKYPORTALAI_NO_ANIMATION=1 skyportalai servers
 ```
 
-Use `skyportal ask` for a one-shot agent request. Interactive approvals require the persistent shell.
+Use `skyportalai ask` for a one-shot agent request. Interactive approvals require the persistent shell.
 
 ## Troubleshooting
 
@@ -79,7 +79,7 @@ Rerun `./run.sh`; it tries `ensurepip`, Debian/Ubuntu Python packages, and the o
 ### Access denied
 
 - Confirm the URL is the application host, not a marketing site.
-- Run `skyportal login` and create a fresh `sk_` API key.
+- Run `skyportalai login` and create a fresh `sk_` API key.
 - Ensure the key is active and not expired or revoked.
 - An `agt_` token cannot authorize account or chat operations.
 

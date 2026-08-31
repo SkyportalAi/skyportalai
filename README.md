@@ -49,7 +49,7 @@ Requires Python 3.11 or newer.
 
 ```bash
 pip install skyportalai
-skyportal
+skyportalai
 ```
 
 Or run from a checkout:
@@ -64,7 +64,7 @@ Inside the terminal, run `/login` once, list infrastructure with `/servers`,
 select one or more hosts with `/server`, and ask what changed:
 
 ```text
-skyportal [connected] > diagnose the latest deployment
+skyportalai [connected] > diagnose the latest deployment
 ```
 
 Useful commands:
@@ -128,8 +128,8 @@ When replacing scope, omitting namespace data preserves retained selections
 while `{}` clears them. The singular `server_id=12` creation form remains
 supported.
 
-Set `SKYPORTAL_API_KEY` instead of passing a key directly. The client also
-supports `SKYPORTAL_BASE_URL` for self-hosted deployments.
+Set `SKYPORTALAI_API_KEY` instead of passing a key directly. The client also
+supports `SKYPORTALAI_BASE_URL` for self-hosted deployments.
 
 ## Automation
 

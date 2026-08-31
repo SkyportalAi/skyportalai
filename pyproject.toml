@@ -1,6 +1,6 @@
 [project]
 name = "skyportalai"
-version = "0.1.1"
+version = "0.2.0"
 description = "Official Python SDK and command-line client for the SkyPortal API"
 authors = [{ name = "SkyPortal", email = "tech@skyportal.ai" }]
 readme = "README.md"
@@ -33,9 +33,8 @@ dependencies = [
 agent = ["wandb>=0.28.1,<1.0"]
 
 [project.scripts]
-skyportal-agent = "skyportalai.agent.__main__:main"
-skyportal = "skyportal.cli:main"
 skyportalai = "skyportalai.cli:main"
+skyportalai-agent = "skyportalai.agent.__main__:main"
 
 [project.urls]
 Homepage = "https://skyportal.ai"
@@ -44,6 +43,7 @@ Repository = "https://github.com/SkyportalAi/skyportalai"
 Issues = "https://github.com/SkyportalAi/skyportalai/issues"
 
 [tool.poetry]
+# `skyportal` is a deprecated import shim through 0.2.x; drop it in 0.3.0.
 packages = [{ include = "skyportalai" }, { include = "skyportal" }]
 
 [tool.poetry.group.dev.dependencies]

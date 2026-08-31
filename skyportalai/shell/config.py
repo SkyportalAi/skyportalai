@@ -1,10 +1,11 @@
 """Skyportal CLI configuration."""
 
-import os
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field
+
+from skyportalai import _env
 
 
 class PortalConfig(BaseModel):
@@ -30,12 +31,9 @@ class SkyportalConfig(BaseModel):
 class ConfigManager:
     """Load and save Skyportal CLI configuration."""
 
-    DEFAULT_CONFIG_PATH = Path.home() / ".skyportal" / "config.yaml"
-
     @classmethod
     def get_config_path(cls) -> Path:
-        override = os.environ.get("SKYPORTAL_CONFIG_PATH")
-        return Path(override).expanduser() if override else cls.DEFAULT_CONFIG_PATH
+        return _env.config_path("config.yaml", "SKYPORTALAI_CONFIG_PATH")
 
     @classmethod
     def load_config(cls) -> SkyportalConfig:

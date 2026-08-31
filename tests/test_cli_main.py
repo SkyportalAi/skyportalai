@@ -17,12 +17,12 @@ runner = CliRunner()
 
 
 def _isolated(monkeypatch, tmp_path):
-    monkeypatch.setenv("SKYPORTAL_CONFIG_PATH", str(tmp_path / "config.yaml"))
-    monkeypatch.setenv("SKYPORTAL_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
-    monkeypatch.delenv("SKYPORTAL_API_KEY", raising=False)
-    monkeypatch.delenv("SKYPORTAL_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("SKYPORTAL_BASE_URL", raising=False)
-    monkeypatch.delenv("SKYPORTAL_URL", raising=False)
+    monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
+    monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_BASE_URL", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_URL", raising=False)
 
 
 def test_help_and_version(monkeypatch, tmp_path):
@@ -45,8 +45,8 @@ def test_module_entry_point_does_not_load_main_twice(monkeypatch, tmp_path):
         cwd=Path(__file__).resolve().parents[1],
         env={
             **os.environ,
-            "SKYPORTAL_CONFIG_PATH": str(tmp_path / "config.yaml"),
-            "SKYPORTAL_CREDENTIALS_PATH": str(tmp_path / "credentials.json"),
+            "SKYPORTALAI_CONFIG_PATH": str(tmp_path / "config.yaml"),
+            "SKYPORTALAI_CREDENTIALS_PATH": str(tmp_path / "credentials.json"),
         },
         capture_output=True,
         text=True,
@@ -60,7 +60,7 @@ def test_module_entry_point_does_not_load_main_twice(monkeypatch, tmp_path):
 
 def test_config_show_json_never_prints_the_key(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk-super-secret")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-super-secret")
 
     result = runner.invoke(app, ["--json", "config", "show"])
 
@@ -68,7 +68,7 @@ def test_config_show_json_never_prints_the_key(monkeypatch, tmp_path):
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["data"]["authenticated"] is True
-    assert payload["data"]["api_key_source"] == "SKYPORTAL_API_KEY"
+    assert payload["data"]["api_key_source"] == "SKYPORTALAI_API_KEY"
     assert "sk-super-secret" not in result.stdout
 
 

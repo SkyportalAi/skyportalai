@@ -5,8 +5,8 @@ from io import StringIO
 from prompt_toolkit.document import Document
 from rich.console import Console
 
-from skyportal.portal import ChatTurnResult, PortalError
-from skyportal.shell import COMMANDS, InteractiveShell, SkyportalCompleter
+from skyportalai.shell.interactive import COMMANDS, InteractiveShell, SkyportalCompleter
+from skyportalai.shell.portal import ChatTurnResult, PortalError
 
 
 class FakeClient:
@@ -111,7 +111,7 @@ def test_prompt_uses_compact_reference_style():
 
     text = "".join(part[1] for part in shell._prompt_fragments())
 
-    assert text == "skyportal [connected]  > "
+    assert text == "skyportalai [connected]  > "
 
 
 def test_exit_still_completes_after_completion_message():

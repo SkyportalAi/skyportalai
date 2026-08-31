@@ -7,8 +7,8 @@ import pytest
 from prompt_toolkit.document import Document
 from rich.console import Console
 
-from skyportal.portal import ChatTurnResult, PortalError
-from skyportal.shell import COMMANDS, InteractiveShell, SkyportalCompleter
+from skyportalai.shell.interactive import COMMANDS, InteractiveShell, SkyportalCompleter
+from skyportalai.shell.portal import ChatTurnResult, PortalError
 
 
 class _Session:
@@ -76,7 +76,7 @@ class PermissionClient:
 
 
 def _shell(client, tmp_path, monkeypatch, session=None):
-    monkeypatch.setenv("SKYPORTAL_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
     console = Console(file=StringIO(), force_terminal=False, width=160)
     shell = InteractiveShell(
         console=console,
@@ -151,7 +151,7 @@ def test_autoapprove_waits_out_stale_snapshot_then_approves_next_id_once(
     session = _Session()
     shell, console = _shell(client, tmp_path, monkeypatch, session=session)
 
-    with patch("skyportal.shell.time.sleep") as sleep:
+    with patch("skyportalai.shell.interactive.time.sleep") as sleep:
         shell._process_turn(_turn("awaiting_approval", (first, second)))
 
     assert session.calls == 0

@@ -25,8 +25,8 @@ class CLIContext:
     def client(self) -> Skyportal:
         if not self.settings.api_key:
             raise SkyportalError(
-                "No API key configured. Set SKYPORTAL_API_KEY or run the existing "
-                "'skyportal login' flow."
+                "No API key configured. Set SKYPORTALAI_API_KEY or run the "
+                "'skyportalai login' flow."
             )
         return Skyportal(
             api_key=self.settings.api_key,

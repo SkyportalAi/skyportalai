@@ -91,8 +91,8 @@ def _default_search_roots() -> list[Path]:
     """Common directories to scan for ML experiment data.
 
     Avoids scanning '/' which is expensive on large filesystems.
-    Override the search location via the ``SKYPORTAL_AGENT_WANDB_DIR`` /
-    ``SKYPORTAL_AGENT_MLFLOW_DIR`` env vars (see :class:`AgentConfig`).
+    Override the search location via the ``SKYPORTALAI_AGENT_WANDB_DIR`` /
+    ``SKYPORTALAI_AGENT_MLFLOW_DIR`` env vars (see :class:`AgentConfig`).
     """
     roots = [
         Path("/home"),

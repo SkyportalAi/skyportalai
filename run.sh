@@ -4,7 +4,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${SKYPORTAL_VENV:-"$ROOT_DIR/.venv"}"
+VENV_DIR="${SKYPORTALAI_VENV:-"${SKYPORTAL_VENV:-"$ROOT_DIR/.venv"}"}"
 PY_MINOR="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 
 log() {
@@ -121,4 +121,4 @@ ensure_venv() {
 ensure_venv
 
 "$VENV_DIR/bin/python" -m pip install -q -e "$ROOT_DIR"
-exec "$VENV_DIR/bin/skyportal" start
+exec "$VENV_DIR/bin/skyportalai" start

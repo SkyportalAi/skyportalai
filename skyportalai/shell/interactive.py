@@ -1,7 +1,6 @@
 """Persistent conversational Skyportal terminal shell."""
 
 import json
-import os
 import re
 import shlex
 import time
@@ -22,7 +21,9 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from skyportal.portal import (
+from skyportalai import _env
+
+from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
     CredentialStore,
@@ -181,13 +182,11 @@ class InteractiveShell:
 
     @staticmethod
     def _history_path() -> Path:
-        path = os.environ.get("SKYPORTAL_HISTORY_PATH")
-        return Path(path).expanduser() if path else Path.home() / ".skyportal" / "history"
+        return _env.config_path("history", "SKYPORTALAI_HISTORY_PATH")
 
     @staticmethod
     def _last_chat_path() -> Path:
-        path = os.environ.get("SKYPORTAL_LAST_CHAT_PATH")
-        return Path(path).expanduser() if path else Path.home() / ".skyportal" / "last_chat"
+        return _env.config_path("last_chat", "SKYPORTALAI_LAST_CHAT_PATH")
 
     def _load_previous_chat_id(self) -> Optional[int]:
         try:
@@ -276,7 +275,7 @@ class InteractiveShell:
         else:
             state_style, state = "class:guest", "guest"
         fragments: List[Tuple[str, str]] = [
-            ("class:brand", "skyportal"),
+            ("class:brand", "skyportalai"),
             ("", " ["),
             (state_style, state),
             ("", "]"),

@@ -5,14 +5,14 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from skyportal.portal import PortalError
-from skyportal.shell import COMMANDS, InteractiveShell
+from skyportalai.shell.interactive import COMMANDS, InteractiveShell
+from skyportalai.shell.portal import PortalError
 
 
 @pytest.fixture(autouse=True)
 def _isolate_last_chat(tmp_path, monkeypatch):
     """Keep the persisted 'previous chat' file out of the real home dir."""
-    monkeypatch.setenv("SKYPORTAL_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
 
 
 class FakeClient:

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import _env
 from .._client import DEFAULT_BASE_URL
 from .._exceptions import SkyportalError
 
@@ -102,26 +103,30 @@ class AgentConfig:
         """
         env = os.environ if environ is None else environ
 
-        token = (env.get("SKYPORTAL_AGENT_TOKEN") or "").strip()
+        def _get(name: str) -> str | None:
+            return _env.get_from(env, name)
+
+
+        token = (_get("SKYPORTALAI_AGENT_TOKEN") or "").strip()
         if not token:
             raise SkyportalError(
-                "No agent token provided. Set the SKYPORTAL_AGENT_TOKEN "
+                "No agent token provided. Set the SKYPORTALAI_AGENT_TOKEN "
                 "environment variable (sourced from the Kubernetes Secret)."
             )
 
-        base_url = (env.get("SKYPORTAL_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        base_url = (_get("SKYPORTALAI_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
         # MLflow source mode: "filesystem" (scan mlruns/) or "rest" (tracking
         # server API). Unknown values fall back to filesystem.
-        mlflow_mode = (env.get("SKYPORTAL_AGENT_MLFLOW_MODE") or "filesystem").strip().lower()
+        mlflow_mode = (_get("SKYPORTALAI_AGENT_MLFLOW_MODE") or "filesystem").strip().lower()
         if mlflow_mode not in ("filesystem", "rest"):
             mlflow_mode = "filesystem"
 
-        enable_mlflow = _parse_bool(env.get("SKYPORTAL_AGENT_ENABLE_MLFLOW"), True)
-        mlflow_tracking_uri = env.get("SKYPORTAL_AGENT_MLFLOW_TRACKING_URI") or None
+        enable_mlflow = _parse_bool(_get("SKYPORTALAI_AGENT_ENABLE_MLFLOW"), True)
+        mlflow_tracking_uri = _get("SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI") or None
         if enable_mlflow and mlflow_mode == "rest" and not mlflow_tracking_uri:
             logger.warning(
-                "SKYPORTAL_AGENT_MLFLOW_MODE=rest but SKYPORTAL_AGENT_MLFLOW_TRACKING_URI "
+                "SKYPORTALAI_AGENT_MLFLOW_MODE=rest but SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI "
                 "is unset; the MLflow REST scanner will be unavailable and MLflow "
                 "ingest will be skipped."
             )
@@ -129,31 +134,31 @@ class AgentConfig:
         return cls(
             token=token,
             base_url=base_url,
-            wandb_dir=_parse_path(env.get("SKYPORTAL_AGENT_WANDB_DIR")),
-            mlflow_dir=_parse_path(env.get("SKYPORTAL_AGENT_MLFLOW_DIR")),
+            wandb_dir=_parse_path(_get("SKYPORTALAI_AGENT_WANDB_DIR")),
+            mlflow_dir=_parse_path(_get("SKYPORTALAI_AGENT_MLFLOW_DIR")),
             interval_seconds=_parse_int(
-                env.get("SKYPORTAL_AGENT_INTERVAL_SECONDS"),
+                _get("SKYPORTALAI_AGENT_INTERVAL_SECONDS"),
                 DEFAULT_INTERVAL_SECONDS,
-                name="SKYPORTAL_AGENT_INTERVAL_SECONDS",
+                name="SKYPORTALAI_AGENT_INTERVAL_SECONDS",
                 minimum=1,
             ),
-            enable_wandb=_parse_bool(env.get("SKYPORTAL_AGENT_ENABLE_WANDB"), True),
+            enable_wandb=_parse_bool(_get("SKYPORTALAI_AGENT_ENABLE_WANDB"), True),
             enable_mlflow=enable_mlflow,
             mlflow_mode=mlflow_mode,
             mlflow_tracking_uri=mlflow_tracking_uri,
-            cluster_name=env.get("SKYPORTAL_AGENT_CLUSTER_NAME") or None,
-            state_dir=_parse_path(env.get("SKYPORTAL_AGENT_STATE_DIR")) or DEFAULT_STATE_DIR,
+            cluster_name=_get("SKYPORTALAI_AGENT_CLUSTER_NAME") or None,
+            state_dir=_parse_path(_get("SKYPORTALAI_AGENT_STATE_DIR")) or DEFAULT_STATE_DIR,
             healthz_port=_parse_int(
-                env.get("SKYPORTAL_AGENT_HEALTHZ_PORT"),
+                _get("SKYPORTALAI_AGENT_HEALTHZ_PORT"),
                 DEFAULT_HEALTHZ_PORT,
-                name="SKYPORTAL_AGENT_HEALTHZ_PORT",
+                name="SKYPORTALAI_AGENT_HEALTHZ_PORT",
                 minimum=1,
                 maximum=65535,
             ),
             queue_max_batches=_parse_int(
-                env.get("SKYPORTAL_AGENT_QUEUE_MAX_BATCHES"),
+                _get("SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES"),
                 DEFAULT_QUEUE_MAX_BATCHES,
-                name="SKYPORTAL_AGENT_QUEUE_MAX_BATCHES",
+                name="SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES",
                 minimum=1,
             ),
         )

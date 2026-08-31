@@ -1,19 +1,28 @@
 # Skyportal CLI architecture
 
-The distribution exposes two frontends. `skyportal` is the persistent Click /
-prompt-toolkit terminal described below. `skyportalai` is a Typer interface for
-automation and calls the public `skyportalai.Skyportal` SDK resources, with
-optional stable JSON output.
+The distribution exposes a single frontend. `skyportalai` is a Typer interface
+covering both the persistent prompt-toolkit terminal described below and the
+script-friendly subcommands that call the public `skyportalai.Skyportal` SDK
+resources, with optional stable JSON output. Run it with no arguments to enter
+the interactive shell.
+
+Before 0.2.0 there were two commands: a Click app named `skyportal` and a Typer
+app named `skyportalai`, with disjoint command sets. They were merged by
+porting the Click commands to Typer; `skyportal` no longer exists.
 
 ## Components
 
-- `skyportal.cli`: Click entry points for configuration, login, one-shot questions, server listing, and the interactive shell.
-- `skyportal.shell`: persistent prompt-toolkit command center with history, completion, Markdown output, chat cursors, server context, and approvals.
-- `skyportal.portal`: standard-library HTTP client for credential validation and the headless agent REST API.
-- `skyportal.animation`: responsive Rich ANSI branding and startup animation.
-- `skyportal.config`: application URL and timeout configuration under `~/.skyportal`.
-- `skyportalai.cli`: script-friendly configuration and chat subcommands backed
-  by the public SDK.
+- `skyportalai.cli.main`: the Typer root. Its `@app.callback()` declares the
+  global `--json` / `--base-url` options and is the only place `context.obj`
+  is set, so every subcommand depends on it running.
+- `skyportalai.cli.shell_commands`: configuration, login, one-shot questions,
+  server listing, and the interactive shell, ported from the former Click app.
+- `skyportalai.cli.{config,chat,ansible,kubernetes}`: script-friendly
+  subcommands backed by the public SDK.
+- `skyportalai.shell.interactive`: persistent prompt-toolkit command center with history, completion, Markdown output, chat cursors, server context, and approvals.
+- `skyportalai.shell.portal`: standard-library HTTP client for credential validation and the headless agent REST API.
+- `skyportalai.shell.animation`: responsive Rich ANSI branding and startup animation.
+- `skyportalai.shell.config`: application URL and timeout configuration under `~/.skyportalai`.
 
 ## Authentication
 
@@ -74,13 +83,16 @@ website serializes REST and browser turns and scope mutations with the same
 token-owned Redis lease, rejects changes while approvals are pending, and
 renews the lease during long turns; losing ownership cancels the local worker
 instead of allowing two clients to execute against different scopes.
-The interactive `skyportal` shell accepts multiple IDs with `/server 12 18`,
-and the one-shot `skyportal ask` command accepts repeated `--server` options.
+The interactive `skyportalai` shell accepts multiple IDs with `/server 12 18`,
+and the one-shot `skyportalai ask` command accepts repeated `--server` options.
 
 ## Local state
 
-- Configuration: `~/.skyportal/config.yaml`
-- Credentials: `~/.skyportal/credentials.json` (mode `0600`)
-- Prompt history: `~/.skyportal/history` (mode `0600`)
+- Configuration: `~/.skyportalai/config.yaml`
+- Credentials: `~/.skyportalai/credentials.json` (mode `0600`)
+- Prompt history: `~/.skyportalai/history` (mode `0600`)
+
+A pre-0.2.0 `~/.skyportal` directory is renamed to `~/.skyportalai` the first
+time a path under it is resolved.
 
 Environment variables can override each path for tests and managed installations.

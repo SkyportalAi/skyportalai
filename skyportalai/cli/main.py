@@ -12,11 +12,14 @@ from .config import resolve_settings, save_connection_config
 from .context import CLIContext
 from .context import get_state as _state
 from .output import Output
+from .shell_commands import run_shell
 
 app = typer.Typer(
     name="skyportalai",
     help="Drive the SkyPortal API and ops agent.",
-    no_args_is_help=True,
+    # Bare `skyportalai` drops into the interactive shell, matching the
+    # behaviour the standalone `skyportal` command had before 0.2.0.
+    invoke_without_command=True,
     pretty_exceptions_enable=False,
 )
 config_app = typer.Typer(help="Inspect or update CLI connection settings.")
@@ -38,7 +41,7 @@ def root(
     ] = False,
     base_url: Annotated[
         str | None,
-        typer.Option("--base-url", envvar="SKYPORTAL_BASE_URL", help="Override the API target."),
+        typer.Option("--base-url", envvar="SKYPORTALAI_BASE_URL", help="Override the API target."),
     ] = None,
     version: Annotated[
         bool,
@@ -52,6 +55,8 @@ def root(
         settings=settings,
         output=Output(json_mode=json_output, api_target=settings.base_url),
     )
+    if context.invoked_subcommand is None:
+        run_shell()
 
 
 @config_app.command("show")
@@ -107,10 +112,12 @@ def set_config(
 from .ansible import ansible_app  # noqa: E402
 from .chat import chat_app  # noqa: E402
 from .kubernetes import kubernetes_app  # noqa: E402
+from .shell_commands import register as _register_shell_commands  # noqa: E402
 
 app.add_typer(chat_app, name="chat")
 app.add_typer(ansible_app, name="ansible")
 app.add_typer(kubernetes_app, name="kubernetes")
+_register_shell_commands(app)
 
 
 def main() -> None:

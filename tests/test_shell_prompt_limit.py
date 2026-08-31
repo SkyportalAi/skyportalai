@@ -10,8 +10,8 @@ from io import StringIO
 
 from rich.console import Console
 
-from skyportal.portal import ChatTurnResult, SkyportalClient
-from skyportal.shell import InteractiveShell
+from skyportalai.shell.interactive import InteractiveShell
+from skyportalai.shell.portal import ChatTurnResult, SkyportalClient
 
 _NOTICE_TEXT = (
     "Monthly prompt limit reached (150 prompts). Upgrade to Pro for more prompts/month."
@@ -125,7 +125,7 @@ def test_rate_limited_turn_shows_the_notice_not_the_fallback(tmp_path, monkeypat
     rate-limited turn ends with the pre-turn status and, before this branch,
     an empty-content notice fell into the misleading 'finished with no
     messages to show — check for a typo' fallback."""
-    monkeypatch.setenv("SKYPORTAL_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
     shell, console = _shell()
     turn = ChatTurnResult(42, "idle", [_prompt_limit_message(text="")], [], 1)
 

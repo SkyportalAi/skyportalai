@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from skyportal.portal import (
+from skyportalai.shell.portal import (
     CLI_USER_AGENT,
     ChatTurnResult,
     CredentialStore,
@@ -47,9 +47,9 @@ def api_error(status, payload):
 @pytest.fixture
 def credential_path(tmp_path, monkeypatch):
     path = tmp_path / "credentials.json"
-    monkeypatch.setenv("SKYPORTAL_CREDENTIALS_PATH", str(path))
-    monkeypatch.delenv("SKYPORTAL_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("SKYPORTAL_API_KEY", raising=False)
+    monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(path))
+    monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
     return path
 
 
@@ -101,7 +101,7 @@ def test_login_opens_account_api_key_page(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     callback = []
 
-    with patch("skyportal.portal.webbrowser.open", return_value=True) as browser:
+    with patch("skyportalai.shell.portal.webbrowser.open", return_value=True) as browser:
         result = client.login(
             authorization_callback=lambda url, code: callback.append((url, code))
         )
@@ -116,7 +116,7 @@ def test_login_opens_account_api_key_page(credential_path):
 def test_supported_token_is_validated_before_save(credential_path, token):
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse([])) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
         client.set_access_token("  {}  ".format(token))
 
     request = call.call_args.args[0]
@@ -140,7 +140,7 @@ def test_invalid_token_is_not_saved_over_working_credential(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         side_effect=api_error(403, {"detail": "Invalid API key"}),
     ):
         with pytest.raises(PortalError, match="Invalid API key"):
@@ -152,7 +152,7 @@ def test_invalid_token_is_not_saved_over_working_credential(credential_path):
 def test_agent_deployment_token_is_rejected_with_key_page(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen") as call:
+    with patch("skyportalai.shell.portal.urlopen") as call:
         with pytest.raises(PortalError, match="Agent deployment tokens.*agt_.*account API key"):
             client.set_access_token("agt_host-observability-token")
 
@@ -172,12 +172,12 @@ def test_saved_agent_token_does_not_report_connected(credential_path):
 
 
 def test_api_key_env_alias_is_used_for_authentication(credential_path, monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_env_alias")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_env_alias")
 
     client = SkyportalClient("https://app.skyportal.ai")
     assert client.is_authenticated() is True
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse([])) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
         assert client.servers() == []
 
     request = call.call_args.args[0]
@@ -185,12 +185,12 @@ def test_api_key_env_alias_is_used_for_authentication(credential_path, monkeypat
 
 
 def test_access_token_env_precedes_api_key_alias(credential_path, monkeypatch):
-    monkeypatch.setenv("SKYPORTAL_ACCESS_TOKEN", "skt_primary")
-    monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_alias")
+    monkeypatch.setenv("SKYPORTALAI_ACCESS_TOKEN", "skt_primary")
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_alias")
 
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse([])) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
         assert client.servers() == []
 
     request = call.call_args.args[0]
@@ -204,7 +204,7 @@ def test_server_list_uses_real_owned_server_endpoint(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     payload = [{"id": "7", "hostname": "gpu-7"}]
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as call:
         assert client.servers() == payload
 
     request = call.call_args.args[0]
@@ -219,7 +219,7 @@ def test_create_chat_posts_message_and_optional_server(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         return_value=FakeResponse({"chat_id": 42, "status": "processing"}),
     ) as call:
         response = client.create_chat("Check GPU health", server_id=7)
@@ -238,7 +238,7 @@ def test_create_chat_posts_atomic_multi_server_scope(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         return_value=FakeResponse({"chat_id": 42, "status": "processing"}),
     ) as call:
         client.create_chat(
@@ -269,7 +269,7 @@ def test_follow_up_message_uses_existing_chat(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse({"status": "processing"})) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({"status": "processing"})) as call:
         client.send_chat_message(42, "Now show memory")
 
     request = call.call_args.args[0]
@@ -284,7 +284,7 @@ def test_get_execution_status_uses_detailed_status_endpoint(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     payload = {"status": "processing", "current_step": "Inspect logs"}
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as request_call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as request_call:
         assert client.get_execution_status(42) == payload
 
     request = request_call.call_args.args[0]
@@ -319,7 +319,7 @@ def test_wait_for_chat_polls_and_returns_message_cursor(credential_path):
             {"messages": [terminal_message], "has_more": False},
         ],
     ) as get_messages, patch.object(client, "get_execution_status") as detailed_status, patch(
-        "skyportal.portal.time.sleep"
+        "skyportalai.shell.portal.time.sleep"
     ):
         result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
 
@@ -364,7 +364,7 @@ def test_wait_for_chat_streams_only_new_messages_and_returns_all_observed_messag
             {"messages": [final], "has_more": False},
         ],
     ) as get_messages, patch.object(client, "get_execution_status") as detailed_status, patch(
-        "skyportal.portal.time.sleep"
+        "skyportalai.shell.portal.time.sleep"
     ):
         result = client.wait_for_chat(
             42,
@@ -409,7 +409,7 @@ def test_wait_for_chat_preserves_batch_when_progress_callback_fails(credential_p
             {"messages": [], "has_more": False},
             {"messages": [], "has_more": False},
         ],
-    ), patch("skyportal.portal.time.sleep"):
+    ), patch("skyportalai.shell.portal.time.sleep"):
         result = client.wait_for_chat(
             42,
             after_sequence=3,
@@ -441,7 +441,7 @@ def test_wait_for_chat_retries_once_when_only_earlier_messages_were_observed(cre
             {"messages": [], "has_more": False},
             {"messages": [final], "has_more": False},
         ],
-    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+    ) as get_messages, patch("skyportalai.shell.portal.time.sleep") as sleep:
         result = client.wait_for_chat(42, after_sequence=3, poll_interval=0)
 
     assert result.messages == [prompt, final]
@@ -470,7 +470,7 @@ def test_wait_for_chat_retries_when_first_fetch_is_empty(credential_path):
         client, "chat_status", return_value={"status": "awaiting_input", "pending_approvals": []},
     ), patch.object(
         client, "chat_messages", side_effect=[empty_messages, empty_messages, real_messages],
-    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+    ) as get_messages, patch("skyportalai.shell.portal.time.sleep") as sleep:
         result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=300)
 
     assert result.messages == real_messages["messages"]
@@ -488,8 +488,8 @@ def test_wait_for_chat_terminal_message_settlement_is_independently_bounded(cred
         client, "chat_status", return_value={"status": "idle", "pending_approvals": []},
     ), patch.object(
         client, "chat_messages", return_value=empty_messages,
-    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep, patch(
-        "skyportal.portal.time.monotonic", return_value=0.0,
+    ) as get_messages, patch("skyportalai.shell.portal.time.sleep") as sleep, patch(
+        "skyportalai.shell.portal.time.monotonic", return_value=0.0,
     ):
         result = client.wait_for_chat(983, after_sequence=10, poll_interval=0, timeout=1)
 
@@ -515,7 +515,7 @@ def test_wait_for_chat_approval_and_error_return_after_one_message_fetch(
         client,
         "chat_messages",
         return_value={"messages": [], "has_more": False},
-    ) as get_messages, patch("skyportal.portal.time.sleep") as sleep:
+    ) as get_messages, patch("skyportalai.shell.portal.time.sleep") as sleep:
         result = client.wait_for_chat(42, after_sequence=7)
 
     assert result.status == status
@@ -549,8 +549,8 @@ def test_wait_for_chat_new_messages_extend_idle_deadline(credential_path):
             {"messages": [progress], "has_more": False},
             {"messages": [final], "has_more": False},
         ],
-    ), patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
-        "skyportal.portal.time.sleep", side_effect=advance
+    ), patch("skyportalai.shell.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportalai.shell.portal.time.sleep", side_effect=advance
     ):
         result = client.wait_for_chat(42, after_sequence=3, timeout=3, poll_interval=2)
 
@@ -576,7 +576,7 @@ def test_wait_for_chat_streams_public_status_snapshots(credential_path):
 
     with patch.object(client, "chat_status", side_effect=[processing, idle]), patch.object(
         client, "chat_messages", return_value={"messages": [], "has_more": False}
-    ), patch("skyportal.portal.time.sleep"):
+    ), patch("skyportalai.shell.portal.time.sleep"):
         client.wait_for_chat(42, poll_interval=0, on_status=snapshots.append)
 
     assert snapshots == [processing, idle]
@@ -642,8 +642,8 @@ def test_wait_for_chat_duplicate_message_snapshot_does_not_extend_idle_deadline(
         client,
         "chat_messages",
         return_value={"messages": [progress], "has_more": False},
-    ) as get_messages, patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
-        "skyportal.portal.time.sleep", side_effect=advance
+    ) as get_messages, patch("skyportalai.shell.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportalai.shell.portal.time.sleep", side_effect=advance
     ):
         with pytest.raises(PortalError, match="no progress for 3.5 seconds"):
             client.wait_for_chat(
@@ -686,8 +686,8 @@ def test_wait_for_chat_status_transition_extends_idle_deadline(credential_path):
             {"messages": [], "has_more": False},
             {"messages": [final], "has_more": False},
         ],
-    ), patch("skyportal.portal.time.monotonic", side_effect=lambda: now[0]), patch(
-        "skyportal.portal.time.sleep", side_effect=advance
+    ), patch("skyportalai.shell.portal.time.monotonic", side_effect=lambda: now[0]), patch(
+        "skyportalai.shell.portal.time.sleep", side_effect=advance
     ):
         result = client.wait_for_chat(42, timeout=3, poll_interval=2)
 
@@ -712,8 +712,8 @@ def test_wait_for_chat_default_disables_idle_deadline(credential_path):
             {"messages": [], "has_more": False},
             {"messages": [final], "has_more": False},
         ],
-    ), patch("skyportal.portal.time.monotonic", side_effect=AssertionError("deadline used")), patch(
-        "skyportal.portal.time.sleep"
+    ), patch("skyportalai.shell.portal.time.monotonic", side_effect=AssertionError("deadline used")), patch(
+        "skyportalai.shell.portal.time.sleep"
     ):
         result = client.wait_for_chat(42, poll_interval=0)
 
@@ -777,7 +777,7 @@ def test_approval_and_server_selection_use_headless_endpoints(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
         client.submit_chat_approval(
             42,
             {"approval_id": "approval/id", "type": "bash_command", "command": "df -h"},
@@ -817,7 +817,7 @@ def test_multi_server_selection_uses_plural_headless_endpoint(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
         client.select_chat_servers(
             42,
             [7, 9, 7],
@@ -880,7 +880,7 @@ def test_raw_request_timeout_is_wrapped_as_portal_error(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", side_effect=TimeoutError("timed out")):
+    with patch("skyportalai.shell.portal.urlopen", side_effect=TimeoutError("timed out")):
         with pytest.raises(PortalError, match="request timed out"):
             client.servers()
 
@@ -943,7 +943,7 @@ def test_cancel_chat_posts_reason_to_cancel_endpoint(credential_path):
     CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
     client = SkyportalClient("https://app.skyportal.ai")
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         return_value=FakeResponse({"success": True, "status": "cancelled"}),
     ) as call:
         result = client.cancel_chat(42, reason="user hit ctrl-c")
@@ -958,7 +958,7 @@ def test_cancel_chat_without_reason_sends_empty_body(credential_path):
     CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
     client = SkyportalClient("https://app.skyportal.ai")
     with patch(
-        "skyportal.portal.urlopen", return_value=FakeResponse({"success": True})
+        "skyportalai.shell.portal.urlopen", return_value=FakeResponse({"success": True})
     ) as call:
         client.cancel_chat(42)
         request = call.call_args.args[0]
@@ -972,7 +972,7 @@ def test_get_github_token_status_calls_correct_endpoint(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     payload = {"has_token": True, "masked_token": "ghp_****abc"}
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as call:
         result = client.get_github_token_status()
 
     request = call.call_args.args[0]
@@ -989,7 +989,7 @@ def test_save_github_token_posts_token_and_optional_repo(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     payload = {"success": True, "masked_token": "ghp_****abc", "login": "octocat"}
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as call:
         result = client.save_github_token("ghp_realtoken", repo="owner/repo")
 
     request = call.call_args.args[0]
@@ -1006,7 +1006,7 @@ def test_save_github_token_omits_repo_when_not_given(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
     payload = {"success": True, "masked_token": "ghp_****abc", "login": "octocat"}
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse(payload)) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as call:
         client.save_github_token("ghp_realtoken")
 
     request = call.call_args.args[0]
@@ -1020,7 +1020,7 @@ def test_save_github_token_raises_portal_error_on_400(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         side_effect=api_error(400, {"error": "Invalid token or insufficient scope"}),
     ):
         with pytest.raises(PortalError, match="Invalid token or insufficient scope"):
@@ -1033,7 +1033,7 @@ def test_delete_github_token_calls_delete_endpoint(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportal.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({"success": True})) as call:
         client.delete_github_token()
 
     request = call.call_args.args[0]
@@ -1048,7 +1048,7 @@ def test_get_permission_mode_uses_shared_account_endpoint(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         return_value=FakeResponse({"permission_mode": "ask", "read_only_mode": False}),
     ) as call:
         assert client.get_permission_mode() == "ask"
@@ -1065,7 +1065,7 @@ def test_set_permission_mode_puts_only_supported_mode(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
     with patch(
-        "skyportal.portal.urlopen",
+        "skyportalai.shell.portal.urlopen",
         return_value=FakeResponse({"permission_mode": "autoapprove"}),
     ) as call:
         assert client.set_permission_mode("autoapprove") == "autoapprove"
@@ -1074,7 +1074,7 @@ def test_set_permission_mode_puts_only_supported_mode(credential_path):
     assert request.method == "PUT"
     assert json.loads(request.data) == {"permission_mode": "autoapprove"}
 
-    with patch("skyportal.portal.urlopen") as invalid_call:
+    with patch("skyportalai.shell.portal.urlopen") as invalid_call:
         with pytest.raises(PortalError, match="ask.*autoapprove"):
             client.set_permission_mode("everything")
     invalid_call.assert_not_called()
