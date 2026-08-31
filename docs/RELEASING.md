@@ -31,9 +31,19 @@ the project is created on the first successful upload.
    values but with environment name `testpypi`.
 
 3. In GitHub → Settings → Environments, create the `pypi` and `testpypi`
-   environments. Adding required reviewers to `pypi` is recommended: a PyPI
-   version can never be reused or re-uploaded, so a human approval gate is the
-   last chance to catch a bad build.
+   environments, and add **required reviewers** to `pypi`.
+
+   Do not skip this. If a workflow references an environment that does not
+   exist, GitHub creates it automatically *with no protection rules* — so the
+   first release would publish with no approval gate at all. A PyPI version can
+   never be reused or re-uploaded, so this human approval is the last chance to
+   catch a bad build.
+
+4. Restrict who can create `v*` tags, so that cutting a release and approving
+   one stay separate privileges. Either add a
+   [tag protection rule](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/configuring-tag-protection-rules)
+   for `v*`, or limit the `pypi` environment's deployment branches and tags to
+   the `v*` pattern.
 
 ## Cutting a release
 
@@ -60,16 +70,28 @@ the project is created on the first successful upload.
    Run workflow, to push to TestPyPI, then confirm the install:
 
    ```bash
-   pip install --index-url https://test.pypi.org/simple/ \
+   python3 -m venv /tmp/skyportal-check
+   /tmp/skyportal-check/bin/pip install \
+     --index-url https://test.pypi.org/simple/ \
      --extra-index-url https://pypi.org/simple/ skyportalai
+   /tmp/skyportal-check/bin/skyportal --help
    ```
 
    The extra index is needed because TestPyPI does not mirror the runtime
-   dependencies.
+   dependencies. The virtualenv is needed because Debian, Ubuntu, Fedora and
+   Homebrew mark the system Python as externally managed
+   ([PEP 668](https://peps.python.org/pep-0668/)), so a bare `pip install`
+   fails with `error: externally-managed-environment`.
 
-5. Publish a GitHub Release tagged `vX.Y.Z`. The workflow refuses to build if
-   the tag does not match the version in `pyproject.toml`. On success the
-   release lands at <https://pypi.org/project/skyportalai/>.
+5. Publish a GitHub Release tagged `vX.Y.Z`, **created from `main`**. The
+   workflow refuses to build if the tag does not match the version in
+   `pyproject.toml`. On success the release lands at
+   <https://pypi.org/project/skyportalai/>.
+
+   > On a `release` event, GitHub runs the workflow as it exists *in the commit
+   > the tag points at*, not as it exists on `main`. Re-publishing an old
+   > release therefore re-runs that old release's workflow. Always tag from
+   > current `main`.
 
 ## Notes
 
@@ -79,3 +101,21 @@ the project is created on the first successful upload.
   `skyportal` import package. An unrelated astronomy project owns the
   `skyportal` *distribution* name on PyPI, so installing both in one
   environment would collide on that import name.
+- A "pending" publisher does not reserve the project name. If someone else
+  registers `skyportalai` before the first successful upload, the pending
+  publisher is invalidated. The name is only held once a release actually
+  lands; a TestPyPI run does not reserve it.
+
+## Prior art
+
+An earlier attempt to publish (release `v0.1.0`, 2026-07-17) failed, and the
+workflow was removed in a89e154 rather than retried. The workflow was not at
+fault: it presented correct OIDC claims (`repository: SkyportalAi/skyportalai`,
+`workflow_ref: .../publish.yml@refs/tags/v0.1.0`, `environment: pypi`) and PyPI
+rejected them only because no trusted publisher had been registered for the
+project. Nothing was ever uploaded to PyPI or TestPyPI.
+
+The lesson is that step 1 of the one-time setup is the step that actually
+matters — the workflow cannot succeed until PyPI has a matching publisher on
+file. Note also that the `v0.1.0` tag predates the current workflow, so a new
+release must be tagged from current `main`.
