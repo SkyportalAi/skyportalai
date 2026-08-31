@@ -8,6 +8,7 @@ import sys
 import warnings
 
 import pytest
+import yaml
 
 from skyportalai import _env
 
@@ -194,3 +195,55 @@ def test_console_script_surfaces_a_legacy_variable(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "SKYPORTAL_CONFIG_PATH is deprecated" in result.stderr
     assert "use SKYPORTALAI_CONFIG_PATH instead" in result.stderr
+
+
+def test_configure_resolves_legacy_url_env(tmp_path, monkeypatch):
+    """A Typer ``envvar=`` is read by Click from os.environ, skipping ``_env``.
+
+    That is how the legacy fallback went missing on ``configure``: the option declared
+    ``envvar="SKYPORTALAI_URL"``, so ``SKYPORTAL_URL`` never resolved and a self-hosted
+    user was silently pointed at the SaaS host. ``_env`` is covered thoroughly on its own,
+    but nothing covered a command that declares an envvar, which is why it slipped past.
+    """
+    from typer.testing import CliRunner
+
+    from skyportalai.cli.main import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKYPORTALAI_URL", raising=False)
+    monkeypatch.setenv("SKYPORTAL_URL", "https://legacy.example")
+
+    with pytest.warns(DeprecationWarning, match="SKYPORTAL_URL"):
+        result = CliRunner().invoke(app, ["configure"])
+
+    assert result.exit_code == 0
+    saved = yaml.safe_load((tmp_path / ".skyportalai" / "config.yaml").read_text())
+    assert saved["portal"]["base_url"] == "https://legacy.example"
+
+
+def test_configure_prefers_canonical_url_env(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from skyportalai.cli.main import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SKYPORTALAI_URL", "https://new.example")
+    monkeypatch.setenv("SKYPORTAL_URL", "https://legacy.example")
+
+    assert CliRunner().invoke(app, ["configure"]).exit_code == 0
+    saved = yaml.safe_load((tmp_path / ".skyportalai" / "config.yaml").read_text())
+    assert saved["portal"]["base_url"] == "https://new.example"
+
+
+def test_configure_flag_beats_both_env_spellings(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from skyportalai.cli.main import app
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SKYPORTAL_URL", "https://legacy.example")
+
+    result = CliRunner().invoke(app, ["configure", "--portal-url", "https://flag.example"])
+    assert result.exit_code == 0
+    saved = yaml.safe_load((tmp_path / ".skyportalai" / "config.yaml").read_text())
+    assert saved["portal"]["base_url"] == "https://flag.example"

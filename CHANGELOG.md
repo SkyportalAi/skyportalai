@@ -25,8 +25,10 @@ the notices would otherwise never reach the people who need to migrate.
 
 - `SKYPORTAL_*` environment variables — use `SKYPORTALAI_*`. All 24 are
   supported, and the canonical name wins when both are set.
-- The `skyportal` import package — use `skyportalai`. `skyportal.shell`,
-  `skyportal.portal`, `skyportal.animation` and `skyportal.config` moved to
+- The `skyportal` import package — use `skyportalai`. The shim re-exports
+  `__version__` only and warns on import; the submodules are NOT shimmed, so
+  `skyportal.shell`, `skyportal.portal`, `skyportal.animation` and
+  `skyportal.config` raise `ModuleNotFoundError`. They now live at
   `skyportalai.shell.{interactive,portal,animation,config}`.
 
 ### Changed

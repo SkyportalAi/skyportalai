@@ -18,7 +18,7 @@ the latest release before reporting a problem that may already be resolved.
 
 - API keys are Bearer credentials. API clients refuse cleartext remote targets;
   plain HTTP is allowed only for loopback development unless the explicit
-  `SKYPORTAL_ALLOW_INSECURE=1` escape hatch is set.
+  `SKYPORTALAI_ALLOW_INSECURE=1` escape hatch is set.
 - The interactive client does not follow HTTP redirects for authenticated API
   calls, preventing authorization headers from crossing origins.
 - Saved CLI credentials are created atomically with user-only permissions.

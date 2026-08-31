@@ -1,4 +1,4 @@
-"""Agent entrypoint — ``python -m skyportalai.agent`` / ``skyportal-agent``.
+"""Agent entrypoint — ``python -m skyportalai.agent`` / ``skyportalai-agent``.
 
 Thin orchestration: assemble the runner from config, start the /healthz probe
 server on a background thread, route SIGTERM/SIGINT to a graceful stop (which
@@ -81,7 +81,7 @@ def main() -> None:
     health = HealthServer(config.healthz_port)
     health.start()
     logger.info(
-        "skyportal-agent started: base_url=%s interval=%ss state_dir=%s healthz=:%d",
+        "skyportalai-agent started: base_url=%s interval=%ss state_dir=%s healthz=:%d",
         config.base_url,
         config.interval_seconds,
         config.state_dir,
@@ -91,7 +91,7 @@ def main() -> None:
         runner.run_forever()
     finally:
         health.stop()
-        logger.info("skyportal-agent stopped")
+        logger.info("skyportalai-agent stopped")
 
 
 if __name__ == "__main__":

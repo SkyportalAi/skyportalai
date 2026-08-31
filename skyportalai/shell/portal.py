@@ -661,11 +661,11 @@ class SkyportalClient:
         if not token:
             credentials = CredentialStore.load()
             if not credentials or not credentials.get("access_token"):
-                raise PortalError("Not connected. Run 'skyportal login' first.")
+                raise PortalError("Not connected. Run 'skyportalai login' first.")
             if credentials.get("base_url") not in (None, self.base_url):
                 raise PortalError(
                     "Stored credentials belong to another Skyportal deployment. "
-                    "Run 'skyportal login' again."
+                    "Run 'skyportalai login' again."
                 )
             token = str(credentials["access_token"])
         self._reject_agent_token(token)

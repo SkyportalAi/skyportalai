@@ -15,6 +15,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
+from skyportalai import _env
+from skyportalai._client import DEFAULT_BASE_URL
 from skyportalai.shell import (
     ConfigManager,
     CredentialStore,
@@ -27,6 +29,9 @@ from skyportalai.shell import (
 )
 
 console = Console()
+# Errors go to stderr, as click.ClickException did before 0.2.0. Only visible to anyone
+# separating the streams, which is exactly who would be broken by errors on stdout.
+err_console = Console(stderr=True)
 
 
 def _portal_client() -> SkyportalClient:
@@ -53,22 +58,31 @@ def run_shell() -> None:
 
 def _fail(error: PortalError) -> typer.Exit:
     """Report an expected portal error the way Click's ClickException did."""
-    console.print(f"[red]Error:[/red] {error}")
+    err_console.print(f"[red]Error:[/red] {error}")
     return typer.Exit(1)
 
 
 def configure(
     portal_url: Annotated[
-        str,
-        typer.Option("--portal-url", envvar="SKYPORTALAI_URL", help="Skyportal application URL"),
-    ] = "https://app.skyportal.ai",
+        str | None,
+        typer.Option(
+            "--portal-url",
+            help=f"Skyportal application URL  [env: SKYPORTALAI_URL]  [default: {DEFAULT_BASE_URL}]",
+        ),
+    ] = None,
     request_timeout: Annotated[
         int,
         typer.Option("--request-timeout", min=1, help="HTTP request timeout in seconds"),
     ] = 30,
 ) -> None:
     """Save Skyportal connection settings."""
-    config = SkyportalConfig(portal=PortalConfig(base_url=portal_url, request_timeout=request_timeout))
+    # Resolved here rather than by typer's envvar=, which Click reads straight out of
+    # os.environ: _env.lookup never runs, so the legacy SKYPORTAL_URL fallback and its
+    # deprecation warning are skipped and a self-hosted user is silently pointed at the
+    # SaaS host. --base-url on the root callback carries the same envvar= shape but
+    # survives it because resolve_settings() re-resolves through _env.
+    resolved_url = portal_url or _env.get("SKYPORTALAI_URL") or DEFAULT_BASE_URL
+    config = SkyportalConfig(portal=PortalConfig(base_url=resolved_url, request_timeout=request_timeout))
     ConfigManager.save_config(config)
     console.print(f"[green]✓[/green] Skyportal configuration saved to {ConfigManager.get_config_path()}")
 

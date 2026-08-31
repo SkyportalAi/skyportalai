@@ -64,9 +64,12 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
     if timeout <= 0:
         raise SkyportalError(f"Invalid request timeout in {config_path}: it must be greater than zero.")
 
-    api_key, source = _env.lookup("SKYPORTALAI_API_KEY")
+    # ACCESS_TOKEN first, matching shell/portal.py._env_access_token and what
+    # docs/deployment.md states. This path preferred API_KEY, so with both set the CLI
+    # could authenticate as a different identity than the shell did.
+    api_key, source = _env.lookup("SKYPORTALAI_ACCESS_TOKEN")
     if not api_key:
-        api_key, source = _env.lookup("SKYPORTALAI_ACCESS_TOKEN")
+        api_key, source = _env.lookup("SKYPORTALAI_API_KEY")
     if not api_key and credentials.get("access_token"):
         if stored_url and str(stored_url).rstrip("/") != effective_url:
             raise SkyportalError(
