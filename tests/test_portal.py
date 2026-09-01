@@ -913,11 +913,12 @@ def test_credentials_from_another_deployment_name_the_way_out(credential_path):
     with pytest.raises(PortalError) as error:
         client.servers()
 
-    message = str(error.value)
-    assert "http://localhost:8000" in message
-    assert "https://app.skyportal.ai" in message
-    assert "skyportalai logout" in message
-    assert str(credential_path) in message
+    assert str(error.value) == (
+        "Stored credentials belong to another Skyportal deployment "
+        "(http://localhost:8000), but this session targets https://app.skyportal.ai. "
+        f"Run 'skyportalai logout' to clear them ({credential_path}), "
+        "or 'skyportalai login' to replace them."
+    )
 
 
 def test_raw_request_timeout_is_wrapped_as_portal_error(credential_path):

@@ -52,11 +52,15 @@ def test_credentials_are_scoped_to_the_selected_deployment(tmp_path, monkeypatch
     settings = resolve_settings()
 
     assert settings.api_key is None
-    assert "another SkyPortal deployment" in settings.credential_conflict
-    assert "https://one.example" in settings.credential_conflict
-    assert "https://two.example" in settings.credential_conflict
-    assert "skyportalai logout" in settings.credential_conflict
-    assert str(credentials) in settings.credential_conflict
+    # Compared whole rather than by substring: the message has to name both URLs,
+    # the file and the recovery command, and a containment check for a URL is the
+    # bug pattern CodeQL's py/incomplete-url-substring-sanitization looks for.
+    assert settings.credential_conflict == (
+        "Stored credentials belong to another SkyPortal deployment (https://one.example), "
+        "but the selected base URL is https://two.example. "
+        f"Run 'skyportalai logout' to clear them ({credentials}), "
+        "or point the CLI back with 'skyportalai config set --base-url'."
+    )
 
 
 def test_an_unreadable_credential_file_is_reported_not_raised(tmp_path):
