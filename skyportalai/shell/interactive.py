@@ -27,6 +27,7 @@ from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
     CredentialStore,
+    DeviceLogin,
     PortalError,
     SkyportalClient,
 )
@@ -413,9 +414,48 @@ class InteractiveShell:
                 "[yellow]Do not put credentials in command history. Type /token by itself.[/yellow]"
             )
             return
-        self._connect_from_key_page(open_browser=True)
+        # /token is the deliberate paste route, so it skips the browser handshake.
+        self._connect_by_pasting_a_key(open_browser=True)
 
     def _connect_from_key_page(self, open_browser: bool) -> None:
+        """Connect this terminal, by browser approval where the deployment allows it."""
+        handshake = self.client.begin_device_login()
+        if handshake is not None:
+            self._connect_by_browser_approval(handshake, open_browser)
+            return
+        self._connect_by_pasting_a_key(open_browser)
+
+    def _connect_by_browser_approval(self, handshake: DeviceLogin, open_browser: bool) -> None:
+        self.browser_login_started = True
+        details = Text()
+        details.append("Connect this terminal in two steps:\n\n", style="bold green")
+        details.append("1. Open the authorization page:\n")
+        details.append(
+            handshake.verification_uri_complete,
+            style="bold cyan link {}".format(handshake.verification_uri_complete),
+        )
+        details.append("\n\n2. Confirm the code ")
+        details.append(handshake.user_code, style="bold")
+        details.append(" and approve.\n\nThis terminal finishes on its own once you approve.")
+        if open_browser and not self.client.open_verification_page(handshake.verification_uri_complete):
+            details.append("\nYour browser did not open; use the link above.", style="yellow")
+        self._print_section("Connect Skyportal CLI")
+        self.console.print(details)
+        self.console.print()
+        try:
+            with self.console.status("[cyan]Waiting for approval in the browser…[/cyan]", spinner="dots"):
+                token = self.client.await_device_login(handshake)
+        except (KeyboardInterrupt, EOFError):
+            self.console.print(
+                "[yellow]Login cancelled.[/yellow] Run [bold]/token[/bold] to paste a key instead."
+            )
+            return
+        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
+            self.client.set_access_token(token)
+        self.browser_login_started = False
+        self.console.print("[green]✓ Credential validated and saved securely.[/green]")
+
+    def _connect_by_pasting_a_key(self, open_browser: bool) -> None:
         result = self.client.login(open_browser=open_browser)
         self.browser_login_started = True
         url = str(result["verification_url"])

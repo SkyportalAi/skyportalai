@@ -115,30 +115,65 @@ def configure(
 
 def login(
     no_browser: Annotated[
-        bool, typer.Option("--no-browser", help="Print the API-key URL without opening it")
+        bool, typer.Option("--no-browser", help="Print the login URL without opening it")
     ] = False,
     enter_token: Annotated[bool, typer.Option("--token", help="Paste an existing API key")] = False,
 ) -> None:
-    """Create or paste an account API key and connect the CLI."""
+    """Connect the CLI by approving it in the browser, or by pasting a key."""
     _announce_target()
     client = _portal_client()
     try:
-        if not enter_token:
-            result = client.login(open_browser=not no_browser)
-            console.print(
-                "[bold]Create or copy a Skyportal account API key:[/bold] {}".format(result["verification_url"])
-            )
-            console.print(
-                "Create a key named [bold]Skyportal CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
-                "[dim]Do not use an agt_ observability-agent token.[/dim]"
-            )
-            if not result.get("browser_opened") and not no_browser:
-                console.print("[yellow]Browser did not open; use the URL above.[/yellow]")
-        access_token = typer.prompt("Skyportal API key", hide_input=True)
-        client.set_access_token(access_token)
+        handshake = None if enter_token else client.begin_device_login()
+        if handshake is None:
+            _connect_by_pasting_a_key(client, show_key_page=not enter_token, open_browser=not no_browser)
+        else:
+            _connect_through_the_browser(client, handshake, open_browser=not no_browser)
     except PortalError as error:
         raise _fail(error) from None
     console.print("[green]✓[/green] Credential validated and saved securely")
+
+
+def _connect_through_the_browser(client: SkyportalClient, handshake, *, open_browser: bool) -> None:
+    """Show the code, then wait for the browser to approve it.
+
+    The CLI used to open the key page and block on a paste, with no way for the
+    browser to answer. It now polls the deployment, so the terminal finishes on
+    its own once someone approves the code.
+    """
+    console.print(
+        "Confirm this code to connect: [bold]{}[/bold]\n{}".format(
+            handshake.user_code, handshake.verification_uri_complete
+        )
+    )
+    if open_browser and not client.open_verification_page(handshake.verification_uri_complete):
+        console.print("[yellow]Browser did not open; use the URL above.[/yellow]")
+    try:
+        with console.status("[cyan]Waiting for approval in the browser…[/cyan]", spinner="dots"):
+            access_token = client.await_device_login(handshake)
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Cancelled.[/yellow] Run [bold]skyportalai login --token[/bold] to paste a key instead."
+        )
+        raise typer.Exit(1) from None
+    with console.status("[cyan]Validating credential…[/cyan]", spinner="dots"):
+        client.set_access_token(access_token)
+
+
+def _connect_by_pasting_a_key(client: SkyportalClient, *, show_key_page: bool, open_browser: bool) -> None:
+    """The manual route: --token, or a deployment without the handshake endpoint."""
+    if show_key_page:
+        result = client.login(open_browser=open_browser)
+        console.print(
+            "[bold]Create or copy a Skyportal account API key:[/bold] {}".format(result["verification_url"])
+        )
+        console.print(
+            "Create a key named [bold]Skyportal CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
+            "[dim]Do not use an agt_ observability-agent token.[/dim]"
+        )
+        if not result.get("browser_opened") and open_browser:
+            console.print("[yellow]Browser did not open; use the URL above.[/yellow]")
+    access_token = typer.prompt("Skyportal API key", hide_input=True)
+    client.set_access_token(access_token)
 
 
 def logout() -> None:

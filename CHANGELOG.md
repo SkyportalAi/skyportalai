@@ -5,6 +5,16 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- **`skyportalai login` connects the terminal by itself.** It starts an
+  authorization, prints a short code with the page to confirm it on, and waits;
+  approving in the browser hands the key back and the terminal finishes on its
+  own. No copying a key across windows, and nothing to paste. `/login` in the
+  interactive shell does the same. Falls back to the old key-page paste when the
+  deployment has no handshake endpoint, and `--token` (or `/token`) still pastes
+  a key deliberately.
+
 ### Fixed
 
 - `skyportalai login` and `skyportalai github-token set` now name the instance
