@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+## 0.2.2
+
 ### Added
 
 - **`skyportalai login` connects the terminal by itself.** It starts an
