@@ -56,6 +56,26 @@ def _redacted(base_url: str) -> str:
     return shown.removeprefix("//") if schemeless else shown
 
 
+def _is_loopback(host: str) -> bool:
+    """Whether ``host`` names the local machine."""
+    return host in _LOOPBACK_HOSTS or host.endswith(".localhost")
+
+
+def describe_base_url(base_url: str) -> tuple[str, bool]:
+    """Return ``base_url`` in a form safe to display, and whether it is loopback.
+
+    A caller that names its target before prompting for a credential needs both
+    facts, and neither should be re-derived here: the redaction keeps embedded
+    userinfo out of terminals and logs, and the loopback test has to stay
+    identical to the one :func:`_validate_base_url` enforces.
+    """
+    try:
+        host = (urlsplit(base_url).hostname or "").lower()
+    except ValueError:
+        host = ""
+    return _redacted(base_url), _is_loopback(host)
+
+
 def _validate_base_url(base_url: str) -> None:
     """Validate an API root before a Bearer credential can be sent to it.
 
@@ -87,7 +107,7 @@ def _validate_base_url(base_url: str) -> None:
             f"Invalid base_url {shown!r}: query strings and fragments are not allowed."
         )
 
-    loopback = host in _LOOPBACK_HOSTS or host.endswith(".localhost")
+    loopback = _is_loopback(host)
     if parts.scheme != "https" and not loopback:
         if _env.get("SKYPORTALAI_ALLOW_INSECURE") == "1":
             warnings.warn(

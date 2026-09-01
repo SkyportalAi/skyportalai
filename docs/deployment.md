@@ -42,6 +42,10 @@ An older pip fails with `Directory cannot be installed in editable mode`, and a
 
 The default application URL is `https://app.skyportal.ai`. Run `skyportalai login`, create an account API key on the browser page, and paste the `sk_` value into the hidden prompt.
 
+`login` prints the instance it is connecting to before prompting, so check that
+line if you are not sure which deployment the key will belong to. A saved
+`base_url` outranks the default, and `login` warns when it is a loopback address.
+
 To use an existing key non-persistently:
 
 ```bash
@@ -114,6 +118,25 @@ a manual install, create the venv with `python3.11` or newer explicitly.
 - Run `skyportalai login` and create a fresh `sk_` API key.
 - Ensure the key is active and not expired or revoked.
 - An `agt_` token cannot authorize account or chat operations.
+
+### Login points at localhost
+
+`login` echoes `Connecting to ...` and warns when the target is a local address:
+
+```
+Connecting to http://localhost:8000
+Warning: base_url is a local address (http://localhost:8000) from
+/home/you/.skyportalai/config.yaml — run skyportalai configure to change it.
+```
+
+That URL came from `config.yaml`, usually written during earlier local
+development. A key created there belongs to the local instance, and the key page
+will not load at all with no local server running. Point the CLI back at the
+deployment you want before pasting a key:
+
+```bash
+skyportalai configure --portal-url https://app.skyportal.ai
+```
 
 ### Browser login lands on another page
 
