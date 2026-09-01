@@ -216,12 +216,21 @@ class SkyportalClient:
         if not isinstance(payload, dict):
             raise PortalError("Skyportal returned an unexpected login response")
         try:
+            device_code = payload["device_code"]
+            user_code = payload["user_code"]
+            verification_uri = payload["verification_uri"]
+            if not isinstance(device_code, str) or not device_code:
+                raise PortalError("Skyportal returned an incomplete login response")
+            if not isinstance(user_code, str) or not user_code:
+                raise PortalError("Skyportal returned an incomplete login response")
+            if not isinstance(verification_uri, str) or not verification_uri:
+                raise PortalError("Skyportal returned an incomplete login response")
             return DeviceLogin(
-                device_code=str(payload["device_code"]),
-                user_code=str(payload["user_code"]),
-                verification_uri=str(payload["verification_uri"]),
+                device_code=device_code,
+                user_code=user_code,
+                verification_uri=verification_uri,
                 verification_uri_complete=str(
-                    payload.get("verification_uri_complete") or payload["verification_uri"]
+                    payload.get("verification_uri_complete") or verification_uri
                 ),
                 interval=int(payload.get("interval") or _MIN_POLL_INTERVAL),
                 expires_in=int(payload.get("expires_in") or 600),
@@ -277,7 +286,10 @@ class SkyportalClient:
                     "Run 'skyportalai login' again."
                 )
             # The server may ask for a slower cadence than it first advertised.
-            interval = min(max(int(payload.get("interval") or interval), _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
+            try:
+                interval = min(max(int(payload.get("interval") or interval), _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
+            except (TypeError, ValueError) as error:
+                raise PortalError("Skyportal returned an invalid poll interval") from error
             sleep(interval)
 
     def open_verification_page(self, url: str) -> bool:

@@ -56,7 +56,9 @@ The code is valid for ten minutes. Use `--no-browser` on a machine with no
 browser (the URL still prints, and can be opened anywhere you are signed in), or
 `skyportalai login --token` to paste an existing `sk_` key instead. A deployment
 that predates the handshake falls back to the key page automatically, and a
-proxy or WAF blocking the handshake does the same.
+proxy or WAF returning 403 does the same. Any other start failure — a 5xx from
+an unhealthy server, a connection error — stops with a message that names
+`skyportalai login --token` as the fallback.
 
 While it waits, a failed poll — a 502 from a proxy, a dropped connection — is
 retried with backoff until the code expires, so a network hiccup does not

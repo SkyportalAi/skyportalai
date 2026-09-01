@@ -443,17 +443,19 @@ class InteractiveShell:
         self.console.print(details)
         self.console.print()
         try:
-            with self.console.status("[cyan]Waiting for approval in the browser…[/cyan]", spinner="dots"):
-                token = self.client.await_device_login(handshake)
-        except (KeyboardInterrupt, EOFError):
-            self.console.print(
-                "[yellow]Login cancelled.[/yellow] Run [bold]/token[/bold] to paste a key instead."
-            )
-            return
-        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
-            self.client.set_access_token(token)
-        self.browser_login_started = False
-        self.console.print("[green]✓ Credential validated and saved securely.[/green]")
+            try:
+                with self.console.status("[cyan]Waiting for approval in the browser…[/cyan]", spinner="dots"):
+                    token = self.client.await_device_login(handshake)
+            except (KeyboardInterrupt, EOFError):
+                self.console.print(
+                    "[yellow]Login cancelled.[/yellow] Run [bold]/token[/bold] to paste a key instead."
+                )
+                return
+            with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
+                self.client.set_access_token(token)
+            self.console.print("[green]✓ Credential validated and saved securely.[/green]")
+        finally:
+            self.browser_login_started = False
 
     def _connect_by_pasting_a_key(self, open_browser: bool) -> None:
         result = self.client.login(open_browser=open_browser)
