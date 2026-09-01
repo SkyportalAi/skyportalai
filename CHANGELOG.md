@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- `skyportalai login` and `skyportalai github-token set` now name the instance
+  they are connecting to before prompting for a secret, and warn when that
+  target is a loopback address, naming both `config.yaml` and
+  `skyportalai configure` in the warning. A `base_url` saved during local
+  development outranked the shipped default with nothing on screen to show
+  it, so a key could be created against the wrong instance (or against a page
+  that never loaded).
+
 ## 0.2.1
 
 ### Fixed

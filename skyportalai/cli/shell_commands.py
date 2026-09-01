@@ -16,7 +16,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from skyportalai import _env
-from skyportalai._client import DEFAULT_BASE_URL
+from skyportalai._client import DEFAULT_BASE_URL, describe_base_url
 from skyportalai.shell import (
     ConfigManager,
     CredentialStore,
@@ -37,6 +37,32 @@ err_console = Console(stderr=True)
 def _portal_client() -> SkyportalClient:
     portal = ConfigManager.load_config().portal
     return SkyportalClient(portal.base_url, portal.request_timeout)
+
+
+def _base_url_is_configured(base_url: str) -> bool:
+    """Whether ``base_url`` came from the config file rather than the default."""
+    return base_url != PortalConfig().base_url
+
+
+def _announce_target() -> None:
+    """Name the instance a secret is about to be sent to, before prompting.
+
+    ``config.yaml`` outranks the shipped default forever, with no expiry, so
+    the instance that issues (and scopes) a credential is otherwise invisible
+    at the one moment it decides where that credential goes. A loopback target
+    gets an explicit warning naming the file: it is never a real account, and
+    with no local server running the key page does not even load.
+    """
+    portal = ConfigManager.load_config().portal
+    shown, loopback = describe_base_url(portal.base_url)
+    console.print(f"Connecting to [bold]{shown}[/bold]")
+    if not loopback:
+        return
+    origin = f" from {ConfigManager.get_config_path()}" if _base_url_is_configured(portal.base_url) else ""
+    console.print(
+        f"[yellow]Warning:[/yellow] base_url is a local address ({shown}){origin} — "
+        "run [bold]skyportalai configure[/bold] to change it."
+    )
 
 
 def _items(payload: Any) -> list[dict[str, Any]]:
@@ -94,6 +120,7 @@ def login(
     enter_token: Annotated[bool, typer.Option("--token", help="Paste an existing API key")] = False,
 ) -> None:
     """Create or paste an account API key and connect the CLI."""
+    _announce_target()
     client = _portal_client()
     try:
         if not enter_token:
@@ -214,6 +241,7 @@ def github_token_set(
     ] = None,
 ) -> None:
     """Save a GitHub PAT (prompts for the token without echoing it)."""
+    _announce_target()
     try:
         pat = typer.prompt("GitHub Personal Access Token", hide_input=True)
         result = _portal_client().save_github_token(pat.strip(), repo=repo)
