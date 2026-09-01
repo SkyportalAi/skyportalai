@@ -50,7 +50,14 @@ def root(
 ) -> None:
     """Resolve shared configuration before dispatching a command."""
     del version
-    settings = resolve_settings(base_url=base_url)
+    # Click fills --base-url from SKYPORTALAI_BASE_URL, so a value here does not
+    # mean the user typed a flag. Only a real flag is forwarded: resolution reads
+    # the environment itself, where it also honours the legacy SKYPORTAL_BASE_URL
+    # spelling and can say which setting selected the URL. The source is matched
+    # by name because the Context comes from Typer's vendored Click.
+    source = context.get_parameter_source("base_url")
+    typed_on_command_line = source is not None and source.name == "COMMANDLINE"
+    settings = resolve_settings(base_url=base_url if typed_on_command_line else None)
     context.obj = CLIContext(
         settings=settings,
         output=Output(json_mode=json_output, api_target=settings.base_url),
@@ -69,7 +76,9 @@ def show_config(context: typer.Context) -> None:
         "authenticated": state.settings.api_key is not None,
         "api_key_source": state.settings.api_key_source,
         "config_path": state.settings.config_path,
+        "credential_conflict": state.settings.credential_conflict,
     }
+    conflict = f"\nCredential problem: {state.settings.credential_conflict}" if state.settings.credential_conflict else ""
     state.output.success(
         data,
         human=(
@@ -77,6 +86,7 @@ def show_config(context: typer.Context) -> None:
             f"Timeout: {state.settings.timeout:g}s\n"
             f"Credential: {state.settings.api_key_source or 'not configured'}\n"
             f"Config: {state.settings.config_path}"
+            f"{conflict}"
         ),
     )
 

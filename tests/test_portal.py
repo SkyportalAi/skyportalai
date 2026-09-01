@@ -906,6 +906,29 @@ def test_missing_credentials_are_reported(credential_path):
         client.servers()
 
 
+def test_credentials_from_another_deployment_name_the_way_out(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "http://localhost:8000"})
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with pytest.raises(PortalError) as error:
+        client.servers()
+
+    assert str(error.value) == (
+        "Stored credentials belong to another Skyportal deployment "
+        "(http://localhost:8000), but this session targets https://app.skyportal.ai. "
+        f"Run 'skyportalai logout' to clear them ({credential_path}), "
+        "or 'skyportalai login' to replace them."
+    )
+
+
+def test_marketing_host_credentials_are_not_another_deployment(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({"servers": []})):
+        assert client.servers() == {"servers": []}
+
+
 def test_raw_request_timeout_is_wrapped_as_portal_error(credential_path):
     CredentialStore.save(
         {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}

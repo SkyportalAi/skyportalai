@@ -24,9 +24,14 @@ class CLIContext:
 
     def client(self) -> Skyportal:
         if not self.settings.api_key:
+            # A stored-but-unusable credential is a different problem from having
+            # none, and only its own message names the way out.
             raise SkyportalError(
-                "No API key configured. Set SKYPORTALAI_API_KEY or run the "
-                "'skyportalai login' flow."
+                self.settings.credential_conflict
+                or (
+                    "No API key configured. Set SKYPORTALAI_API_KEY or run the "
+                    "'skyportalai login' flow."
+                )
             )
         return Skyportal(
             api_key=self.settings.api_key,

@@ -7,6 +7,26 @@ All notable changes to this project are documented here. This project follows
 
 ### Fixed
 
+- **`skyportalai logout` is reachable again when the stored credential points
+  at another deployment** — the state logout exists to clean up. Credential
+  resolution runs above every command and used to abort with a traceback on a
+  deployment mismatch, so the CLI stayed wedged until
+  `~/.skyportalai/credentials.json` was deleted by hand. Resolution now records
+  the problem instead of raising: `logout` works, commands that need a
+  credential fail with a normal `Error:` line, and `skyportalai config show`
+  reports it. An unparseable credential file is treated the same way — deleting
+  a file should not require the file to be valid.
+- Both deployment-mismatch messages (the public CLI and the interactive shell)
+  now name the two URLs that disagree, the credential file, and the way to keep
+  the credential instead — which depends on whether `--base-url`, an
+  environment variable or `config.yaml` selected the target, since the first
+  two outrank the file and advice to edit it would be a dead end.
+- **`https://skyportal.ai` and `https://app.skyportal.ai` are no longer treated
+  as two deployments.** The shell client normalizes the marketing host to the
+  app host before saving a credential, so configuring the marketing spelling
+  produced a permanent conflict that `logout` and `login` only recreated. The
+  normalization now lives in one place (`_client.normalize_base_url`) and both
+  comparisons use it.
 - `skyportalai login` and `skyportalai github-token set` now name the instance
   they are connecting to before prompting for a secret, and warn when that
   target is a loopback address, naming both `config.yaml` and

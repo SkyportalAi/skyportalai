@@ -24,6 +24,9 @@ from .types import PermissionMode, User
 
 DEFAULT_BASE_URL = "https://app.skyportal.ai"
 
+#: The marketing site is the same deployment as the app host but serves no API.
+MARKETING_BASE_URL = "https://skyportal.ai"
+
 #: Hosts allowed to use plain ``http://`` (local development only).
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _PERMISSION_MODES = frozenset({"ask", "autoapprove"})
@@ -54,6 +57,19 @@ def _redacted(base_url: str) -> str:
         netloc = f"{netloc}:{port}"
     shown = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
     return shown.removeprefix("//") if schemeless else shown
+
+
+def normalize_base_url(base_url: str) -> str:
+    """Canonical form of a base URL, for storing, comparing and requesting.
+
+    Two spellings of the production deployment reach the same place, and the
+    marketing host has no API, so anything comparing base URLs has to agree on
+    one of them. Kept here rather than beside a caller because the shell client
+    and the public CLI both compare stored against selected URLs, and a second
+    copy would let them disagree about whether two URLs name one deployment.
+    """
+    trimmed = base_url.rstrip("/")
+    return DEFAULT_BASE_URL if trimmed == MARKETING_BASE_URL else trimmed
 
 
 def _is_loopback(host: str) -> bool:
