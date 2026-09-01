@@ -39,6 +39,11 @@ the project is created on the first successful upload.
    never be reused or re-uploaded, so this human approval is the last chance to
    catch a bad build.
 
+   As of 0.2.2 the `pypi` environment requires a review from
+   [@sarah-skyportal](https://github.com/sarah-skyportal), and its deployment
+   branch policy is limited to `v*` tags. `testpypi` is deliberately
+   ungated — a dry run cannot burn a version number.
+
 4. Restrict who can create `v*` tags, so that cutting a release and approving
    one stay separate privileges. Either add a
    [tag protection rule](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/configuring-tag-protection-rules)
