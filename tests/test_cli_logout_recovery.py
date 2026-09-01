@@ -66,6 +66,28 @@ def test_a_command_needing_the_credential_reports_the_conflict_without_a_traceba
     assert credentials_path.exists()
 
 
+def test_the_advice_names_the_environment_variable_not_the_flag(monkeypatch, tmp_path):
+    # Click fills --base-url from SKYPORTALAI_BASE_URL, so the CLI must not blame
+    # a flag the user never typed; unsetting the variable is the only thing that
+    # would actually change the selected URL here.
+    _mismatched(monkeypatch, tmp_path)
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "https://app.skyportal.ai")
+
+    result = runner.invoke(app, ["config", "show"])
+
+    assert result.exit_code == 0, result.output
+    assert "unsetting SKYPORTALAI_BASE_URL" in result.output
+
+
+def test_the_advice_names_the_flag_when_the_flag_was_typed(monkeypatch, tmp_path):
+    _mismatched(monkeypatch, tmp_path)
+
+    result = runner.invoke(app, ["--base-url", "https://app.skyportal.ai", "config", "show"])
+
+    assert result.exit_code == 0, result.output
+    assert "dropping --base-url" in result.output
+
+
 def test_config_show_reports_the_conflict_as_data(monkeypatch, tmp_path):
     credentials_path = _mismatched(monkeypatch, tmp_path)
 

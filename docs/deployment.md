@@ -147,12 +147,15 @@ key is only valid on the instance that issued it:
 Error: Stored credentials belong to another SkyPortal deployment
 (http://localhost:8000), but the selected base URL is https://app.skyportal.ai.
 Run 'skyportalai logout' to clear them (/home/you/.skyportalai/credentials.json),
-or point the CLI back with 'skyportalai config set --base-url'.
+or keep them by running 'skyportalai config set --base-url http://localhost:8000'.
 ```
 
 Either clear the key with `skyportalai logout` and run `skyportalai login`
-against the instance you want, or put the base URL back. `skyportalai config
-show` reports the same conflict without needing a working credential.
+against the instance you want, or put the base URL back — the message names the
+setting that actually chose the target, which is `--base-url` or
+`SKYPORTALAI_BASE_URL` when either is in play, because both outrank
+`config.yaml`. `skyportalai config show` reports the same conflict without
+needing a working credential.
 
 ### Browser login lands on another page
 

@@ -13,12 +13,12 @@ from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from skyportalai import _env
-from skyportalai._client import _validate_base_url
+from skyportalai._client import DEFAULT_BASE_URL, MARKETING_BASE_URL, _validate_base_url, normalize_base_url
 from skyportalai._exceptions import SkyportalError
 from skyportalai._version import __version__
 
-PRODUCTION_MARKETING_URL = "https://skyportal.ai"
-PRODUCTION_APP_URL = "https://app.skyportal.ai"
+PRODUCTION_MARKETING_URL = MARKETING_BASE_URL
+PRODUCTION_APP_URL = DEFAULT_BASE_URL
 CLI_USER_AGENT = f"Skyportal-CLI/{__version__} (+https://app.skyportal.ai)"
 
 _BUSY_CHAT_STATUSES = {"processing", "uninitialized"}
@@ -131,12 +131,7 @@ class SkyportalClient:
     def __init__(self, base_url: str, timeout: int = 30):
         if timeout <= 0:
             raise PortalError("Request timeout must be greater than zero")
-        requested_base_url = base_url.rstrip("/")
-        self.base_url = (
-            PRODUCTION_APP_URL
-            if requested_base_url == PRODUCTION_MARKETING_URL
-            else requested_base_url
-        )
+        self.base_url = normalize_base_url(base_url)
         try:
             _validate_base_url(self.base_url)
         except SkyportalError as error:
@@ -662,12 +657,16 @@ class SkyportalClient:
             credentials = CredentialStore.load()
             if not credentials or not credentials.get("access_token"):
                 raise PortalError("Not connected. Run 'skyportalai login' first.")
-            if credentials.get("base_url") not in (None, self.base_url):
+            stored_url = credentials.get("base_url")
+            # self.base_url is already normalized, so the stored value has to be
+            # too: a credential saved as the marketing host names this same
+            # deployment, and re-running login would only save it again.
+            if stored_url is not None and normalize_base_url(str(stored_url)) != self.base_url:
                 raise PortalError(
                     "Stored credentials belong to another Skyportal deployment "
                     "({}), but this session targets {}. Run 'skyportalai logout' to "
                     "clear them ({}), or 'skyportalai login' to replace them.".format(
-                        credentials.get("base_url"), self.base_url, CredentialStore.get_path()
+                        stored_url, self.base_url, CredentialStore.get_path()
                     )
                 )
             token = str(credentials["access_token"])
