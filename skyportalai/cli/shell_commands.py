@@ -123,7 +123,7 @@ def login(
     _announce_target()
     client = _portal_client()
     try:
-        handshake = None if enter_token else client.begin_device_login()
+        handshake = None if enter_token else _begin_handshake(client)
         if handshake is None:
             _connect_by_pasting_a_key(client, show_key_page=not enter_token, open_browser=not no_browser)
         else:
@@ -131,6 +131,22 @@ def login(
     except PortalError as error:
         raise _fail(error) from None
     console.print("[green]✓[/green] Credential validated and saved securely")
+
+
+def _begin_handshake(client: SkyportalClient):
+    """Start the browser handshake, naming the manual route if it cannot start.
+
+    A deployment without the endpoint reports no handshake and falls back
+    silently. Everything else — a 502, an unreachable host — is a real failure,
+    and the way past it is the paste route, so the error says so.
+    """
+    try:
+        return client.begin_device_login()
+    except PortalError as error:
+        raise PortalError(
+            f"{error} Could not start a browser login; "
+            "run 'skyportalai login --token' to paste a key instead."
+        ) from None
 
 
 def _connect_through_the_browser(client: SkyportalClient, handshake, *, open_browser: bool) -> None:

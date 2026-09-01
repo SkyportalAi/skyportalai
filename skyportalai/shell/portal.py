@@ -24,9 +24,13 @@ CLI_USER_AGENT = f"Skyportal-CLI/{__version__} (+https://app.skyportal.ai)"
 
 CLI_LOGIN_START_PATH = "/api/v1/cli/login/start/"
 CLI_LOGIN_POLL_PATH = "/api/v1/cli/login/poll/"
-# A deployment that predates the handshake answers these with 404/405; the caller
-# then falls back to the manual key page rather than failing the login.
-_NO_HANDSHAKE_STATUSES = frozenset({404, 405})
+# A deployment that predates the handshake answers these with 404/405, and an
+# edge or WAF in front of one can answer 403; either way there is no handshake to
+# be had, so the caller falls back to the manual key page instead of failing.
+_NO_HANDSHAKE_STATUSES = frozenset({403, 404, 405})
+# Poll failures that say nothing about the authorization itself: a 502 from a
+# proxy, a throttle, a dropped connection. They cost time, not the login.
+_TRANSIENT_POLL_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 _MIN_POLL_INTERVAL = 1
 _MAX_POLL_INTERVAL = 30
 
@@ -86,6 +90,12 @@ class ChatTurnResult:
     messages: List[Dict[str, Any]]
     pending_approvals: List[Dict[str, Any]]
     latest_sequence: int
+
+
+def _is_transient(error: PortalError) -> bool:
+    """Whether a failed poll says nothing about the authorization's state."""
+    # status_code is None for connection failures and timeouts.
+    return error.status_code is None or error.status_code in _TRANSIENT_POLL_STATUSES
 
 
 def _local_client_name() -> str:
@@ -232,13 +242,26 @@ class SkyportalClient:
         """Poll until the browser approves the handshake, returning the new API key."""
         interval = min(max(handshake.interval, _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
         deadline = time.monotonic() + max(handshake.expires_in, interval)
+        backoff = interval
         while True:
-            payload = self._request(
-                "POST",
-                CLI_LOGIN_POLL_PATH,
-                json_body={"device_code": handshake.device_code},
-                authenticated=False,
-            )
+            try:
+                payload = self._request(
+                    "POST",
+                    CLI_LOGIN_POLL_PATH,
+                    json_body={"device_code": handshake.device_code},
+                    authenticated=False,
+                )
+            except PortalError as error:
+                # One bad poll must not discard an approval the user may have
+                # already given: a 502 or a dropped connection at second 30 of
+                # 600 costs a retry, not the login. Anything that describes the
+                # request itself (a 400, a vanished endpoint) still stops.
+                if not _is_transient(error) or time.monotonic() >= deadline:
+                    raise
+                sleep(backoff)
+                backoff = min(backoff * 2, _MAX_POLL_INTERVAL)
+                continue
+            backoff = interval
             payload = payload if isinstance(payload, dict) else {}
             status = str(payload.get("status") or "")
             if status == "approved":

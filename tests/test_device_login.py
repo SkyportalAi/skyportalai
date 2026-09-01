@@ -9,13 +9,13 @@ deployment has no handshake endpoint.
 import json
 from io import BytesIO
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from typer.testing import CliRunner
 
 from skyportalai.cli.main import app
-from skyportalai.shell.portal import CredentialStore, PortalError, SkyportalClient
+from skyportalai.shell.portal import CredentialStore, DeviceLogin, PortalError, SkyportalClient
 
 runner = CliRunner()
 
@@ -42,6 +42,19 @@ class FakeResponse:
 
     def read(self):
         return json.dumps(self.payload).encode()
+
+
+class _Clock:
+    """A monotonic clock the injected sleep advances, so deadlines are testable."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 def _http_error(status):
@@ -81,10 +94,12 @@ def test_begin_device_login_reads_the_handshake(isolated):
     assert body["client_version"]
 
 
-def test_a_deployment_without_the_endpoint_reports_no_handshake(isolated):
+@pytest.mark.parametrize("status", [403, 404, 405])
+def test_a_deployment_without_the_endpoint_reports_no_handshake(isolated, status):
+    # 404/405 predates the handshake; 403 is an edge or WAF in front of one.
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(404)):
+    with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(status)):
         assert client.begin_device_login() is None
 
 
@@ -94,6 +109,51 @@ def test_other_failures_are_not_mistaken_for_a_missing_endpoint(isolated):
     with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(500)):
         with pytest.raises(PortalError):
             client.begin_device_login()
+
+
+def test_a_transient_poll_failure_costs_a_retry_not_the_login(isolated):
+    # The user may already have clicked approve; a 502 at second 30 of 600 must
+    # not throw that away.
+    client = SkyportalClient("https://app.skyportal.ai")
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(STARTED)):
+        handshake = client.begin_device_login()
+    slept = []
+    responses = [
+        _http_error(502),
+        URLError("connection reset"),
+        _http_error(429),
+        FakeResponse({"status": "approved", "key": "sk_delivered"}),
+    ]
+
+    with patch("skyportalai.shell.portal.urlopen", side_effect=responses):
+        key = client.await_device_login(handshake, sleep=slept.append)
+
+    assert key == "sk_delivered"
+    # Backs off while the far side is unhappy, rather than hammering it.
+    assert slept == [5, 10, 20]
+
+
+def test_a_failure_about_the_request_itself_still_stops(isolated):
+    client = SkyportalClient("https://app.skyportal.ai")
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(STARTED)):
+        handshake = client.begin_device_login()
+
+    with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(400)):
+        with pytest.raises(PortalError):
+            client.await_device_login(handshake, sleep=lambda _seconds: None)
+
+
+def test_transient_failures_stop_at_the_deadline(isolated):
+    client = SkyportalClient("https://app.skyportal.ai")
+    handshake = DeviceLogin(**{**STARTED, "interval": 1, "expires_in": 4})
+    clock = _Clock()
+
+    with patch("skyportalai.shell.portal.time.monotonic", clock.monotonic):
+        with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(503)):
+            with pytest.raises(PortalError):
+                client.await_device_login(handshake, sleep=clock.sleep)
+
+    assert clock.now >= 4
 
 
 def test_polling_waits_through_pending_and_returns_the_key(isolated):
@@ -173,6 +233,15 @@ def test_no_browser_prints_the_url_without_opening_it(isolated):
     assert result.exit_code == 0, result.output
     assert STARTED["verification_uri_complete"] in result.output
     browser.assert_not_called()
+
+
+def test_a_start_failure_names_the_paste_route(isolated):
+    with patch("skyportalai.shell.portal.urlopen", side_effect=_http_error(502)):
+        result = runner.invoke(app, ["login"])
+
+    assert result.exit_code == 1
+    assert "skyportalai login --token" in result.output
+    assert not isolated.exists()
 
 
 def test_login_falls_back_to_pasting_when_the_deployment_has_no_handshake(isolated):

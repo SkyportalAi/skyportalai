@@ -55,7 +55,12 @@ https://app.skyportal.ai/cli/authorize/?code=BCDF-GHJK
 The code is valid for ten minutes. Use `--no-browser` on a machine with no
 browser (the URL still prints, and can be opened anywhere you are signed in), or
 `skyportalai login --token` to paste an existing `sk_` key instead. A deployment
-that predates the handshake falls back to the key page automatically.
+that predates the handshake falls back to the key page automatically, and a
+proxy or WAF blocking the handshake does the same.
+
+While it waits, a failed poll — a 502 from a proxy, a dropped connection — is
+retried with backoff until the code expires, so a network hiccup does not
+discard an approval that was already given.
 
 `login` prints the instance it is connecting to before prompting, so check that
 line if you are not sure which deployment the key will belong to. A saved
