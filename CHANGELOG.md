@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1
+
+### Fixed
+
+- **`./run.sh` works again from a fresh clone.** It previously failed with
+  `Directory cannot be installed in editable mode`, then
+  `.venv/bin/skyportalai: No such file or directory`. `python3 -m venv` seeds
+  whatever pip ships in the host interpreter's `ensurepip` wheel, and a pip
+  older than 21.3 predates [PEP 660](https://peps.python.org/pep-0660/), so it
+  cannot install a `poetry-core` project in editable mode. The launcher now
+  delegates to [uv](https://docs.astral.sh/uv/), which provisions the
+  interpreter pinned in `.python-version` and needs no pip bootstrap at all.
+  `SKYPORTAL_VENV` is still honoured.
+
+### Documentation
+
+- `docs/deployment.md` described the removed pip recovery ladder and said the
+  launcher starts `skyportal`, a command that no longer exists as of 0.2.0.
+- The documented manual install could not work either: it used `python3`, which
+  may be older than the required 3.11, and did not upgrade pip before an
+  editable install. Both failure modes are now called out with their exact
+  error messages, and `uv sync` is given as the simpler path.
+- `CONTRIBUTING.md` notes that the launcher and Poetry share `.venv`, so
+  running the launcher after `poetry install` prunes the dev tools from that
+  environment.
+
 ## 0.2.0
 
 Everything user-facing is now named `skyportalai`.
