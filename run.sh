@@ -20,13 +20,19 @@ if [[ -n "${SKYPORTAL_VENV:-}" ]]; then
   export UV_PROJECT_ENVIRONMENT="$SKYPORTAL_VENV"
 fi
 
+# Pinned so every checkout bootstraps the same uv. The unversioned installer
+# URL tracks the latest release, which would let a uv release change the
+# environment under contributors without anything in this repo changing.
+UV_VERSION="${UV_VERSION:-0.12.8}"
+
 install_uv() {
-  log "uv not found; installing it..."
+  local installer="https://astral.sh/uv/${UV_VERSION}/install.sh"
+  log "uv not found; installing ${UV_VERSION}..."
 
   if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    curl -LsSf "$installer" | sh
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://astral.sh/uv/install.sh | sh
+    wget -qO- "$installer" | sh
   else
     log "neither curl nor wget is available to download uv."
     log "Install it manually (https://docs.astral.sh/uv/getting-started/installation/) and rerun ./run.sh"
