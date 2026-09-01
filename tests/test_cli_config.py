@@ -49,8 +49,36 @@ def test_credentials_are_scoped_to_the_selected_deployment(tmp_path, monkeypatch
     credentials.write_text(json.dumps({"access_token": "sk-file", "base_url": "https://one.example"}))
     monkeypatch.setenv("SKYPORTALAI_BASE_URL", "https://two.example")
 
-    with pytest.raises(SkyportalError, match="another SkyPortal deployment"):
-        resolve_settings()
+    settings = resolve_settings()
+
+    assert settings.api_key is None
+    assert "another SkyPortal deployment" in settings.credential_conflict
+    assert "https://one.example" in settings.credential_conflict
+    assert "https://two.example" in settings.credential_conflict
+    assert "skyportalai logout" in settings.credential_conflict
+    assert str(credentials) in settings.credential_conflict
+
+
+def test_an_unreadable_credential_file_is_reported_not_raised(tmp_path):
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text("{not json")
+
+    settings = resolve_settings()
+
+    assert settings.api_key is None
+    assert "skyportalai logout" in settings.credential_conflict
+    assert str(credentials) in settings.credential_conflict
+
+
+def test_a_matching_stored_credential_still_resolves(tmp_path, monkeypatch):
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text(json.dumps({"access_token": "sk-file", "base_url": "https://one.example"}))
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "https://one.example/")
+
+    settings = resolve_settings()
+
+    assert settings.api_key == "sk-file"
+    assert settings.credential_conflict is None
 
 
 def test_save_connection_config_is_private_and_legacy_compatible(tmp_path):

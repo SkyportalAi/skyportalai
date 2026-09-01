@@ -69,7 +69,9 @@ def show_config(context: typer.Context) -> None:
         "authenticated": state.settings.api_key is not None,
         "api_key_source": state.settings.api_key_source,
         "config_path": state.settings.config_path,
+        "credential_conflict": state.settings.credential_conflict,
     }
+    conflict = f"\nCredential problem: {state.settings.credential_conflict}" if state.settings.credential_conflict else ""
     state.output.success(
         data,
         human=(
@@ -77,6 +79,7 @@ def show_config(context: typer.Context) -> None:
             f"Timeout: {state.settings.timeout:g}s\n"
             f"Credential: {state.settings.api_key_source or 'not configured'}\n"
             f"Config: {state.settings.config_path}"
+            f"{conflict}"
         ),
     )
 

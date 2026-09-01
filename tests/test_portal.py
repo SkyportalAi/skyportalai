@@ -906,6 +906,20 @@ def test_missing_credentials_are_reported(credential_path):
         client.servers()
 
 
+def test_credentials_from_another_deployment_name_the_way_out(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "http://localhost:8000"})
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with pytest.raises(PortalError) as error:
+        client.servers()
+
+    message = str(error.value)
+    assert "http://localhost:8000" in message
+    assert "https://app.skyportal.ai" in message
+    assert "skyportalai logout" in message
+    assert str(credential_path) in message
+
+
 def test_raw_request_timeout_is_wrapped_as_portal_error(credential_path):
     CredentialStore.save(
         {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}

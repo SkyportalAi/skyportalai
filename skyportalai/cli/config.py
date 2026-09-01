@@ -25,6 +25,8 @@ class CLISettings:
     timeout: float
     config_path: Path
     credentials_path: Path
+    #: Why a stored credential could not be used, if there was one.
+    credential_conflict: str | None = None
 
 
 def get_config_path() -> Path:
@@ -40,7 +42,10 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
     config_path = get_config_path()
     credentials_path = get_credentials_path()
     config = _read_mapping(config_path, "configuration", yaml.safe_load)
-    credentials = _read_mapping(credentials_path, "credentials", json.load)
+    # Resolution must not die on the credential file: `skyportalai logout`
+    # exists to remove exactly the file that cannot be used, and it runs
+    # through this same resolution. Record the reason instead of raising.
+    credentials, credential_conflict = _read_credentials(credentials_path)
     portal = config.get("portal", {})
     if not isinstance(portal, dict):
         raise SkyportalError(f"Invalid SkyPortal configuration in {config_path}: 'portal' must be a mapping.")
@@ -72,12 +77,15 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
         api_key, source = _env.lookup("SKYPORTALAI_API_KEY")
     if not api_key and credentials.get("access_token"):
         if stored_url and str(stored_url).rstrip("/") != effective_url:
-            raise SkyportalError(
-                "Stored credentials belong to another SkyPortal deployment. "
-                "Set SKYPORTALAI_API_KEY or update the selected base URL."
+            credential_conflict = (
+                f"Stored credentials belong to another SkyPortal deployment "
+                f"({str(stored_url).rstrip('/')}), but the selected base URL is {effective_url}. "
+                f"Run 'skyportalai logout' to clear them ({credentials_path}), "
+                f"or point the CLI back with 'skyportalai config set --base-url'."
             )
-        api_key = str(credentials["access_token"])
-        source = str(credentials_path)
+        else:
+            api_key = str(credentials["access_token"])
+            source = str(credentials_path)
 
     return CLISettings(
         api_key=api_key,
@@ -86,6 +94,7 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
         timeout=timeout,
         config_path=config_path,
         credentials_path=credentials_path,
+        credential_conflict=credential_conflict,
     )
 
 
@@ -111,6 +120,14 @@ def save_connection_config(*, base_url: str | None, timeout: float | None) -> Pa
         temporary.chmod(0o600)
     temporary.replace(path)
     return path
+
+
+def _read_credentials(path: Path) -> tuple[dict[str, Any], str | None]:
+    """Read the credential file, reporting rather than raising when it is unusable."""
+    try:
+        return _read_mapping(path, "credentials", json.load), None
+    except SkyportalError as exc:
+        return {}, f"{exc} Run 'skyportalai logout' to remove the file."
 
 
 def _read_mapping(path: Path, label: str, loader: Any) -> dict[str, Any]:
