@@ -40,7 +40,29 @@ An older pip fails with `Directory cannot be installed in editable mode`, and a
 
 ## Connect to production
 
-The default application URL is `https://app.skyportal.ai`. Run `skyportalai login`, create an account API key on the browser page, and paste the `sk_` value into the hidden prompt.
+The default application URL is `https://app.skyportal.ai`. Run `skyportalai login`:
+it prints a short code and opens the page that confirms it. Approve there and the
+terminal connects itself — no key to copy.
+
+```
+$ skyportalai login
+Connecting to https://app.skyportal.ai
+Confirm this code to connect: BCDF-GHJK
+https://app.skyportal.ai/cli/authorize/?code=BCDF-GHJK
+✓ Credential validated and saved securely
+```
+
+The code is valid for ten minutes. Use `--no-browser` on a machine with no
+browser (the URL still prints, and can be opened anywhere you are signed in), or
+`skyportalai login --token` to paste an existing `sk_` key instead. A deployment
+that predates the handshake falls back to the key page automatically, and a
+proxy or WAF returning 403 does the same. Any other start failure — a 5xx from
+an unhealthy server, a connection error — stops with a message that names
+`skyportalai login --token` as the fallback.
+
+While it waits, a failed poll — a 502 from a proxy, a dropped connection — is
+retried with backoff until the code expires, so a network hiccup does not
+discard an approval that was already given.
 
 `login` prints the instance it is connecting to before prompting, so check that
 line if you are not sure which deployment the key will belong to. A saved

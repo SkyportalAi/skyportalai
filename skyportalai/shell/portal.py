@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import tempfile
 import time
 import webbrowser
@@ -20,6 +21,18 @@ from skyportalai._version import __version__
 PRODUCTION_MARKETING_URL = MARKETING_BASE_URL
 PRODUCTION_APP_URL = DEFAULT_BASE_URL
 CLI_USER_AGENT = f"Skyportal-CLI/{__version__} (+https://app.skyportal.ai)"
+
+CLI_LOGIN_START_PATH = "/api/v1/cli/login/start/"
+CLI_LOGIN_POLL_PATH = "/api/v1/cli/login/poll/"
+# A deployment that predates the handshake answers these with 404/405, and an
+# edge or WAF in front of one can answer 403; either way there is no handshake to
+# be had, so the caller falls back to the manual key page instead of failing.
+_NO_HANDSHAKE_STATUSES = frozenset({403, 404, 405})
+# Poll failures that say nothing about the authorization itself: a 502 from a
+# proxy, a throttle, a dropped connection. They cost time, not the login.
+_TRANSIENT_POLL_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_MIN_POLL_INTERVAL = 1
+_MAX_POLL_INTERVAL = 30
 
 _BUSY_CHAT_STATUSES = {"processing", "uninitialized"}
 _IMMEDIATE_CHAT_STATUSES = {"awaiting_approval", "error"}
@@ -57,6 +70,18 @@ class PortalError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class DeviceLogin:
+    """A browser handshake the CLI is waiting on."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str
+    interval: int
+    expires_in: int
+
+
+@dataclass(frozen=True)
 class ChatTurnResult:
     """Result of one headless Skyportal agent turn."""
 
@@ -65,6 +90,20 @@ class ChatTurnResult:
     messages: List[Dict[str, Any]]
     pending_approvals: List[Dict[str, Any]]
     latest_sequence: int
+
+
+def _is_transient(error: PortalError) -> bool:
+    """Whether a failed poll says nothing about the authorization's state."""
+    # status_code is None for connection failures and timeouts.
+    return error.status_code is None or error.status_code in _TRANSIENT_POLL_STATUSES
+
+
+def _local_client_name() -> str:
+    """The machine name shown on the approval page, so a user can recognise it."""
+    try:
+        return socket.gethostname()[:60]
+    except OSError:
+        return ""
 
 
 class CredentialStore:
@@ -157,6 +196,108 @@ class SkyportalClient:
             "verification_url": verification_url,
             "browser_opened": browser_opened,
         }
+
+    def begin_device_login(self) -> Optional[DeviceLogin]:
+        """Start a browser handshake, or None if this deployment has no endpoint.
+
+        Returning None rather than raising is what lets `login` keep working
+        against a Skyportal that has not deployed the handshake yet: the caller
+        falls back to the key page and a pasted credential.
+        """
+        body = {"client_name": _local_client_name(), "client_version": __version__}
+        try:
+            payload = self._request(
+                "POST", CLI_LOGIN_START_PATH, json_body=body, authenticated=False
+            )
+        except PortalError as error:
+            if error.status_code in _NO_HANDSHAKE_STATUSES:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise PortalError("Skyportal returned an unexpected login response")
+        try:
+            device_code = payload["device_code"]
+            user_code = payload["user_code"]
+            verification_uri = payload["verification_uri"]
+            if not isinstance(device_code, str) or not device_code:
+                raise PortalError("Skyportal returned an incomplete login response")
+            if not isinstance(user_code, str) or not user_code:
+                raise PortalError("Skyportal returned an incomplete login response")
+            if not isinstance(verification_uri, str) or not verification_uri:
+                raise PortalError("Skyportal returned an incomplete login response")
+            return DeviceLogin(
+                device_code=device_code,
+                user_code=user_code,
+                verification_uri=verification_uri,
+                verification_uri_complete=str(
+                    payload.get("verification_uri_complete") or verification_uri
+                ),
+                interval=int(payload.get("interval") or _MIN_POLL_INTERVAL),
+                expires_in=int(payload.get("expires_in") or 600),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise PortalError("Skyportal returned an incomplete login response") from error
+
+    def await_device_login(
+        self,
+        handshake: DeviceLogin,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> str:
+        """Poll until the browser approves the handshake, returning the new API key."""
+        interval = min(max(handshake.interval, _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
+        deadline = time.monotonic() + max(handshake.expires_in, interval)
+        backoff = interval
+        while True:
+            try:
+                payload = self._request(
+                    "POST",
+                    CLI_LOGIN_POLL_PATH,
+                    json_body={"device_code": handshake.device_code},
+                    authenticated=False,
+                )
+            except PortalError as error:
+                # One bad poll must not discard an approval the user may have
+                # already given: a 502 or a dropped connection at second 30 of
+                # 600 costs a retry, not the login. Anything that describes the
+                # request itself (a 400, a vanished endpoint) still stops.
+                if not _is_transient(error) or time.monotonic() >= deadline:
+                    raise
+                sleep(backoff)
+                backoff = min(backoff * 2, _MAX_POLL_INTERVAL)
+                continue
+            backoff = interval
+            payload = payload if isinstance(payload, dict) else {}
+            status = str(payload.get("status") or "")
+            if status == "approved":
+                key = str(payload.get("key") or "")
+                if not key:
+                    raise PortalError("Skyportal approved the login but returned no API key")
+                return key
+            if status == "denied":
+                raise PortalError("The login was denied in the browser. Nothing was saved.")
+            if status == "expired":
+                raise PortalError(
+                    "The login request expired before it was approved. "
+                    "Run 'skyportalai login' again."
+                )
+            if time.monotonic() >= deadline:
+                raise PortalError(
+                    "Timed out waiting for the browser to approve this login. "
+                    "Run 'skyportalai login' again."
+                )
+            # The server may ask for a slower cadence than it first advertised.
+            try:
+                interval = min(max(int(payload.get("interval") or interval), _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
+            except (TypeError, ValueError) as error:
+                raise PortalError("Skyportal returned an invalid poll interval") from error
+            sleep(interval)
+
+    def open_verification_page(self, url: str) -> bool:
+        """Open a handshake URL in the browser, reporting whether that worked."""
+        try:
+            return bool(webbrowser.open(url))
+        except webbrowser.Error:
+            return False
 
     def api_key_url(self) -> str:
         """Return the account API-key page used by the CLI."""
