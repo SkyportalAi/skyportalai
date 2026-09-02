@@ -1,7 +1,9 @@
 """Skyportal authentication and headless-agent API client."""
 
 import json
+import mimetypes
 import os
+import secrets
 import socket
 import tempfile
 import time
@@ -17,6 +19,29 @@ from skyportalai import _env
 from skyportalai._client import DEFAULT_BASE_URL, MARKETING_BASE_URL, _validate_base_url, normalize_base_url
 from skyportalai._exceptions import SkyportalError
 from skyportalai._version import __version__
+
+# Mirrors MAX_FILE_SIZE_BYTES on the server; checked here so an oversized file is
+# refused before it is read into memory.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+def _encode_multipart(parts: List[Any]) -> Any:
+    """Build a multipart/form-data body. urllib has no multipart support of its own."""
+    boundary = "----SkyportalBoundary" + secrets.token_hex(16)
+    buffer = bytearray()
+    for filename, content, content_type in parts:
+        # The filename is quoted into a header, so a quote or newline in it would
+        # let a crafted name inject headers or a second part.
+        safe_name = filename.replace('"', "").replace("\r", "").replace("\n", "")
+        buffer += ("--" + boundary + "\r\n").encode()
+        buffer += (
+            'Content-Disposition: form-data; name="files"; filename="{}"\r\n'.format(safe_name)
+        ).encode()
+        buffer += ("Content-Type: " + content_type + "\r\n\r\n").encode()
+        buffer += content
+        buffer += b"\r\n"
+    buffer += ("--" + boundary + "--\r\n").encode()
+    return bytes(buffer), "multipart/form-data; boundary=" + boundary
 
 PRODUCTION_MARKETING_URL = MARKETING_BASE_URL
 PRODUCTION_APP_URL = DEFAULT_BASE_URL
@@ -444,6 +469,35 @@ class SkyportalClient:
             json_body={"message": message},
         )
 
+    def upload_chat_files(self, chat_id: int, paths: List[str]) -> Dict[str, Any]:
+        """Attach files to a chat. Logs, CSV, JSON, YAML and images all work."""
+        parts = []
+        for raw_path in paths:
+            path = Path(raw_path).expanduser()
+            if not path.is_file():
+                raise PortalError("No such file: {}".format(raw_path))
+            size = path.stat().st_size
+            if size == 0:
+                raise PortalError("{} is empty".format(path.name))
+            # Checked before reading so a huge file is refused rather than loaded
+            # into memory only to be rejected by the server.
+            if size > MAX_UPLOAD_BYTES:
+                raise PortalError(
+                    "{} is {:.0f} MB; the limit is {} MB".format(
+                        path.name, size / 1e6, MAX_UPLOAD_BYTES // 1_000_000
+                    )
+                )
+            guessed = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            parts.append((path.name, path.read_bytes(), guessed))
+
+        body, content_type = _encode_multipart(parts)
+        return self._request(
+            "POST",
+            "/api/v1/agent/chat/{}/upload/".format(chat_id),
+            body=body,
+            content_type=content_type,
+        )
+
     def chat_status(
         self,
         chat_id: int,
@@ -837,13 +891,18 @@ class SkyportalClient:
         json_body: Optional[Dict[str, Any]] = None,
         authenticated: bool = True,
         bearer_token: Optional[str] = None,
+        body: Optional[bytes] = None,
+        content_type: Optional[str] = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
             "User-Agent": CLI_USER_AGENT,
         }
         data = None
-        if json_body is not None:
+        if body is not None:
+            data = body
+            headers["Content-Type"] = content_type or "application/octet-stream"
+        elif json_body is not None:
             data = json.dumps(json_body).encode()
             headers["Content-Type"] = "application/json"
         if bearer_token:

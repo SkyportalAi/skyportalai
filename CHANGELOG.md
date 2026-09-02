@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- **`/upload <path>` attaches a file to the chat.** Logs, CSV, JSON, YAML and
+  images, up to 10 MB each. Ask about the file by name afterwards; the agent
+  reads what you attach. Secrets in a log are redacted before it leaves the
+  server's front door, so a stray API key is never stored. Requires a deployment
+  with the `/api/v1/agent/chat/<id>/upload/` route.
+
 ## 0.2.2
 
 ### Added

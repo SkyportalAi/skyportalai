@@ -68,6 +68,10 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/resume [chat_id] [--verbose]",
         "Reattach to a chat (defaults to your previous one); --verbose replays its history",
     ),
+    "/upload": CommandInfo(
+        "/upload <path> [path…]",
+        "Attach a log, CSV, JSON or image to this chat",
+    ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
     "/server": CommandInfo(
         "/server <name> [name ...] | auto",
@@ -173,6 +177,7 @@ class InteractiveShell:
             "/permission": self._cmd_permission,
             "/new": self._cmd_new,
             "/resume": self._cmd_resume,
+            "/upload": self._cmd_upload,
             "/servers": self._cmd_servers,
             "/server": self._cmd_server,
             "/clear": self._cmd_clear,
@@ -769,6 +774,39 @@ class InteractiveShell:
             "[green]✓ Resumed chat #{}.[/green]{} Type a message to continue.".format(
                 chat_id, truncated
             )
+        )
+
+    def _cmd_upload(self, args: List[str]) -> None:
+        self._require_api_connection()
+        if not args:
+            self.console.print(
+                "[yellow]Usage: /upload <path> [path…][/yellow]\n"
+                "[dim]Logs, CSV, JSON, YAML and images. 10 MB each.[/dim]"
+            )
+            return
+        if self.chat_id is None:
+            self.console.print(
+                "[yellow]Send a message first — files attach to a chat, and this one "
+                "has not started yet.[/yellow]"
+            )
+            return
+
+        with self.console.status("[cyan]Uploading…[/cyan]", spinner="dots"):
+            payload = self.client.upload_chat_files(self.chat_id, args)
+
+        uploaded = payload.get("files") or []
+        if not uploaded:
+            self.console.print("[yellow]Nothing was uploaded.[/yellow]")
+            return
+        for item in uploaded:
+            size_kb = (item.get("size") or 0) / 1024
+            self.console.print(
+                "[green]Attached[/green] {} [dim]({:.1f} KB)[/dim]".format(
+                    item.get("name", "file"), size_kb
+                )
+            )
+        self.console.print(
+            "[dim]Ask about it by name — the agent reads attached files.[/dim]"
         )
 
     def _cmd_servers(self, args: List[str]) -> None:
