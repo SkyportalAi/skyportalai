@@ -181,6 +181,42 @@ class TestUploadClient:
         assert sent["content_type"].startswith("multipart/form-data")
         assert b"latency_ms=118" in sent["body"]
 
+    @pytest.mark.parametrize(
+        "filename, content",
+        [
+            ("metrics.csv", "timestamp,requests,p95_ms\n2026-09-02T12:00:00Z,3410,118\n"),
+            ("vllm.log", "2026-09-02 12:00:01 INFO throughput 42.1 tokens/s\n"),
+            ("notes.txt", "Restarted the pod at 12:05.\n"),
+            # Real logs are often bare names. mimetypes guesses octet-stream for
+            # these; the server decides by decoding, not by the declared type, so
+            # this must keep being sent rather than refused here.
+            ("syslog", "Sep  2 12:00:01 host kernel: oom-killer invoked\n"),
+        ],
+    )
+    def test_the_formats_people_actually_upload(self, tmp_path, monkeypatch, filename, content):
+        client, sent = self._client(tmp_path, monkeypatch)
+        target = tmp_path / filename
+        target.write_text(content)
+
+        client.upload_chat_files(7, [str(target)])
+
+        body = sent["body"].decode()
+        assert 'filename="{}"'.format(filename) in body
+        assert content.strip() in body
+
+    def test_several_files_dropped_together_all_reach_the_body(self, tmp_path, monkeypatch):
+        client, sent = self._client(tmp_path, monkeypatch)
+        names = ["metrics.csv", "vllm.log", "notes.txt"]
+        for name in names:
+            (tmp_path / name).write_text("content of {}\n".format(name))
+
+        client.upload_chat_files(7, [str(tmp_path / name) for name in names])
+
+        body = sent["body"].decode()
+        for name in names:
+            assert 'filename="{}"'.format(name) in body
+            assert "content of {}".format(name) in body
+
 
 class TestDroppedFiles:
     """Dropping a file on a running terminal types its path at the prompt.
