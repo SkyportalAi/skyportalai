@@ -69,7 +69,7 @@ def _parse_path(value: str | None) -> Path | None:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Typed configuration for the SkyPortal observability agent."""
+    """Typed configuration for the Skyportal observability agent."""
 
     token: str
     base_url: str = DEFAULT_BASE_URL

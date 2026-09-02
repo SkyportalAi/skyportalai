@@ -160,7 +160,7 @@ Run `skyportalai --help` for the complete command reference.
 ## Kubernetes clusters
 
 Connect a cluster with its kubeconfig. The CLI sends the credential only to the
-authenticated SkyPortal API, where the same validation and encrypted storage as
+authenticated Skyportal API, where the same validation and encrypted storage as
 the web application are used; kubeconfigs are never returned by lifecycle APIs.
 
 ```bash
@@ -184,7 +184,7 @@ skyportalai kubernetes disconnect 17
 
 ## Ansible playbooks
 
-Store validated playbooks in SkyPortal and reuse them across account-owned SSH
+Store validated playbooks in Skyportal and reuse them across account-owned SSH
 targets. List responses omit YAML bodies; `show` retrieves one playbook when
 you need to inspect or edit it.
 

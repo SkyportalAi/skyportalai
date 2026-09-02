@@ -1,7 +1,7 @@
 # Observability agent
 
 `skyportalai-agent` discovers local Weights & Biases and MLflow runs, stores new
-run batches in a bounded disk queue, and sends them to SkyPortal. It is intended
+run batches in a bounded disk queue, and sends them to Skyportal. It is intended
 for a dedicated host or container with only the experiment volumes it needs.
 
 ## Install and run
@@ -20,7 +20,7 @@ a final delivery attempt.
 | Environment variable | Default | Description |
 |---|---:|---|
 | `SKYPORTALAI_AGENT_TOKEN` | required | Host-bound observability upload token |
-| `SKYPORTALAI_BASE_URL` | `https://app.skyportal.ai` | SkyPortal API root |
+| `SKYPORTALAI_BASE_URL` | `https://app.skyportal.ai` | Skyportal API root |
 | `SKYPORTALAI_AGENT_INTERVAL_SECONDS` | `60` | Seconds between scans |
 | `SKYPORTALAI_AGENT_STATE_DIR` | `/var/lib/skyportal-agent` | Catalog and delivery spool |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `1000` | Maximum on-disk batches |

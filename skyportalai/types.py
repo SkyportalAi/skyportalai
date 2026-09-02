@@ -9,7 +9,7 @@ PermissionMode = Literal["ask", "autoapprove"]
 
 @dataclass(frozen=True)
 class User:
-    """A SkyPortal user.
+    """A Skyportal user.
 
     ``raw`` holds the full auth-check payload so new server fields (id, email…)
     are available immediately, before the SDK grows typed accessors for them.
@@ -25,7 +25,7 @@ class User:
 
 @dataclass(frozen=True)
 class KubernetesCluster:
-    """A Kubernetes cluster connected to the authenticated SkyPortal account."""
+    """A Kubernetes cluster connected to the authenticated Skyportal account."""
 
     id: int
     name: str

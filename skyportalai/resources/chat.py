@@ -24,7 +24,7 @@ BUSY_STATUSES = frozenset({"processing", "uninitialized"})
 
 
 class ChatResource:
-    """``client.chat`` — drive the SkyPortal ops agent over REST.
+    """``client.chat`` — drive the Skyportal ops agent over REST.
 
     Every method takes the ``chat_id`` explicitly; ``create_chat()`` returns a
     bound :class:`~skyportalai.chat.Chat` handle so callers can chain
