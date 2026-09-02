@@ -180,3 +180,152 @@ class TestUploadClient:
         assert sent["path"] == "/api/v1/agent/chat/7/upload/"
         assert sent["content_type"].startswith("multipart/form-data")
         assert b"latency_ms=118" in sent["body"]
+
+
+class TestDroppedFiles:
+    """Dropping a file on a running terminal types its path at the prompt.
+
+    Driven through _route, the real entry point, because the routing is the
+    thing under test: a quoted path does not start with "/" and never reached
+    the command dispatcher at all.
+    """
+
+    @pytest.fixture
+    def routed(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        sent = []
+        instance._send_prompt = sent.append
+        log = tmp_path / "vllm.log"
+        log.write_text("latency_ms=118\n")
+        return instance, client, out, sent, log
+
+    def test_a_plain_dropped_path_uploads(self, routed):
+        instance, client, _, sent, log = routed
+
+        instance._route(str(log))
+
+        assert client.uploads == [(42, [str(log)])]
+        assert sent == []
+
+    def test_a_backslash_escaped_path_uploads(self, routed, tmp_path):
+        instance, client, _, _, _ = routed
+        folder = tmp_path / "my logs"
+        folder.mkdir()
+        log = folder / "vllm.log"
+        log.write_text("x\n")
+
+        instance._route(str(log).replace(" ", "\\ "))
+
+        assert client.uploads == [(42, [str(log)])]
+
+    def test_a_quoted_path_uploads(self, routed, tmp_path):
+        instance, client, _, sent, _ = routed
+        folder = tmp_path / "my logs"
+        folder.mkdir()
+        log = folder / "vllm.log"
+        log.write_text("x\n")
+
+        instance._route("'{}'".format(log))
+
+        assert client.uploads == [(42, [str(log)])]
+        assert sent == []
+
+    def test_two_dropped_files_upload_together(self, routed, tmp_path):
+        instance, client, _, _, _ = routed
+        first = tmp_path / "a.log"
+        first.write_text("a\n")
+        second = tmp_path / "b.csv"
+        second.write_text("b\n")
+
+        instance._route("{} {}".format(first, second))
+
+        assert client.uploads == [(42, [str(first), str(second)])]
+
+    def test_a_file_uri_uploads(self, routed):
+        instance, client, _, _, log = routed
+
+        instance._route("file://{}".format(log))
+
+        assert client.uploads == [(42, [str(log)])]
+
+    def test_a_trailing_space_does_not_break_the_drop(self, routed):
+        instance, client, _, _, log = routed
+
+        instance._route("{} ".format(log))
+
+        assert client.uploads == [(42, [str(log)])]
+
+    def test_a_drop_before_the_chat_starts_says_so(self, routed):
+        instance, client, out, _, log = routed
+        instance.chat_id = None
+
+        instance._route(str(log))
+
+        assert client.uploads == []
+        assert "vllm.log" in out.getvalue()
+        assert "send a message" in out.getvalue().lower()
+
+    def test_a_real_command_still_dispatches(self, routed):
+        instance, client, out, sent, _ = routed
+
+        instance._route("/help")
+
+        assert client.uploads == []
+        assert sent == []
+        assert "Skyportal commands" in out.getvalue()
+
+    def test_upload_with_an_argument_still_reaches_its_handler(self, routed):
+        instance, client, _, _, log = routed
+
+        instance._route("/upload {}".format(log))
+
+        assert client.uploads == [(42, [str(log)])]
+
+    def test_an_unknown_slash_command_is_still_unknown(self, routed):
+        instance, client, out, sent, _ = routed
+
+        instance._route("/nope/not/a/file")
+
+        assert client.uploads == []
+        assert sent == []
+        assert "Unknown command" in out.getvalue()
+
+    def test_a_bare_filename_is_a_message_not_an_upload(self, routed):
+        instance, client, _, sent, _ = routed
+
+        instance._route("check vllm.log for errors")
+
+        assert client.uploads == []
+        assert sent == ["check vllm.log for errors"]
+
+    def test_a_relative_path_that_exists_is_still_a_message(self, routed, tmp_path, monkeypatch):
+        """A drop always types an ABSOLUTE path, so a relative one is someone typing.
+
+        Without the is_absolute() guard, running the shell from a directory that
+        happens to contain vllm.log would turn the message "vllm.log" into an
+        upload.
+        """
+        instance, client, _, sent, _ = routed
+        monkeypatch.chdir(tmp_path)
+
+        instance._route("vllm.log")
+
+        assert client.uploads == []
+        assert sent == ["vllm.log"]
+
+    def test_an_apostrophe_in_a_message_is_not_a_parse_error(self, routed):
+        instance, client, out, sent, _ = routed
+
+        instance._route("don't restart it")
+
+        assert client.uploads == []
+        assert sent == ["don't restart it"]
+        assert "Could not parse" not in out.getvalue()
+
+    def test_a_dropped_directory_is_not_an_upload(self, routed, tmp_path):
+        instance, client, _, _, _ = routed
+
+        instance._route(str(tmp_path))
+
+        assert client.uploads == []

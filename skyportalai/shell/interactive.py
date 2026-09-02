@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -70,7 +71,7 @@ COMMANDS: Dict[str, CommandInfo] = {
     ),
     "/upload": CommandInfo(
         "/upload <path> [path…]",
-        "Attach a log, CSV, JSON or image to this chat",
+        "Attach a log, CSV, JSON or image — or just drop the file on the terminal",
     ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
     "/server": CommandInfo(
@@ -259,10 +260,7 @@ class InteractiveShell:
             if not line:
                 continue
             try:
-                if line.startswith("/"):
-                    self._dispatch(line)
-                else:
-                    self._send_prompt(line)
+                self._route(line)
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Cancelled — the prompt is still active.[/yellow]")
             except PortalError as error:
@@ -377,6 +375,60 @@ class InteractiveShell:
         )
         self.console.print(body)
         self.console.print()
+
+    def _route(self, line: str) -> None:
+        """Send a line to the agent, a command, or the uploader.
+
+        Dropping a file on the terminal types its path at the prompt, so a drop
+        arrives here as ordinary text and has to be recognised as one.
+        """
+        dropped = self._dropped_files(line)
+        if dropped is not None:
+            self._upload_dropped(dropped)
+        elif line.startswith("/"):
+            self._dispatch(line)
+        else:
+            self._send_prompt(line)
+
+    @staticmethod
+    def _dropped_files(line: str) -> Optional[List[str]]:
+        """The paths in a line that is nothing but existing files, else None.
+
+        A terminal types the path when a file is dropped on it, quoting or
+        backslash-escaping any spaces, so shlex is what un-does that. Every token
+        must be an absolute path to a real file: "/upload x.log" keeps its handler
+        because /upload is not a file, and "check vllm.log" stays a message
+        because a bare filename is not absolute.
+        """
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            # An apostrophe in a sentence is an unbalanced quote. That is a
+            # message, not a parse error to report.
+            return None
+        if not tokens:
+            return None
+
+        paths = []
+        for token in tokens:
+            if token.startswith("file://"):
+                token = unquote(urlparse(token).path)
+            candidate = Path(token).expanduser()
+            # isabs first: a message should not stat every word in it.
+            if not candidate.is_absolute() or not candidate.is_file():
+                return None
+            paths.append(str(candidate))
+        return paths
+
+    def _upload_dropped(self, paths: List[str]) -> None:
+        if self.chat_id is None:
+            names = ", ".join(Path(path).name for path in paths)
+            self.console.print(
+                "[yellow]Got {} — send a message to start the chat, then drop it "
+                "again or run /upload.[/yellow]".format(names)
+            )
+            return
+        self._cmd_upload(paths)
 
     def _dispatch(self, line: str) -> None:
         try:
