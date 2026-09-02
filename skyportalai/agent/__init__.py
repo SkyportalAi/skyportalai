@@ -1,7 +1,7 @@
-"""SkyPortal Kubernetes observability agent.
+"""Skyportal Kubernetes observability agent.
 
 Containerizes the proven experiment scanners so a pod can discover MLflow/WandB
-runs on a mounted volume and push them to SkyPortal. Daemon dependencies live
+runs on a mounted volume and push them to Skyportal. Daemon dependencies live
 behind the ``skyportalai[agent]`` extra; the plain SDK is unaffected.
 """
 

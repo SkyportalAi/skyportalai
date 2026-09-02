@@ -1,4 +1,4 @@
-"""Exception tree for the SkyPortal SDK.
+"""Exception tree for the Skyportal SDK.
 
 Callers only ever see ``skyportalai`` exceptions — a raw ``requests`` exception
 never escapes the client.

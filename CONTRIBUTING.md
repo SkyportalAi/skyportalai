@@ -1,6 +1,6 @@
 # Contributing to skyportalai
 
-Thank you for helping improve the SkyPortal Python SDK, command-line clients,
+Thank you for helping improve the Skyportal Python SDK, command-line clients,
 and observability agent.
 
 ## Report an issue

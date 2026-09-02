@@ -81,7 +81,7 @@ def test_config_set_and_human_target_output(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0
-    assert "Saved SkyPortal CLI configuration" in result.stdout
+    assert "Saved Skyportal CLI configuration" in result.stdout
     assert "API target: https://portal.example" in result.output
     config = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert config["portal"] == {"base_url": "https://portal.example", "request_timeout": 15.0}

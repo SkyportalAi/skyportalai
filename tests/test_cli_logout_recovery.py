@@ -60,7 +60,7 @@ def test_a_command_needing_the_credential_reports_the_conflict_without_a_traceba
 
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert "another SkyPortal deployment" in result.output
+    assert "another Skyportal deployment" in result.output
     assert "skyportalai logout" in result.output
     assert str(credentials_path) in result.output
     assert credentials_path.exists()
