@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -16,6 +17,7 @@ from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -67,6 +69,10 @@ COMMANDS: Dict[str, CommandInfo] = {
     "/resume": CommandInfo(
         "/resume [chat_id] [--verbose]",
         "Reattach to a chat (defaults to your previous one); --verbose replays its history",
+    ),
+    "/upload": CommandInfo(
+        "/upload <path> [path…]",
+        "Attach a log, CSV, JSON or image — or just drop the file on the terminal",
     ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
     "/server": CommandInfo(
@@ -173,6 +179,7 @@ class InteractiveShell:
             "/permission": self._cmd_permission,
             "/new": self._cmd_new,
             "/resume": self._cmd_resume,
+            "/upload": self._cmd_upload,
             "/servers": self._cmd_servers,
             "/server": self._cmd_server,
             "/clear": self._cmd_clear,
@@ -254,10 +261,7 @@ class InteractiveShell:
             if not line:
                 continue
             try:
-                if line.startswith("/"):
-                    self._dispatch(line)
-                else:
-                    self._send_prompt(line)
+                self._route(line)
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Cancelled — the prompt is still active.[/yellow]")
             except PortalError as error:
@@ -372,6 +376,60 @@ class InteractiveShell:
         )
         self.console.print(body)
         self.console.print()
+
+    def _route(self, line: str) -> None:
+        """Send a line to the agent, a command, or the uploader.
+
+        Dropping a file on the terminal types its path at the prompt, so a drop
+        arrives here as ordinary text and has to be recognised as one.
+        """
+        dropped = self._dropped_files(line)
+        if dropped is not None:
+            self._upload_dropped(dropped)
+        elif line.startswith("/"):
+            self._dispatch(line)
+        else:
+            self._send_prompt(line)
+
+    @staticmethod
+    def _dropped_files(line: str) -> Optional[List[str]]:
+        """The paths in a line that is nothing but existing files, else None.
+
+        A terminal types the path when a file is dropped on it, quoting or
+        backslash-escaping any spaces, so shlex is what un-does that. Every token
+        must be an absolute path to a real file: "/upload x.log" keeps its handler
+        because /upload is not a file, and "check vllm.log" stays a message
+        because a bare filename is not absolute.
+        """
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            # An apostrophe in a sentence is an unbalanced quote. That is a
+            # message, not a parse error to report.
+            return None
+        if not tokens:
+            return None
+
+        paths = []
+        for token in tokens:
+            if token.startswith("file://"):
+                token = unquote(urlparse(token).path)
+            candidate = Path(token).expanduser()
+            # isabs first: a message should not stat every word in it.
+            if not candidate.is_absolute() or not candidate.is_file():
+                return None
+            paths.append(str(candidate))
+        return paths
+
+    def _upload_dropped(self, paths: List[str]) -> None:
+        if self.chat_id is None:
+            names = escape(", ".join(Path(path).name for path in paths))
+            self.console.print(
+                "[yellow]Got {} — send a message to start the chat, then drop it "
+                "again or run /upload.[/yellow]".format(names)
+            )
+            return
+        self._cmd_upload(paths)
 
     def _dispatch(self, line: str) -> None:
         try:
@@ -769,6 +827,39 @@ class InteractiveShell:
             "[green]✓ Resumed chat #{}.[/green]{} Type a message to continue.".format(
                 chat_id, truncated
             )
+        )
+
+    def _cmd_upload(self, args: List[str]) -> None:
+        self._require_api_connection()
+        if not args:
+            self.console.print(
+                "[yellow]Usage: /upload <path> [path…][/yellow]\n"
+                "[dim]Logs, CSV, JSON, YAML and images. 10 MB each.[/dim]"
+            )
+            return
+        if self.chat_id is None:
+            self.console.print(
+                "[yellow]Send a message first — files attach to a chat, and this one "
+                "has not started yet.[/yellow]"
+            )
+            return
+
+        with self.console.status("[cyan]Uploading…[/cyan]", spinner="dots"):
+            payload = self.client.upload_chat_files(self.chat_id, args)
+
+        uploaded = payload.get("files") or []
+        if not uploaded:
+            self.console.print("[yellow]Nothing was uploaded.[/yellow]")
+            return
+        for item in uploaded:
+            size_kb = (item.get("size") or 0) / 1024
+            self.console.print(
+                "[green]Attached[/green] {} [dim]({:.1f} KB)[/dim]".format(
+                    escape(str(item.get("name", "file"))), size_kb
+                )
+            )
+        self.console.print(
+            "[dim]Ask about it by name — the agent reads attached files.[/dim]"
         )
 
     def _cmd_servers(self, args: List[str]) -> None:
@@ -1555,8 +1646,11 @@ class InteractiveShell:
         )
         status = " ({})".format(error.status_code) if error.status_code else ""
         self._print_section(title, style="red")
+        # A server message or a filename can contain square brackets, and Rich
+        # RAISES MarkupError on an unbalanced tag rather than rendering it — so
+        # an unescaped error message can crash the error handler itself.
         self.console.print("{}{}\n\n[dim]{}\nThe command line is still active.[/dim]\n".format(
-            error, status, guidance
+            escape(str(error)), status, guidance
         ))
 
     @staticmethod

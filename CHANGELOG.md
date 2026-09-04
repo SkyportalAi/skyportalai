@@ -5,6 +5,20 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- **`/upload <path>` attaches a file to the chat.** Logs, CSV, JSON, YAML and
+  images, up to 10 MB each. Ask about the file by name afterwards; the agent
+  reads what you attach. Secrets in a log are redacted before it leaves the
+  server's front door, so a stray API key is never stored. Requires a deployment
+  with the `/api/v1/agent/chat/<id>/upload/` route.
+- **Dropping a file on the terminal attaches it too.** A terminal types the
+  path when you drag a file onto it, so a line that is nothing but existing
+  absolute paths is treated as an upload rather than a message. Handles the
+  quoting and backslash-escaping different terminals apply, `file://` URIs, and
+  several files at once. A relative path stays a message, so asking about
+  `vllm.log` from a directory containing one still asks.
+
 ## 0.2.2
 
 ### Added
