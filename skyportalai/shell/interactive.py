@@ -16,8 +16,8 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.markup import escape
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
