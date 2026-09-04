@@ -17,6 +17,8 @@ class FakeClient:
         self.uploads = []
         self.response = {"success": True, "files": [{"name": "vllm.log", "size": 2048}]}
         self.error = None
+        self.statuses = []
+        self.status_error = None
 
     def is_authenticated(self):
         return True
@@ -26,6 +28,14 @@ class FakeClient:
             raise self.error
         self.uploads.append((chat_id, list(paths)))
         return self.response
+
+    def chat_upload_status(self, chat_id, upload_ids):
+        if self.status_error:
+            raise self.status_error
+        if not self.statuses:
+            return {"files": []}
+        # Repeat the last answer so a poll loop sees a stable state.
+        return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
 
 
 @pytest.fixture
@@ -427,3 +437,84 @@ class TestMarkupSafety:
 
         assert "weird" in out.getvalue()
         assert client.uploads == []
+
+
+class TestUploadStatusReporting:
+    """Uploading is accepted-then-processed, so the shell must say which state a
+    file is in rather than implying it is ready the moment it is accepted."""
+
+    def _pending(self, name="vllm.log", upload_id="u1"):
+        return {"success": True, "files": [
+            {"id": upload_id, "name": name, "size": 2048, "status": "pending"},
+        ]}
+
+    def test_an_accepted_file_is_reported_as_uploading_not_attached(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = self._pending()
+        client.statuses = [{"files": [{"id": "u1", "name": "vllm.log", "status": "ready"}]}]
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        text = out.getvalue()
+        assert "Uploading" in text
+        assert "Ready" in text
+
+    def test_a_file_that_fails_processing_says_why(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = self._pending()
+        client.statuses = [{"files": [
+            {"id": "u1", "name": "vllm.log", "status": "failed", "error": "storage unavailable"},
+        ]}]
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        text = out.getvalue()
+        assert "Failed" in text
+        assert "storage unavailable" in text
+
+    def test_a_slow_file_hands_the_prompt_back_rather_than_hanging(self, shell, tmp_path, monkeypatch):
+        import skyportalai.shell.interactive as interactive
+
+        monkeypatch.setattr(interactive, "UPLOAD_WAIT_SECONDS", 0.05)
+        monkeypatch.setattr(interactive, "UPLOAD_POLL_SECONDS", 0.01)
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = self._pending()
+        client.statuses = [{"files": [{"id": "u1", "name": "vllm.log", "status": "pending"}]}]
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        assert "Still processing" in out.getvalue()
+
+    def test_a_status_error_does_not_break_the_shell(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = self._pending()
+        client.status_error = PortalError("network down")
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        assert "Uploading" in out.getvalue()
+
+    def test_an_already_ready_file_is_reported_attached(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = {"success": True, "files": [
+            {"id": "u1", "name": "vllm.log", "size": 2048, "status": "ready"},
+        ]}
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        assert "Attached" in out.getvalue()

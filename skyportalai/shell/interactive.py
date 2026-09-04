@@ -52,6 +52,11 @@ class CommandInfo:
     description: str
 
 
+# Bounded: the server retries on its own, so a slow file is not an error and the
+# shell should hand the prompt back rather than wait on a worker it cannot see.
+UPLOAD_WAIT_SECONDS = 20.0
+UPLOAD_POLL_SECONDS = 1.0
+
 COMMANDS: Dict[str, CommandInfo] = {
     "/help": CommandInfo("/help", "Show commands and keyboard shortcuts"),
     "/login": CommandInfo("/login [--no-browser]", "Create an API key and connect this CLI"),
@@ -844,23 +849,76 @@ class InteractiveShell:
             )
             return
 
-        with self.console.status("[cyan]Uploading…[/cyan]", spinner="dots"):
+        with self.console.status("[cyan]Sending…[/cyan]", spinner="dots"):
             payload = self.client.upload_chat_files(self.chat_id, args)
 
         uploaded = payload.get("files") or []
         if not uploaded:
             self.console.print("[yellow]Nothing was uploaded.[/yellow]")
             return
+
+        # The server accepts the bytes and processes them on a worker, so a file is
+        # not readable the instant it is accepted. Say which state it is in rather
+        # than implying it is ready.
+        pending = [item for item in uploaded if item.get("status") == "pending"]
         for item in uploaded:
             size_kb = (item.get("size") or 0) / 1024
-            self.console.print(
-                "[green]Attached[/green] {} [dim]({:.1f} KB)[/dim]".format(
-                    escape(str(item.get("name", "file"))), size_kb
+            name = escape(str(item.get("name", "file")))
+            if item.get("status") == "failed":
+                reason = escape(str(item.get("error") or "processing failed"))
+                self.console.print("[red]Failed[/red] {} [dim]({})[/dim]".format(name, reason))
+            elif item.get("status") == "pending":
+                self.console.print(
+                    "[cyan]Uploading[/cyan] {} [dim]({:.1f} KB)[/dim]".format(name, size_kb)
                 )
-            )
+            else:
+                self.console.print(
+                    "[green]Attached[/green] {} [dim]({:.1f} KB)[/dim]".format(name, size_kb)
+                )
+
+        if pending:
+            self._await_uploads([item["id"] for item in pending if item.get("id")])
+
         self.console.print(
             "[dim]Ask about it by name — the agent reads attached files.[/dim]"
         )
+
+    def _await_uploads(self, upload_ids: List[str]) -> None:
+        """Report each file as it becomes readable, without holding the prompt open.
+
+        Bounded rather than indefinite: the server retries on its own, so a slow
+        file is not an error, and the shell should hand the prompt back rather than
+        wait for a worker it cannot see.
+        """
+        remaining = set(upload_ids)
+        deadline = time.time() + UPLOAD_WAIT_SECONDS
+        with self.console.status("[cyan]Processing…[/cyan]", spinner="dots"):
+            while remaining and time.time() < deadline:
+                time.sleep(UPLOAD_POLL_SECONDS)
+                try:
+                    statuses = self.client.chat_upload_status(self.chat_id, sorted(remaining))
+                except PortalError:
+                    return
+                for item in statuses.get("files") or []:
+                    upload_id = item.get("id")
+                    if upload_id not in remaining:
+                        continue
+                    status = item.get("status")
+                    name = escape(str(item.get("name", "file")))
+                    if status == "ready":
+                        remaining.discard(upload_id)
+                        self.console.print("[green]Ready[/green] {}".format(name))
+                    elif status == "failed":
+                        remaining.discard(upload_id)
+                        reason = escape(str(item.get("error") or "processing failed"))
+                        self.console.print(
+                            "[red]Failed[/red] {} [dim]({})[/dim]".format(name, reason)
+                        )
+
+        for _ in remaining:
+            self.console.print(
+                "[dim]Still processing — ask about the file in a moment.[/dim]"
+            )
 
     def _cmd_servers(self, args: List[str]) -> None:
         self._require_api_connection()
