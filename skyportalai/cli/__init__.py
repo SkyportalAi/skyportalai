@@ -1,4 +1,4 @@
-"""Public command-line interface for the SkyPortal SDK."""
+"""Public command-line interface for the Skyportal SDK."""
 
 
 def main() -> None:

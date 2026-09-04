@@ -1,4 +1,4 @@
-"""skyportalai — the official Python SDK for the SkyPortal API."""
+"""skyportalai — the official Python SDK for the Skyportal API."""
 from ._client import Skyportal
 from ._exceptions import (
     APIConnectionError,

@@ -56,7 +56,7 @@ def test_credentials_are_scoped_to_the_selected_deployment(tmp_path, monkeypatch
     # the file and the recovery command, and a containment check for a URL is the
     # bug pattern CodeQL's py/incomplete-url-substring-sanitization looks for.
     assert settings.credential_conflict == (
-        "Stored credentials belong to another SkyPortal deployment (https://one.example), "
+        "Stored credentials belong to another Skyportal deployment (https://one.example), "
         "but the selected base URL is https://two.example. "
         f"Run 'skyportalai logout' to clear them ({credentials}), "
         "or keep them by unsetting SKYPORTALAI_BASE_URL."
@@ -72,7 +72,7 @@ def test_the_conflict_names_the_setting_that_actually_selected_the_url(tmp_path)
     settings = resolve_settings()
 
     assert settings.credential_conflict == (
-        "Stored credentials belong to another SkyPortal deployment (https://one.example), "
+        "Stored credentials belong to another Skyportal deployment (https://one.example), "
         "but the selected base URL is https://two.example. "
         f"Run 'skyportalai logout' to clear them ({credentials}), "
         "or keep them by running 'skyportalai config set --base-url https://one.example'."
@@ -86,7 +86,7 @@ def test_a_base_url_flag_is_not_fixable_by_editing_the_config(tmp_path):
     settings = resolve_settings(base_url="https://two.example")
 
     assert settings.credential_conflict == (
-        "Stored credentials belong to another SkyPortal deployment (https://one.example), "
+        "Stored credentials belong to another Skyportal deployment (https://one.example), "
         "but the selected base URL is https://two.example. "
         f"Run 'skyportalai logout' to clear them ({credentials}), "
         "or keep them by dropping --base-url."
@@ -113,7 +113,7 @@ def test_an_unparseable_credential_file_is_reported_not_raised(tmp_path):
     settings = resolve_settings()
 
     assert settings.api_key is None
-    assert settings.credential_conflict.startswith(f"Invalid SkyPortal credentials in {credentials}:")
+    assert settings.credential_conflict.startswith(f"Invalid Skyportal credentials in {credentials}:")
     assert settings.credential_conflict.endswith("Run 'skyportalai logout' to remove the file.")
 
 

@@ -1,4 +1,4 @@
-"""The SkyPortal API client."""
+"""The Skyportal API client."""
 from __future__ import annotations
 
 import time
@@ -146,7 +146,7 @@ def _check_base_url(base_url: str) -> None:
 
 
 class Skyportal:
-    """Synchronous SkyPortal API client.
+    """Synchronous Skyportal API client.
 
     Args:
         api_key: Bearer credential. Falls back to ``SKYPORTALAI_API_KEY``.

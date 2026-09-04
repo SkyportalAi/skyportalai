@@ -1,8 +1,8 @@
 [project]
 name = "skyportalai"
 version = "0.2.2"
-description = "Official Python SDK and command-line client for the SkyPortal API"
-authors = [{ name = "SkyPortal", email = "tech@skyportal.ai" }]
+description = "Official Python SDK and command-line client for the Skyportal API"
+authors = [{ name = "Skyportal", email = "tech@skyportal.ai" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -38,7 +38,7 @@ skyportalai-agent = "skyportalai.agent.__main__:main"
 
 [project.urls]
 Homepage = "https://skyportal.ai"
-Documentation = "https://github.com/SkyportalAi/skyportalai#readme"
+Documentation = "https://docs.skyportal.ai"
 Repository = "https://github.com/SkyportalAi/skyportalai"
 Issues = "https://github.com/SkyportalAi/skyportalai/issues"
 

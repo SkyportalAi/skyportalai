@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 class KubernetesResource:
     """Connect, list, and disconnect Kubernetes clusters.
 
-    Kubeconfigs are sent only to the authenticated SkyPortal API, where the
+    Kubeconfigs are sent only to the authenticated Skyportal API, where the
     existing server-side validation and encrypted-storage path handles them.
     No lifecycle response returns kubeconfig credential material.
     """
