@@ -365,3 +365,65 @@ class TestDroppedFiles:
         instance._route(str(tmp_path))
 
         assert client.uploads == []
+
+
+class TestMarkupSafety:
+    """A filename is untrusted text on its way through Rich's markup parser.
+
+    Rich RAISES MarkupError on an unbalanced closing tag rather than rendering
+    it, so an unescaped name does not just restyle the line — it crashes the
+    handler printing it.
+    """
+
+    EVIL = "report[/green][bold red]INJECTED[/bold red].log"
+
+    def test_a_bracketed_filename_from_the_server_does_not_crash(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = {"success": True, "files": [{"name": self.EVIL, "size": 1024}]}
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        text = out.getvalue()
+        assert "INJECTED" in text
+        assert "Attached" in text
+
+    def test_a_bracketed_filename_is_shown_literally(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.response = {"success": True, "files": [{"name": self.EVIL, "size": 1024}]}
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        instance._cmd_upload([str(log)])
+
+        assert "[bold red]" in out.getvalue()
+
+    def test_a_bracketed_name_in_an_error_does_not_crash(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = 42
+        client.error = PortalError("{} is empty".format(self.EVIL))
+        log = tmp_path / "vllm.log"
+        log.write_text("x\n")
+
+        try:
+            instance._cmd_upload([str(log)])
+        except PortalError as exc:
+            instance._show_portal_error(exc)
+
+        assert "INJECTED" in out.getvalue()
+
+    def test_a_bracketed_name_in_the_no_chat_notice_does_not_crash(self, shell, tmp_path):
+        instance, client, out = shell
+        instance.chat_id = None
+        # No slash: it must be a name the filesystem accepts, while still
+        # carrying the brackets Rich would try to parse.
+        odd = tmp_path / "weird[dim]name.log"
+        odd.write_text("x\n")
+
+        instance._route(str(odd))
+
+        assert "weird" in out.getvalue()
+        assert client.uploads == []

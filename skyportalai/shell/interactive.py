@@ -16,6 +16,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.markup import escape
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
@@ -422,7 +423,7 @@ class InteractiveShell:
 
     def _upload_dropped(self, paths: List[str]) -> None:
         if self.chat_id is None:
-            names = ", ".join(Path(path).name for path in paths)
+            names = escape(", ".join(Path(path).name for path in paths))
             self.console.print(
                 "[yellow]Got {} — send a message to start the chat, then drop it "
                 "again or run /upload.[/yellow]".format(names)
@@ -854,7 +855,7 @@ class InteractiveShell:
             size_kb = (item.get("size") or 0) / 1024
             self.console.print(
                 "[green]Attached[/green] {} [dim]({:.1f} KB)[/dim]".format(
-                    item.get("name", "file"), size_kb
+                    escape(str(item.get("name", "file"))), size_kb
                 )
             )
         self.console.print(
@@ -1645,8 +1646,11 @@ class InteractiveShell:
         )
         status = " ({})".format(error.status_code) if error.status_code else ""
         self._print_section(title, style="red")
+        # A server message or a filename can contain square brackets, and Rich
+        # RAISES MarkupError on an unbalanced tag rather than rendering it — so
+        # an unescaped error message can crash the error handler itself.
         self.console.print("{}{}\n\n[dim]{}\nThe command line is still active.[/dim]\n".format(
-            error, status, guidance
+            escape(str(error)), status, guidance
         ))
 
     @staticmethod
