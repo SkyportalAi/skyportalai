@@ -16,8 +16,11 @@ def _item(command_id, display_command, server_ids=(1,), namespace=""):
     }
 
 
-def _rendered(approval):
-    return InteractiveShell._approval_detail(approval).plain
+def _rendered(approval, ids=(), names=()):
+    shell = InteractiveShell.__new__(InteractiveShell)
+    shell.selected_server_ids = list(ids)
+    shell.selected_server_names = list(names)
+    return InteractiveShell._approval_detail(shell, approval).plain
 
 
 def test_every_command_in_a_batch_is_shown():
@@ -64,9 +67,19 @@ def test_a_long_batch_says_how_many_are_hidden_rather_than_trailing_an_ellipsis(
     assert not out.rstrip().endswith("…"), "a silent ellipsis hides what is being approved"
 
 
-def test_the_target_hosts_are_named():
+def test_the_target_hosts_are_named_not_numbered():
+    # "server 3" is not something anyone can consent to. The shell already knows the
+    # names of the hosts in scope, so no API round trip is needed to say them.
     approval = {"batch_commands": [_item("a", "df -h", server_ids=(1, 2))]}
-    assert "1,2" in _rendered(approval)
+    out = _rendered(approval, ids=(1, 2), names=("prod-web", "prod-db"))
+    assert "prod-web" in out
+    assert "prod-db" in out
+
+
+def test_an_unknown_host_falls_back_to_its_id():
+    # Better a bare id than nothing: the command and its target must both be visible.
+    approval = {"batch_commands": [_item("a", "df -h", server_ids=(7,))]}
+    assert "7" in _rendered(approval, ids=(1,), names=("prod-web",))
 
 
 def test_a_kubernetes_item_names_its_namespace():
