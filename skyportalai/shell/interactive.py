@@ -749,7 +749,7 @@ class InteractiveShell:
                     or pending[0].get("approval_id")
                     or "pending decision"
                 )
-                rows.add_row("Next approval", Text(self._bounded_one_line(detail, 160)))
+                rows.add_row("Next approval", Text(self._clean_terminal_text(detail)))
 
             live_command = remote.get("live_command_output")
             if isinstance(live_command, dict) and live_command.get("command"):
@@ -1564,6 +1564,10 @@ class InteractiveShell:
         line.append(marker, style=marker_style)
         line.append(" ")
         line.append(InteractiveShell._bounded_one_line(tool_name, 160), style="bold")
+        if metadata.get("aggregate") and metadata.get("terminal_output"):
+            # A global output limit can hide later commands in a batch.
+            line.append("\n")
+            line.append(InteractiveShell._clean_terminal_text(metadata["terminal_output"]), style="dim")
         return line
 
     def _render_history(self, messages: List[Dict[str, Any]]) -> None:

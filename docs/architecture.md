@@ -52,6 +52,11 @@ an unexpected origin or sent in cleartext.
 5. If status is `awaiting_approval`, the CLI shows the requested action and submits the user's decision to the approval endpoint.
 6. `/new` clears only local chat context and starts a new chat on the next message.
 
+Approval prompts and `/status` preserve the complete command list and its line
+breaks. Batch results show the server's redacted summary, including each command
+ID, target, exit code and output, in call order. Long batches wrap and remain
+available in terminal scrollback; commands still execute concurrently.
+
 `/permission ask|autoapprove` reads or replaces the account-wide approval
 preference shared with the website and public SDK. Autoapproval still sends one
 typed decision at a time and waits for the durable checkpoint to advance before

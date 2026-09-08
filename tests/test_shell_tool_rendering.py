@@ -103,6 +103,60 @@ def _console():
 
 
 class TestToolResultLine:
+    def test_batch_results_keep_all_command_outcomes_in_call_order(self):
+        blocks = [
+            f"[cmd-{index} | ssh | targets: 1,2 | exit: {0 if index % 2 else 1}]\n"
+            f"output for command {index}\n" + "details " * 30
+            for index in range(1, 31)
+        ]
+        summary = "15/30 commands succeeded\n\n" + "\n\n".join(blocks)
+        message = {
+            "role": "tool",
+            "content": [{"type": "text", "text": summary}],
+            "metadata": {
+                "tool_name": "run_command",
+                "success": False,
+                "aggregate": "15/30 commands succeeded",
+                "terminal_output": summary,
+                "terminal_command": None,
+                "terminal_success": False,
+                "exit_code": 1,
+                "requires_user_input": True,
+                "tool_args": {"commands": [{"command": "RAW-SECRET-MUST-NOT-BE-DISPLAYED"}]},
+            },
+        }
+
+        line = InteractiveShell._tool_result_line(message)
+
+        assert line is not None
+        assert summary in line.plain
+        assert "RAW-SECRET-MUST-NOT-BE-DISPLAYED" not in line.plain
+        assert "truncated" not in line.plain
+
+    def test_batch_results_render_as_literal_sanitized_terminal_text(self):
+        message = {
+            "role": "tool",
+            "metadata": {
+                "tool_name": "run_command",
+                "success": True,
+                "aggregate": "2/2 commands succeeded",
+                "terminal_output": (
+                    "2/2 commands succeeded\n\n"
+                    "[verify | kubernetes | targets: 7 | namespace: production | exit: 0]\n"
+                    "\x1b[31m[green]literal output[/green]\x1b[0m\n\n"
+                    "[preflight | ssh | targets: 9 | exit: 0]\nhealthy"
+                ),
+            },
+        }
+
+        line = InteractiveShell._tool_result_line(message)
+
+        assert line is not None
+        assert "[green]literal output[/green]" in line.plain
+        assert "namespace: production" in line.plain
+        assert line.plain.index("[verify") < line.plain.index("[preflight")
+        assert "\x1b" not in line.plain
+
     def test_includes_hostname_command_and_output(self):
         line = InteractiveShell._tool_result_line(_tool_message())
         assert line is not None
