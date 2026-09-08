@@ -316,6 +316,69 @@ class InteractiveShell:
             return text
         return text[: max(0, limit - 1)] + "…"
 
+    def _server_names_by_id(self) -> Dict[int, str]:
+        """Selected hosts as {id: name}, from what the shell already holds.
+
+        No network call: this renders inside a status refresh, and an approval prompt
+        that stalls on an API round trip is worse than one showing a bare id.
+        """
+        return {
+            server_id: name
+            for server_id, name in zip(self.selected_server_ids, self.selected_server_names)
+            if name
+        }
+
+    #: Commands to list in an approval before summarising the rest. A batch caps at 16
+    #: server-side; showing them all is the point, but a terminal still needs a floor.
+    _APPROVAL_MAX_COMMANDS = 12
+
+    def _approval_detail(self, approval: dict) -> Text:
+        """What you are agreeing to, one command per line, in the order they will run.
+
+        A batch approval covers several commands. Flattening them into one 160-char line
+        both loses the order and drops the tail, so you approve commands you were never
+        shown — and a batch needs approval precisely because something in it is gated.
+        """
+        batch = approval.get("batch_commands")
+        if not isinstance(batch, list) or not batch:
+            detail = (
+                approval.get("command")
+                or approval.get("reason")
+                or approval.get("type")
+                or approval.get("approval_id")
+                or "pending decision"
+            )
+            return Text(self._bounded_one_line(detail, 160))
+
+        names = self._server_names_by_id()
+        shown = batch[: self._APPROVAL_MAX_COMMANDS]
+        hidden = len(batch) - len(shown)
+        line = Text()
+        line.append("{} commands".format(len(batch)), style="bold")
+        for item in shown:
+            if not isinstance(item, dict):
+                continue
+            targets = item.get("resolved_server_ids") or []
+            # Name the hosts. A numeric id is not something anyone can consent to —
+            # "server 3" means nothing without knowing 3 is the production cluster.
+            where = ",".join(names.get(int(v), str(v)) for v in targets) or "active host"
+            if item.get("namespace"):
+                where += " ns={}".format(item["namespace"])
+            line.append("\n  ")
+            line.append("[{}] ".format(item.get("command_id") or "?"), style="dim")
+            # display_command is the server's redacted form; never fall back to a raw
+            # command string, which may carry a secret the approval UI must not show.
+            line.append(self._bounded_one_line(item.get("display_command") or "", 200))
+            line.append("  ({})".format(where), style="dim")
+        if hidden > 0:
+            # Never a bare ellipsis: say what is not on screen rather than hiding it.
+            line.append("\n  ")
+            line.append(
+                "+{} more not shown — approving covers all {}".format(hidden, len(batch)),
+                style="yellow",
+            )
+        return line
+
     @classmethod
     def _bounded_multiline(cls, value: Any, max_lines: int = 24, max_chars: int = 4096) -> str:
         """Keep command results useful while bounding terminal transcript size."""
@@ -742,14 +805,7 @@ class InteractiveShell:
             pending = pending if isinstance(pending, list) else []
             rows.add_row("Approvals", Text(str(len(pending))))
             if pending and isinstance(pending[0], dict):
-                detail = (
-                    pending[0].get("command")
-                    or pending[0].get("reason")
-                    or pending[0].get("type")
-                    or pending[0].get("approval_id")
-                    or "pending decision"
-                )
-                rows.add_row("Next approval", Text(self._bounded_one_line(detail, 160)))
+                rows.add_row("Next approval", self._approval_detail(pending[0]))
 
             live_command = remote.get("live_command_output")
             if isinstance(live_command, dict) and live_command.get("command"):
@@ -1564,6 +1620,13 @@ class InteractiveShell:
         line.append(marker, style=marker_style)
         line.append(" ")
         line.append(InteractiveShell._bounded_one_line(tool_name, 160), style="bold")
+        # A concurrent batch sets no terminal_command, so it lands here rather than in the
+        # terminal-style branch above and would otherwise print the tool name alone. The
+        # server does send a roll-up ("3/3 commands succeeded"); say at least that much.
+        aggregate = metadata.get("aggregate")
+        if aggregate:
+            line.append("  ")
+            line.append(InteractiveShell._bounded_one_line(aggregate, 120), style="dim")
         return line
 
     def _render_history(self, messages: List[Dict[str, Any]]) -> None:
