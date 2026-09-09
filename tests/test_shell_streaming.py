@@ -280,3 +280,29 @@ def test_status_without_authenticated_chat_does_not_make_remote_request(
 
     assert client.execution_calls == []
     assert client.status_calls == []
+
+
+def test_status_preserves_every_batch_command_in_call_order(tmp_path, monkeypatch):
+    commands = [
+        f"[cmd-{index}] ssh targets=1,2: systemctl restart service-{index} && journalctl -u service-{index} --no-pager"
+        for index in range(1, 31)
+    ]
+    client = StatusClient({
+        "status": "awaiting_approval",
+        "pending_approvals": [{
+            "approval_id": "batch-1",
+            "type": "bash_command",
+            "command": "Concurrent command batch:\n" + "\n".join(commands),
+        }],
+    })
+    shell, console = _shell(client, tmp_path, monkeypatch)
+    shell.chat_id = 42
+
+    shell._cmd_status([])
+
+    output = console.file.getvalue()
+    positions = [output.index(f"[cmd-{index}]") for index in range(1, 31)]
+    assert positions == sorted(positions)
+    assert output.count("--no-pager") == 30
+    assert "…" not in output
+    assert all(sum(f"[cmd-{index}]" in line for index in range(1, 31)) <= 1 for line in output.splitlines())
