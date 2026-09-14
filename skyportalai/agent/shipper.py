@@ -131,7 +131,7 @@ class Shipper:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
             "Content-Encoding": "gzip",
-            "User-Agent": f"skyportal-agent/{__version__}",
+            "User-Agent": f"skyportalai-agent/{__version__}",
         }
         try:
             # allow_redirects=False: requests follows POST redirects by default, so a
