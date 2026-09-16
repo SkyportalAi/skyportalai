@@ -19,6 +19,14 @@ All notable changes to this project are documented here. This project follows
   several files at once. A relative path stays a message, so asking about
   `vllm.log` from a directory containing one still asks.
 
+### Changed
+
+- **The observability agent identifies itself as `skyportalai-agent/<version>`.**
+  The `User-Agent` on ingest requests still carried the `skyportal-agent` name
+  the console script dropped in 0.2.0. SkyPortal reads the agent version off
+  that header and has to know the new name (servers from September 2026 on
+  accept both), so update the server before rolling this agent version out.
+
 ## 0.2.2
 
 ### Added

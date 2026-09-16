@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import requests
 
+from skyportalai import __version__
 from skyportalai.agent.queue import SpoolQueue
 from skyportalai.agent.shipper import Shipper
 
@@ -285,3 +286,15 @@ def test_ship_disables_redirects_on_the_ingest_post(tmp_path: Path):
     assert session.calls[0]["allow_redirects"] is False
     assert result.batches_shipped == 0
     assert not q.is_empty()  # the redirect was not counted as a delivery
+
+
+def test_ship_identifies_as_skyportalai_agent(tmp_path: Path):
+    # The server reads the agent version off `<name>/<version>`. The name follows
+    # the console script rename; the server accepts both names during the rollover.
+    q = SpoolQueue(tmp_path)
+    q.enqueue(_runs("r1"))
+    session = FakeSession()
+
+    _shipper(session).ship(q)
+
+    assert session.calls[0]["headers"]["User-Agent"] == f"skyportalai-agent/{__version__}"
