@@ -219,6 +219,7 @@ pip install "skyportalai[agent]"
 ```
 
 See [agent deployment and data handling](https://github.com/SkyportalAi/skyportalai/blob/main/docs/agent.md).
+For Kubernetes installation, see the [Helm chart and container deployment guide](deploy/agent/README.md).
 
 ## Development
 

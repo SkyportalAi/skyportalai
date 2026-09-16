@@ -1,0 +1,148 @@
+# Plain Kubernetes Deployment for the SkyPortal observability agent, for people
+# who do not use Helm. This is the static equivalent of the chart's default
+# render. Search for "# EDIT" and adjust before applying.
+#
+#   kubectl apply -f deploy/agent/manifests/secret.example.yaml   # after editing the token
+#   kubectl apply -f deploy/agent/manifests/pvc.yaml
+#   kubectl apply -f deploy/agent/manifests/deployment.yaml
+#   kubectl apply -f deploy/agent/manifests/networkpolicy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skyportalai-agent
+  labels:
+    app.kubernetes.io/name: skyportalai-agent
+    app.kubernetes.io/instance: skyportalai-agent
+spec:
+  # Keep at 1. The spool queue is a single writer on a ReadWriteOnce volume.
+  replicas: 1
+  # Recreate so the old pod releases the ReadWriteOnce PVC before the new one
+  # mounts it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skyportalai-agent
+      app.kubernetes.io/instance: skyportalai-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: skyportalai-agent
+        app.kubernetes.io/instance: skyportalai-agent
+    spec:
+      # The agent needs no Kubernetes API access, so do not mount its token.
+      automountServiceAccountToken: false
+      # EDIT: uncomment if your cluster cannot pull the image anonymously (see
+      # "Pulling the image" in deploy/agent/README.md).
+      # imagePullSecrets:
+      #   - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent
+          # EDIT: pin to a published agent release. This tag tracks the chart's
+          # appVersion; CI keeps the two in step.
+          image: ghcr.io/skyportalai/skyportalai-agent:0.2.2
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: SKYPORTALAI_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: skyportalai-agent-token
+                  key: SKYPORTALAI_AGENT_TOKEN
+            # EDIT: your SkyPortal instance. Remove to default to https://app.skyportal.ai.
+            - name: SKYPORTALAI_BASE_URL
+              value: "https://skyportal.example.com"
+            - name: SKYPORTALAI_AGENT_INTERVAL_SECONDS
+              value: "60"
+            - name: SKYPORTALAI_AGENT_ENABLE_WANDB
+              value: "true"
+            - name: SKYPORTALAI_AGENT_ENABLE_MLFLOW
+              value: "true"
+            # EDIT: "rest" reads runs from an MLflow tracking server instead of
+            # an mlruns/ directory; then set the tracking URI too. The
+            # NetworkPolicy allows outbound TCP 443 only.
+            - name: SKYPORTALAI_AGENT_MLFLOW_MODE
+              value: "filesystem"
+            # - name: SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI
+            #   value: "https://mlflow.example.com"
+            # EDIT: optional label to tell clusters apart. Remove if unused.
+            # - name: SKYPORTALAI_AGENT_CLUSTER_NAME
+            #   value: "prod-a"
+            - name: SKYPORTALAI_AGENT_STATE_DIR
+              value: "/var/lib/skyportal-agent"
+            - name: SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES
+              value: "1000"
+            - name: SKYPORTALAI_AGENT_HEALTHZ_PORT
+              value: "8080"
+            # EDIT: uncomment and point at your mounted experiment data (see the
+            # experiments volume below).
+            # - name: SKYPORTALAI_AGENT_WANDB_DIR
+            #   value: "/experiments/wandb"
+            # - name: SKYPORTALAI_AGENT_MLFLOW_DIR
+            #   value: "/experiments/mlruns"
+          ports:
+            - name: healthz
+              containerPort: 8080
+              protocol: TCP
+          # The agent imports its scanners before it opens the healthz port
+          # (13s unthrottled, 24s at the 500m CPU limit below, longer on a slow
+          # node). The startup probe gives it up to two minutes; liveness only
+          # counts once it has answered. No readiness probe (nothing fronts
+          # this pod).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/skyportal-agent
+            # Writable /tmp. readOnlyRootFilesystem is true above, and importing
+            # the W&B client creates a temp directory at import time, so the
+            # container has nowhere to write without this and never finishes
+            # starting. Not optional, and not something the env vars can turn off.
+            - name: tmp
+              mountPath: /tmp
+            # EDIT: mount your experiment data read only, then set the *_DIR envs.
+            # - name: experiments
+            #   mountPath: /experiments
+            #   readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: skyportalai-agent
+        - name: tmp
+          emptyDir:
+            sizeLimit: "64Mi"
+        # EDIT: the volume holding your W&B / MLflow data.
+        # - name: experiments
+        #   persistentVolumeClaim:
+        #     claimName: ml-experiments

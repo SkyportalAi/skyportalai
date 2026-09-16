@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}
+  labels:
+    {{- include "skyportalai-agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skyportalai-agent.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress rules means deny all inbound. The kubelet issues the liveness
+  # probe from the node, which most CNIs exempt from NetworkPolicy; if yours
+  # does not, add an ingress rule for the healthz port.
+  ingress: []
+  egress:
+    # Scope: this is port level containment only. Both rules omit "to", so they
+    # allow DNS and TCP 443 to any destination rather than pinning traffic to
+    # one ingest host. That host is configurable (config.baseUrl), and
+    # allowlisting a destination by name needs a CNI with FQDN egress support;
+    # plain NetworkPolicy matches IP ranges only. To tighten, add a "to"
+    # selector: your cluster DNS peer on the port 53 rule, and your API ipBlock
+    # or namespaceSelector on the 443 rule.
+    # DNS resolution (CoreDNS / kube-dns). No "to" selector means this rule
+    # allows these ports to every destination; an empty "to: []" would instead
+    # match zero peers and block the traffic.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Outbound HTTPS so the agent can POST run metadata to the ingest API (no
+    # "to" selector, so it reaches any host).
+    - ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

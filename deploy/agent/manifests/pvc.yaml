@@ -1,0 +1,19 @@
+# State volume for the agent's spool queue and run catalog. ReadWriteOnce is
+# enough (single replica). Drop this and switch the Deployment's state volume to
+# an emptyDir if you do not need the spool to survive restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: skyportalai-agent
+  labels:
+    app.kubernetes.io/name: skyportalai-agent
+    app.kubernetes.io/instance: skyportalai-agent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # EDIT: size for your spool backlog; 1Gi is plenty for metadata.
+      storage: 1Gi
+  # EDIT: uncomment to pin a StorageClass; otherwise the cluster default is used.
+  # storageClassName: standard

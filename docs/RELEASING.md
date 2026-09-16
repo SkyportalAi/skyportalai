@@ -95,6 +95,12 @@ the project is created on the first successful upload.
 
 ## Notes
 
+- The observability agent container and Helm chart have independent
+  [GitHub Actions release workflows](../deploy/agent/RELEASING.md). They do not
+  run as part of this PyPI workflow. Before the first GHCR publish from this
+  repository, a package admin must grant this repository Actions write access
+  to both existing packages, as described in that guide.
+
 - The workflow attaches [PEP 740](https://peps.python.org/pep-0740/) digital
   attestations automatically; no extra configuration is required.
 - The distribution is named `skyportalai`. Through 0.2.x it still installs a

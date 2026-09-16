@@ -1,0 +1,26 @@
+apiVersion: v2
+name: skyportalai-agent
+description: SkyPortal observability agent. Scans local Weights & Biases and MLflow experiment stores and ships run metadata to the SkyPortal ingest API.
+type: application
+home: https://github.com/SkyportalAi/skyportalai/tree/main/deploy/agent
+sources:
+  - https://github.com/SkyportalAi/skyportalai
+keywords:
+  - skyportal
+  - observability
+  - mlops
+  - wandb
+  - mlflow
+maintainers:
+  - name: SkyPortal
+    email: tech@skyportal.ai
+# Chart version. Bump it in the same PR as any change under this directory: CI
+# refuses a chart change that leaves it untouched, and the publish job only
+# pushes versions the registry does not have yet (see deploy/agent/RELEASING.md).
+# 0.2.0 renamed the chart from skyportal-agent and moved the agent env vars from
+# SKYPORTAL_* to SKYPORTALAI_*, including the default token.secretKey.
+version: 0.2.1
+# The agent release this chart was written against. image.tag defaults to it
+# when left empty in values.yaml. It must match SKYPORTALAI_REF in the Dockerfile
+# and the image tag in manifests/deployment.yaml; CI checks all three agree.
+appVersion: "0.2.2"

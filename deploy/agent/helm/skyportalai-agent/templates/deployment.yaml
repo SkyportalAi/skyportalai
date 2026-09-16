@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}
+  labels:
+    {{- include "skyportalai-agent.labels" . | nindent 4 }}
+spec:
+  # Hardcoded to 1 on purpose. The agent's SpoolQueue is a single writer,
+  # disk backed queue on a ReadWriteOnce volume; a second replica would double
+  # scan and could corrupt the spool. Scale out by running one release per
+  # experiment store, never by raising this number.
+  replicas: 1
+  # Recreate, not RollingUpdate: the state PVC is ReadWriteOnce, so the old pod
+  # must release it before the new pod can mount it. A rolling update would
+  # deadlock the new pod on a Multi-Attach error.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "skyportalai-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "skyportalai-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "skyportalai-agent.serviceAccountName" . }}
+      # The agent needs no Kubernetes API access, so do not mount its token.
+      automountServiceAccountToken: false
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # Token from the existing Secret. `required` makes the chart fail to
+            # render if token.existingSecret was not supplied.
+            - name: SKYPORTALAI_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "token.existingSecret is required: create a Secret holding the agent token and pass --set token.existingSecret=<name> (see https://github.com/SkyportalAi/skyportalai/blob/main/deploy/agent/README.md)." .Values.token.existingSecret }}
+                  key: {{ .Values.token.secretKey }}
+            {{- with .Values.config.baseUrl }}
+            - name: SKYPORTALAI_BASE_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SKYPORTALAI_AGENT_INTERVAL_SECONDS
+              value: {{ .Values.config.intervalSeconds | quote }}
+            - name: SKYPORTALAI_AGENT_ENABLE_WANDB
+              value: {{ .Values.config.enableWandb | quote }}
+            - name: SKYPORTALAI_AGENT_ENABLE_MLFLOW
+              value: {{ .Values.config.enableMlflow | quote }}
+            - name: SKYPORTALAI_AGENT_MLFLOW_MODE
+              value: {{ .Values.config.mlflowMode | quote }}
+            {{- with .Values.config.mlflowTrackingUri }}
+            - name: SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.clusterName }}
+            - name: SKYPORTALAI_AGENT_CLUSTER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SKYPORTALAI_AGENT_STATE_DIR
+              value: {{ .Values.config.stateDir | quote }}
+            - name: SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES
+              value: {{ .Values.config.queueMaxBatches | quote }}
+            - name: SKYPORTALAI_AGENT_HEALTHZ_PORT
+              value: {{ .Values.config.healthzPort | quote }}
+            {{- with .Values.config.wandbDir }}
+            - name: SKYPORTALAI_AGENT_WANDB_DIR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.mlflowDir }}
+            - name: SKYPORTALAI_AGENT_MLFLOW_DIR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: healthz
+              containerPort: {{ .Values.config.healthzPort }}
+              protocol: TCP
+          # The agent imports its scanners (the W&B client is heavy) before it
+          # opens the healthz port: 13s unthrottled, 24s at the default 500m CPU
+          # limit on a laptop, longer on a slow node. The startup probe gives it
+          # up to two minutes; liveness only counts once it has answered.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          # No readiness probe: nothing fronts this pod with a Service, it is a
+          # background shipper rather than a request handler. Per cycle progress
+          # reporting is deferred monitoring work.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.config.stateDir | quote }}
+            # Writable /tmp. securityContext.readOnlyRootFilesystem is true, and
+            # importing the W&B client creates a temp directory at import time,
+            # so the container has nowhere to write without this and never
+            # finishes starting.
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "skyportalai-agent.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpDir.sizeLimit | quote }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

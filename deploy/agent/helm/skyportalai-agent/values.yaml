@@ -1,0 +1,157 @@
+# Default values for the skyportalai-agent chart.
+# Override with --set or a custom -f values file. values.schema.json validates
+# them at install time, so a misspelled key or a wrong type fails before
+# anything reaches the cluster.
+
+# Container image. CI publishes it to GHCR on every agent release (see
+# deploy/agent/RELEASING.md); the tag defaults to the chart appVersion, which is
+# the agent release this chart was written against.
+image:
+  repository: ghcr.io/skyportalai/skyportalai-agent
+  # Defaults to the chart appVersion when left empty. Use --set-string for a tag
+  # made only of digits (a date, a build number): --set turns it into an integer,
+  # which the schema rejects.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Secrets used to pull the image when your cluster cannot read the package
+# anonymously (see "Pulling the image" in deploy/agent/README.md), e.g.
+#   imagePullSecrets:
+#     - name: ghcr-pull
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Create a dedicated ServiceAccount for the agent.
+  create: true
+  # Name to use. Generated from the release name when empty.
+  name: ""
+
+# Pod level security context. runAsNonRoot + runAsUser match the image's uid
+# 1000; fsGroup makes the mounted state volume group writable by that user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Container level security context. Locked down: no privilege escalation, read
+# only root filesystem, and every Linux capability dropped. The agent's own
+# state goes under the mounted state dir; the only other path it writes is
+# /tmp, which the chart mounts as an emptyDir (see tmpDir below).
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Writable /tmp, as an emptyDir, because the root filesystem above is read only.
+# This is not optional: importing the W&B client creates a temp directory at
+# import time, so without a writable /tmp the pod crash loops at startup with
+# "No usable temporary directory found". That happens while the agent is still
+# importing its scanners, before it reads any config, so config.enableWandb=false
+# does not avoid it. sizeLimit caps what the pod can charge to the node's
+# ephemeral storage; raise it if a scanner needs real scratch space.
+tmpDir:
+  sizeLimit: 64Mi
+
+# Container resource requests/limits. Sized for a light metadata shipper; tune
+# for your scan volume.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Agent runtime configuration. These map one to one onto the SKYPORTALAI_*
+# environment variables the agent reads at startup (the full table is in
+# deploy/agent/README.md). Empty string means "let the agent's built in default
+# apply" for the optional ones.
+config:
+  # SkyPortal API root the agent ships to. Empty uses the agent default
+  # (https://app.skyportal.ai). Point at your instance, e.g. https://skyportal.example.com.
+  baseUrl: ""
+  # Seconds between scan/ship cycles.
+  intervalSeconds: 60
+  # Toggle the Weights & Biases and MLflow scanners.
+  enableWandb: true
+  enableMlflow: true
+  # How the MLflow scanner finds runs: "filesystem" walks an mlruns/ directory
+  # (mlflowDir below), "rest" queries a tracking server (mlflowTrackingUri).
+  mlflowMode: filesystem
+  # Tracking server for mlflowMode=rest, e.g. https://mlflow.example.com. The
+  # default NetworkPolicy allows outbound TCP 443 only, so a server on another
+  # port needs an extra egress rule or networkPolicy.enabled=false.
+  mlflowTrackingUri: ""
+  # Optional label attached to shipped runs so you can tell clusters apart.
+  clusterName: ""
+  # Where the agent keeps its spool queue and run catalog. The state volume is
+  # mounted here; keep it in sync with persistence below.
+  stateDir: /var/lib/skyportal-agent
+  # Upper bound on run batches kept in the on disk spool while the API is
+  # unreachable (the agent default).
+  queueMaxBatches: 1000
+  # Port for the /healthz liveness endpoint.
+  healthzPort: 8080
+  # Roots to scan for experiment data. Empty means the agent's default search
+  # roots. Set these to the mount paths of your experiment data volume (see
+  # extraVolumes / extraVolumeMounts).
+  wandbDir: ""
+  mlflowDir: ""
+
+# The agent token is read from an existing Kubernetes Secret. Create it out of
+# band (deploy/agent/README.md, step 2) and pass its name here; the chart
+# refuses to install without it.
+token:
+  existingSecret: ""
+  secretKey: SKYPORTALAI_AGENT_TOKEN
+
+# Disk backed state (spool queue + run catalog). Enabled by default so an
+# in flight spool survives pod restarts. Disable to fall back to an emptyDir
+# (state is lost on restart).
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+# Extra volumes and mounts, typically the read only experiment data the agent
+# scans. Point config.wandbDir / config.mlflowDir at the mount paths. Example:
+#   extraVolumes:
+#     - name: experiments
+#       persistentVolumeClaim:
+#         claimName: ml-experiments
+#   extraVolumeMounts:
+#     - name: experiments
+#       mountPath: /experiments
+#       readOnly: true
+extraVolumes: []
+extraVolumeMounts: []
+
+# Extra environment variables for the agent container, for settings the chart
+# has no value for. Example, for an internal SkyPortal instance served over
+# plain http (the agent refuses a non loopback http:// base URL otherwise):
+#   extraEnv:
+#     - name: SKYPORTALAI_ALLOW_INSECURE
+#       value: "1"
+# A plain http endpoint on a port other than 443 also needs an egress rule for
+# that port, or networkPolicy.enabled=false below; the default policy allows
+# DNS and outbound TCP 443 only.
+extraEnv: []
+
+# Lock the pod down with a NetworkPolicy: deny all inbound, allow only DNS and
+# outbound HTTPS (so it can reach the ingest API). Disable if your cluster has
+# no NetworkPolicy controller.
+networkPolicy:
+  enabled: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
