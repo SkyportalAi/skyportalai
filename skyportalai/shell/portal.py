@@ -469,6 +469,13 @@ class SkyportalClient:
             json_body={"message": message},
         )
 
+    def chat_upload_status(self, chat_id: int, upload_ids: List[str]) -> Dict[str, Any]:
+        """Where each attached file has got to. Empty ids means every file in the chat."""
+        path = "/api/v1/agent/chat/{}/uploads/".format(chat_id)
+        if upload_ids:
+            path += "?" + urlencode({"ids": ",".join(upload_ids)})
+        return self._request("GET", path)
+
     def upload_chat_files(self, chat_id: int, paths: List[str]) -> Dict[str, Any]:
         """Attach files to a chat. Logs, CSV, JSON, YAML and images all work."""
         parts = []
