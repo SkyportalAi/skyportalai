@@ -1,0 +1,87 @@
+name: Build and smoke test agent
+description: Build a pinned SDK release and verify the image under the Helm security context
+inputs:
+  version:
+    description: SDK release version without the leading v
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+    - name: Build
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
+      with:
+        context: deploy/agent
+        build-args: SKYPORTALAI_REF=v${{ inputs.version }}
+        push: false
+        load: true
+        tags: skyportalai-agent:ci
+        labels: |
+          org.opencontainers.image.version=${{ inputs.version }}
+          org.opencontainers.image.revision=${{ github.sha }}
+
+    # A successful build only proves the layers ran. These check what the
+    # chart assumes about the image.
+    - name: Runs as uid 1000
+      shell: bash
+      run: |
+        uid="$(docker run --rm --entrypoint id skyportalai-agent:ci -u)"
+        echo "uid=$uid"
+        test "$uid" = "1000"
+
+    - name: Contains the requested agent release
+      env:
+        VERSION: ${{ inputs.version }}
+      shell: bash
+      run: |
+        installed="$(docker run --rm --entrypoint python skyportalai-agent:ci \
+          -c 'from importlib.metadata import version; print(version("skyportalai"))')"
+        echo "installed=$installed expected=$VERSION"
+        test "$installed" = "$VERSION"
+
+    - name: Entrypoint resolves and refuses to start without a token
+      shell: bash
+      run: |
+        # The console script was renamed upstream once already (skyportal-agent
+        # became skyportalai-agent). A stale ENTRYPOINT fails here with
+        # "executable file not found" instead of on a customer's cluster.
+        set +e
+        out="$(docker run --rm skyportalai-agent:ci 2>&1)"
+        code=$?
+        set -e
+        echo "$out" | tail -3
+        test "$code" -ne 0
+        echo "$out" | grep -q "No agent token provided"
+
+    - name: Serves /healthz under the chart's security context
+      shell: bash
+      run: |
+        # Same constraints the chart applies: read only root filesystem with a
+        # writable /tmp and state dir only, non root. The base URL points at a
+        # closed port so nothing leaves the runner; the agent must stay up and
+        # keep answering the liveness endpoint through failed ship cycles.
+        docker run -d --name agent-ci --read-only \
+          --tmpfs /tmp:rw,size=64m,uid=1000,gid=1000 \
+          --tmpfs /var/lib/skyportal-agent:rw,size=64m,uid=1000,gid=1000 \
+          -e SKYPORTALAI_AGENT_TOKEN=agt_ci_placeholder \
+          -e SKYPORTALAI_BASE_URL=http://127.0.0.1:9 \
+          -e SKYPORTALAI_AGENT_INTERVAL_SECONDS=5 \
+          skyportalai-agent:ci
+        body=""
+        for _ in $(seq 1 30); do
+          body="$(docker exec agent-ci python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=2).read().decode())' 2>/dev/null || true)"
+          [ -n "$body" ] && break
+          sleep 1
+        done
+        echo "healthz -> $body"
+        sleep 12
+        logs="$(docker logs agent-ci 2>&1)"
+        running="$(docker inspect -f '{{.State.Running}}' agent-ci)"
+        docker rm -f agent-ci >/dev/null
+        echo "$logs" | tail -20
+        echo "$body" | grep -q '"ok"'
+        echo "$logs" | grep -q "skyportalai-agent started"
+        test "$running" = "true"

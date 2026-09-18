@@ -1,0 +1,265 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "skyportalai-agent chart values",
+  "description": "Validated by Helm on install, upgrade, lint and template. token.existingSecret is the only value without a usable default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "config", "token", "persistence"],
+  "properties": {
+    "global": {
+      "type": "object"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "description": "Image tag. Empty means the chart appVersion. Pass numeric looking tags with --set-string."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "tmpDir": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sizeLimit": {
+          "$ref": "#/definitions/quantity"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "$ref": "#/definitions/resourceList"
+        },
+        "limits": {
+          "$ref": "#/definitions/resourceList"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intervalSeconds", "enableWandb", "enableMlflow", "mlflowMode", "stateDir", "queueMaxBatches", "healthzPort"],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "pattern": "^(https?://[^\\s]+)?$",
+          "description": "SkyPortal API root. Empty uses the agent default, https://app.skyportal.ai."
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "enableWandb": {
+          "type": "boolean"
+        },
+        "enableMlflow": {
+          "type": "boolean"
+        },
+        "mlflowMode": {
+          "type": "string",
+          "enum": ["filesystem", "rest"]
+        },
+        "mlflowTrackingUri": {
+          "type": "string",
+          "pattern": "^(https?://[^\\s]+)?$"
+        },
+        "clusterName": {
+          "type": "string"
+        },
+        "stateDir": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "queueMaxBatches": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "healthzPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "wandbDir": {
+          "type": "string",
+          "pattern": "^(/.*)?$"
+        },
+        "mlflowDir": {
+          "type": "string",
+          "pattern": "^(/.*)?$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mlflowMode": {
+                "const": "rest"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "mlflowTrackingUri": {
+                "minLength": 1
+              }
+            },
+            "required": ["mlflowTrackingUri"]
+          }
+        }
+      ]
+    },
+    "token": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "secretKey"],
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of an existing Secret in the release namespace that holds the agent token. Required."
+        },
+        "secretKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "size": {
+          "$ref": "#/definitions/quantity"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "accessMode": {
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadWriteOncePod", "ReadWriteMany"]
+        }
+      }
+    },
+    "extraVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"]
+      }
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "mountPath"]
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    }
+  },
+  "definitions": {
+    "quantity": {
+      "type": ["string", "number"],
+      "pattern": "^[+-]?([0-9]+|[0-9]*\\.[0-9]+|[0-9]+\\.[0-9]*)([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$"
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "$ref": "#/definitions/quantity"
+        },
+        "memory": {
+          "$ref": "#/definitions/quantity"
+        },
+        "ephemeral-storage": {
+          "$ref": "#/definitions/quantity"
+        }
+      }
+    }
+  }
+}

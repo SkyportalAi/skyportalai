@@ -1,0 +1,132 @@
+name: Agent image
+
+# Builds the observability agent image from deploy/agent/Dockerfile and checks
+# the properties the Helm chart relies on. On pull requests and pushes
+# to main the image is built and smoke tested only. On an `agent-v<X.Y.Z>` tag,
+# or a manual run with push=true, it is also published to
+# ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>, built from the
+# SkyportalAi/skyportalai release tag v<X.Y.Z>. See deploy/agent/RELEASING.md.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/agent/Dockerfile'
+      - '.github/actions/build-agent/**'
+      - '.github/workflows/agent-image.yml'
+  push:
+    branches: [main]
+    # Tag pushes ignore the paths filter, so every agent-v* tag builds.
+    tags: ['agent-v*']
+    paths:
+      - 'deploy/agent/Dockerfile'
+      - '.github/actions/build-agent/**'
+      - '.github/workflows/agent-image.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Agent release to build: the skyportalai tag without the leading v, e.g. 0.2.2'
+        required: true
+        type: string
+      push:
+        description: 'Publish the result to GHCR'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/skyportalai/skyportalai-agent
+
+jobs:
+  build:
+    name: Build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.push }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the agent version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUSH: ${{ inputs.push }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/agent-v*)
+              version="${GITHUB_REF#refs/tags/agent-v}"
+              push=true ;;
+            *)
+              if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+                version="$INPUT_VERSION"
+                push="$INPUT_PUSH"
+              else
+                # Pull requests and main build exactly what the Dockerfile pins.
+                version="$(sed -n 's/^ARG SKYPORTALAI_REF=v//p' deploy/agent/Dockerfile)"
+                push=false
+              fi ;;
+          esac
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' \
+            || { echo "'$version' is not a release version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+          echo "agent $version, push=$push"
+
+      - name: Publishing tags must point to main history
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+        run: |
+          git fetch --no-tags --unshallow origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Build and smoke test
+        uses: ./.github/actions/build-agent
+        with:
+          version: ${{ steps.version.outputs.version }}
+
+  publish:
+    name: Publish tested image
+    needs: build
+    if: >-
+      github.repository == 'SkyportalAi/skyportalai' &&
+      needs.build.outputs.publish == 'true' &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Rebuild and test on this runner. Do not upload the private image as a
+      # downloadable Actions artifact from this public repository.
+      - name: Build and smoke test
+        uses: ./.github/actions/build-agent
+        with:
+          version: ${{ needs.build.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          docker tag skyportalai-agent:ci "$IMAGE:$VERSION"
+          docker tag skyportalai-agent:ci "$IMAGE:latest"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:latest"

@@ -1,0 +1,254 @@
+name: Agent chart
+
+# Lints, renders, validates and installs the observability agent chart
+# (deploy/agent/helm/skyportalai-agent), so chart breakage is found in
+# review rather than by an operator running `helm install`. On pushes to main it
+# also publishes the chart to oci://ghcr.io/skyportalai/charts when Chart.yaml
+# carries a version the registry does not have yet. See deploy/agent/RELEASING.md.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/agent/**'
+      - '.github/workflows/agent-chart.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/agent/**'
+      - '.github/workflows/agent-chart.yml'
+  workflow_dispatch:
+
+# Only the publish job pushes to GHCR. Job level permissions replace these, so
+# publish restates contents: read next to its packages: write.
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: deploy/agent/helm/skyportalai-agent
+  CHART_NAME: skyportalai-agent
+  CHART_REGISTRY: oci://ghcr.io/skyportalai/charts
+  HELM_VERSION: v3.16.4
+
+jobs:
+  lint:
+    name: Lint, render, validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint
+        run: helm lint --strict "$CHART_DIR" --set token.existingSecret=lint
+
+      - name: Required values are required and the schema rejects bad values
+        run: |
+          # No token Secret must fail at validation, before anything renders.
+          if out="$(helm template rel "$CHART_DIR" 2>&1)"; then
+            echo "chart rendered without token.existingSecret"; exit 1
+          fi
+          echo "$out" | grep -q "token.existingSecret"
+          for bad in \
+              "config.intervalSeconds=0" \
+              "image.pullPolicy=Sometimes" \
+              "config.mlflowMode=rest" \
+              "config.baseUrl=skyportal.example.com" \
+              "image.tag=20260914" \
+              "persistence.size=1Gib" \
+              "persistance.enabled=false"; do
+            if helm template rel "$CHART_DIR" --set token.existingSecret=t --set "$bad" >/dev/null 2>&1; then
+              echo "schema accepted --set $bad"; exit 1
+            fi
+            echo "rejected --set $bad"
+          done
+
+      - name: Render
+        run: |
+          mkdir -p rendered
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set config.baseUrl=https://skyportal.example.com \
+            --set config.clusterName=ci \
+            --set config.wandbDir=/experiments/wandb \
+            --set 'imagePullSecrets[0].name=ghcr-pull' \
+            > rendered/default.yaml
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set persistence.enabled=false \
+            --set networkPolicy.enabled=false \
+            --set serviceAccount.create=false \
+            --set config.mlflowMode=rest \
+            --set config.mlflowTrackingUri=https://mlflow.example.com \
+            > rendered/minimal.yaml
+          grep -q 'SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI' rendered/minimal.yaml
+
+      - name: Rendered chart and plain manifests are valid Kubernetes
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf kubeconform.tar.gz
+          ./kubeconform -summary -strict rendered/*.yaml \
+            deploy/agent/manifests/pvc.yaml \
+            deploy/agent/manifests/deployment.yaml \
+            deploy/agent/manifests/networkpolicy.yaml \
+            deploy/agent/manifests/secret.example.yaml
+
+      - name: Chart, Dockerfile and manifests pin the same agent release
+        run: |
+          app_version="$(helm show chart "$CHART_DIR" | sed -n 's/^appVersion: *//p' | tr -d '"')"
+          docker_ref="$(sed -n 's/^ARG SKYPORTALAI_REF=v//p' deploy/agent/Dockerfile)"
+          manifest_tag="$(sed -n 's#^ *image: ghcr.io/skyportalai/skyportalai-agent:##p' deploy/agent/manifests/deployment.yaml)"
+          echo "appVersion=$app_version dockerfile=$docker_ref manifests=$manifest_tag"
+          test -n "$app_version"
+          test "$app_version" = "$docker_ref"
+          test "$app_version" = "$manifest_tag"
+
+      - name: Chart version was bumped
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if git diff --quiet "origin/$BASE_REF" -- "$CHART_DIR"; then
+            echo "chart unchanged"; exit 0
+          fi
+          head_version="$(sed -n 's/^version: *//p' "$CHART_DIR/Chart.yaml")"
+          base_version="$(git show "origin/$BASE_REF:$CHART_DIR/Chart.yaml" 2>/dev/null | sed -n 's/^version: *//p' || true)"
+          echo "base=${base_version:-none} head=$head_version"
+          if [ "$head_version" = "$base_version" ]; then
+            echo "files under $CHART_DIR changed but Chart.yaml still says version $head_version; bump it (deploy/agent/RELEASING.md)"
+            exit 1
+          fi
+
+  install:
+    name: Clean install on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build the agent image the chart's appVersion points at
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: deploy/agent
+          push: false
+          load: true
+          tags: skyportalai-agent:ci
+
+      - name: Create a kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          cluster_name: agent-ci
+
+      - name: Load the image into the cluster
+        run: kind load docker-image skyportalai-agent:ci --name agent-ci
+
+      - name: Install the packaged chart the way an operator would
+        run: |
+          helm package "$CHART_DIR" --destination dist
+          kubectl create namespace agents
+          kubectl -n agents create secret generic agent-token \
+            --from-literal=SKYPORTALAI_AGENT_TOKEN=agt_ci_placeholder
+          # Loopback is the one host the agent accepts over plain http, and
+          # nothing listens on port 9, so every ship cycle fails fast without a
+          # DNS lookup or a packet leaving the pod. The agent has to spool and
+          # stay up regardless.
+          helm install agent dist/"$CHART_NAME"-*.tgz -n agents \
+            --set token.existingSecret=agent-token \
+            --set config.baseUrl=http://127.0.0.1:9 \
+            --set config.intervalSeconds=5 \
+            --set image.repository=skyportalai-agent \
+            --set-string image.tag=ci \
+            --set image.pullPolicy=Never \
+            --wait --timeout 3m
+          kubectl -n agents get deploy,pod,pvc,sa,networkpolicy
+
+      - name: The agent is up, healthy, and stays up
+        run: |
+          pod="$(kubectl -n agents get pod -l app.kubernetes.io/instance=agent -o jsonpath='{.items[0].metadata.name}')"
+          # Running is not listening yet: the agent imports its scanners before
+          # it opens the healthz port, which takes a few seconds.
+          body=""
+          for _ in $(seq 1 30); do
+            body="$(kubectl -n agents exec "$pod" -- python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=2).read().decode())' 2>/dev/null || true)"
+            [ -n "$body" ] && break
+            sleep 2
+          done
+          echo "healthz -> $body"
+          echo "$body" | grep -q '"ok"'
+          kubectl -n agents logs "$pod" | grep -q "skyportalai-agent started"
+          # Past the first liveness probe (10s delay, 20s period) and several
+          # failed ship cycles.
+          sleep 45
+          phase="$(kubectl -n agents get pod "$pod" -o jsonpath='{.status.phase}')"
+          restarts="$(kubectl -n agents get pod "$pod" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
+          echo "phase=$phase restarts=$restarts"
+          kubectl -n agents logs "$pod" | tail -20
+          test "$phase" = "Running"
+          test "$restarts" = "0"
+
+      - name: Uninstall leaves nothing behind
+        run: |
+          helm uninstall agent -n agents --wait
+          left="$(kubectl -n agents get deploy,pod,pvc,sa,networkpolicy -l app.kubernetes.io/instance=agent -o name)"
+          echo "left behind: ${left:-nothing}"
+          test -z "$left"
+
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n agents get all,pvc,networkpolicy -o wide || true
+          kubectl -n agents describe pod -l app.kubernetes.io/instance=agent || true
+          kubectl -n agents logs -l app.kubernetes.io/instance=agent --tail=100 || true
+
+  publish:
+    name: Publish chart
+    if: >-
+      github.repository == 'SkyportalAi/skyportalai' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [lint, install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push the chart if this version is new
+        run: |
+          version="$(sed -n 's/^version: *//p' "$CHART_DIR/Chart.yaml")"
+          if helm show chart "$CHART_REGISTRY/$CHART_NAME" --version "$version" >/dev/null 2>&1; then
+            echo "$CHART_NAME $version is already published; nothing to do"
+            exit 0
+          fi
+          helm package "$CHART_DIR" --destination dist
+          helm push "dist/$CHART_NAME-$version.tgz" "$CHART_REGISTRY"
+          echo "published $CHART_REGISTRY/$CHART_NAME:$version"

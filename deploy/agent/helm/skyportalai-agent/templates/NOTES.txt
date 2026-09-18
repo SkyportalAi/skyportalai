@@ -1,0 +1,29 @@
+SkyPortal observability agent installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+The agent runs as a single replica Deployment. It scans the configured
+experiment stores every {{ .Values.config.intervalSeconds }}s and ships run
+metadata to:
+  {{ .Values.config.baseUrl | default "https://app.skyportal.ai" }}{{ if not .Values.config.baseUrl }} (agent default){{ end }}
+
+Check that it is running:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l "app.kubernetes.io/instance={{ .Release.Name }}"
+  kubectl -n {{ .Release.Namespace }} logs -l "app.kubernetes.io/instance={{ .Release.Name }}" -f
+
+Verify the liveness endpoint from inside the pod:
+
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "skyportalai-agent.fullname" . }} -- \
+    python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{{ .Values.config.healthzPort }}/healthz').read().decode())"
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled. The spool queue and run catalog live in an
+emptyDir and are lost when the pod restarts. Enable persistence for durable
+delivery: --set persistence.enabled=true
+{{- end }}
+
+To scan real experiment data, mount it via extraVolumes / extraVolumeMounts and
+point config.wandbDir / config.mlflowDir at the mount paths, or set
+config.mlflowMode=rest plus config.mlflowTrackingUri for an MLflow tracking server.
+
+Full guide: https://github.com/SkyportalAi/skyportalai/blob/main/deploy/agent/README.md
