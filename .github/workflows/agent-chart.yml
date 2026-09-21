@@ -101,7 +101,7 @@ jobs:
       - name: Chart, Dockerfile and manifests pin the same agent release
         run: |
           app_version="$(helm show chart "$CHART_DIR" | sed -n 's/^appVersion: *//p' | tr -d '"')"
-          docker_ref="$(sed -n 's/^ARG SKYPORTALAI_REF=v//p' deploy/agent/Dockerfile)"
+          docker_ref="$(sed -n 's/^ARG SKYPORTALAI_VERSION=//p' deploy/agent/Dockerfile)"
           manifest_tag="$(sed -n 's#^ *image: ghcr.io/skyportalai/skyportalai-agent:##p' deploy/agent/manifests/deployment.yaml)"
           echo "appVersion=$app_version dockerfile=$docker_ref manifests=$manifest_tag"
           test -n "$app_version"

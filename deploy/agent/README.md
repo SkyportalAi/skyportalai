@@ -61,7 +61,7 @@ private packages.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.2.1 \
+  --version 0.2.2 \
   --set token.existingSecret=skyportalai-agent-token \
   --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set config.baseUrl=https://skyportal.example.com

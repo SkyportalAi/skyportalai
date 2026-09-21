@@ -4,8 +4,8 @@ name: Agent image
 # the properties the Helm chart relies on. On pull requests and pushes
 # to main the image is built and smoke tested only. On an `agent-v<X.Y.Z>` tag,
 # or a manual run with push=true, it is also published to
-# ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>, built from the
-# SkyportalAi/skyportalai release tag v<X.Y.Z>. See deploy/agent/RELEASING.md.
+# ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>, installing skyportalai X.Y.Z
+# from PyPI. See deploy/agent/RELEASING.md.
 
 on:
   pull_request:
@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Agent release to build: the skyportalai tag without the leading v, e.g. 0.2.2'
+        description: 'Agent release to build: the skyportalai version on PyPI, e.g. 0.2.2'
         required: true
         type: string
       push:
@@ -68,7 +68,7 @@ jobs:
                 push="$INPUT_PUSH"
               else
                 # Pull requests and main build exactly what the Dockerfile pins.
-                version="$(sed -n 's/^ARG SKYPORTALAI_REF=v//p' deploy/agent/Dockerfile)"
+                version="$(sed -n 's/^ARG SKYPORTALAI_VERSION=//p' deploy/agent/Dockerfile)"
                 push=false
               fi ;;
           esac

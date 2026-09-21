@@ -10,10 +10,12 @@ Two artifacts come out of this directory, published by two workflows:
 | Image | `ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>` (and `:latest`) | `.github/workflows/agent-image.yml` | git tag `agent-v<X.Y.Z>` |
 | Chart | `oci://ghcr.io/skyportalai/charts/skyportalai-agent:<chart version>` | `.github/workflows/agent-chart.yml` | merge to `main` with a new `version` in `Chart.yaml` |
 
-Neither needs a secret beyond the workflow's own `GITHUB_TOKEN`: the agent
-source, [`SkyportalAi/skyportalai`](https://github.com/SkyportalAi/skyportalai),
-is public, so the image build clones its pinned release tag anonymously.
-The workflows publish independently of the SDK's PyPI release workflow.
+Neither needs a secret beyond the workflow's own `GITHUB_TOKEN`: the image
+build installs its pinned release of
+[`skyportalai`](https://pypi.org/project/skyportalai/) from PyPI, which needs
+no credential. The workflows publish independently of the SDK's PyPI release
+workflow, but the image can only be built once the SDK release it pins is on
+PyPI (see [docs/RELEASING.md](../../docs/RELEASING.md)).
 PR and main image checks and chart validation do not log in to GHCR; only the
 separate publish jobs receive `packages: write`. Image publishing accepts an
 `agent-v*` tag pointing into `main` history, or a manual run on `main` with
@@ -27,8 +29,8 @@ Actions artifacts or caches.
 
 The package names and existing releases stay unchanged. Chart `0.2.1` updates
 the source links to this repository; chart `0.2.0` must not be overwritten.
-The default agent image remains `0.2.2`, built from SDK tag `v0.2.2`, rather
-than whatever source happens to be on `main`.
+The default agent image remains `0.2.2`, installing `skyportalai==0.2.2`
+from PyPI, rather than whatever source happens to be on `main`.
 
 Use this order for the handover:
 
@@ -64,11 +66,11 @@ until a separately requested rebuild; the chart can use the existing image.
 
 ## Versioning
 
-- **The image tag is the agent release.** The image is built from the
-  `skyportalai` tag `v<X.Y.Z>` and tagged `<X.Y.Z>`; there is no separate image
-  version. `latest` moves to the newest release.
+- **The image tag is the agent release.** The image installs the `skyportalai`
+  release `<X.Y.Z>` from PyPI and is tagged `<X.Y.Z>`; there is no separate
+  image version. `latest` moves to the newest release.
 - **Three places pin the agent release and must agree:** `appVersion` in
-  `helm/skyportalai-agent/Chart.yaml`, `ARG SKYPORTALAI_REF` in `Dockerfile`, and
+  `helm/skyportalai-agent/Chart.yaml`, `ARG SKYPORTALAI_VERSION` in `Dockerfile`, and
   the image tag in `manifests/deployment.yaml`. The chart workflow fails when
   they differ. Change all three in one PR, and bump the chart `version` with
   them (a new default image is a chart change).
@@ -79,9 +81,10 @@ until a separately requested rebuild; the chart can use the existing image.
   republishing. Patch for fixes that change no values or defaults, minor for
   new values or a new `appVersion`, major for anything an existing install has
   to change its values for.
-- `SKYPORTALAI_REF` is a release tag, never a commit SHA. A SHA can stop being
-  reachable after a rebase or force push on the SDK side, and then nobody can
-  rebuild the image.
+- `SKYPORTALAI_VERSION` is an exact PyPI version, never a range. The build has
+  no lockfile, so a range would make every rebuild resolve to a different
+  image. PyPI releases are immutable, so a pinned version can always be rebuilt,
+  which the git commit SHA pinned before 0.2.2 could not guarantee.
 - **Chart `0.2.0` renamed the Kubernetes objects** from `skyportal-agent` to
   `skyportalai-agent`, and a PersistentVolumeClaim is identified by its name, so
   applying it over an install made before it orphans that install's spool volume.
@@ -90,19 +93,21 @@ until a separately requested rebuild; the chart can use the existing image.
 
 ## Cutting an agent release
 
-1. Confirm the SDK release exists:
-   `https://github.com/SkyportalAi/skyportalai/releases/tag/v<X.Y.Z>`. If its
-   console script, `agent` extra, or environment variables changed, read the
-   SDK changelog first; the entrypoint and the env var names in the chart follow
-   the SDK.
-2. Open a PR that sets `ARG SKYPORTALAI_REF=v<X.Y.Z>`, `appVersion: "<X.Y.Z>"`,
+1. Confirm the SDK release is on PyPI:
+   `https://pypi.org/project/skyportalai/<X.Y.Z>/`. The GitHub Release alone is
+   not enough: the PyPI publish job waits for a reviewer, and the image build
+   fails until the version is installable. If the release changed the console
+   script, `agent` extra, or environment variables, read the SDK changelog
+   first; the entrypoint and the env var names in the chart follow the SDK.
+2. Open a PR that sets `ARG SKYPORTALAI_VERSION=<X.Y.Z>`, `appVersion: "<X.Y.Z>"`,
    the manifests' image tag, and bumps the chart `version`. Update the
    configuration table in `README.md` if the SDK gained or renamed settings. CI
-   builds the image from the new ref (without pushing), smoke tests it, and
+   builds the image with the new release (without pushing), smoke tests it, and
    installs the chart with it on a kind cluster.
 3. Merge. The chart workflow publishes the new chart version to GHCR.
-4. Tag the merge commit and push the tag; the image workflow builds from the
-   SDK tag, runs the same smoke tests, and publishes `<X.Y.Z>` and `latest`:
+4. Tag the merge commit and push the tag; the image workflow installs that
+   release from PyPI, runs the same smoke tests, and publishes `<X.Y.Z>` and
+   `latest`:
 
    ```bash
    git fetch origin main
