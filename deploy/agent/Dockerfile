@@ -1,58 +1,39 @@
 # SkyPortal observability agent container image.
 #
-# The agent is the `agent` extra of the SkyportalAi/skyportalai package (public,
-# MIT). Its deployment assets and build workflows live alongside the SDK.
-# The builder installs a pinned release of the package into a self
-# contained virtualenv, and the runtime stage copies only that venv onto a fresh
-# slim base. Nothing from the builder (pip caches, git) reaches the final image,
-# and the process runs as an unprivileged user.
+# The agent is the `agent` extra of the skyportalai package on PyPI
+# (https://pypi.org/project/skyportalai/, MIT). Its deployment assets and build
+# workflows live alongside the SDK. The builder installs a pinned release of the
+# package into a self contained virtualenv, and the runtime stage copies only
+# that venv onto a fresh slim base. Nothing from the builder (pip caches)
+# reaches the final image, and the process runs as an unprivileged user.
 #
 # CI builds and publishes this image (.github/workflows/agent-image.yml): pushing
-# an `agent-v<X.Y.Z>` tag builds from the skyportalai release tag v<X.Y.Z> and
-# publishes ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>. See deploy/agent/RELEASING.md.
+# an `agent-v<X.Y.Z>` tag installs skyportalai X.Y.Z from PyPI and publishes
+# ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>. See deploy/agent/RELEASING.md.
 #
-# Local build (BuildKit), from the skyportalai repo root:
+# Local build, from the skyportalai repo root. No credentials are needed:
 #   docker build -t skyportalai-agent:dev deploy/agent
-# A GitHub token can be passed as a BuildKit secret; it is only needed if the
-# source repository is ever private again or to dodge anonymous rate limits:
-#   GITHUB_TOKEN=$(gh auth token) docker build \
-#     --secret id=github_token,env=GITHUB_TOKEN -t skyportalai-agent:dev deploy/agent
 
 # ---- builder ----------------------------------------------------------------
 FROM python:3.11-slim AS builder
 
-# Release tag of SkyportalAi/skyportalai to build the image from. Pin a new tag
+# Release of skyportalai on PyPI to build the image from. Pin a new version
 # here when releasing a new agent version (CI passes the same value from the
-# git tag). Prefer a tag over a bare commit SHA: a tag is a deliberate release
-# marker that survives rebases and force pushes, so a wrong value here fails
-# when we cut the release rather than months later when someone rebuilds and
-# the commit is gone. Must match appVersion in the chart and the image tag in
-# manifests/deployment.yaml; CI checks the three agree.
-ARG SKYPORTALAI_REF=v0.2.2
+# `agent-v<X.Y.Z>` git tag). Always an exact version: pip has no lockfile here,
+# so a range would make every rebuild resolve to a different image. Must match
+# appVersion in the chart and the image tag in manifests/deployment.yaml; CI
+# checks the three agree.
+ARG SKYPORTALAI_VERSION=0.2.2
 
 ENV VENV=/opt/venv
 RUN python -m venv "$VENV"
 ENV PATH="$VENV/bin:$PATH"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN pip install --no-cache-dir --upgrade pip
 
-# `.[agent]` pulls in the daemon only deps (pyyaml + wandb) on top of the SDK.
-# The optional token is a BuildKit secret: it is mounted for this RUN only and
-# never written to an image layer. Without one the clone is anonymous, which is
-# all a public repository needs.
-RUN --mount=type=secret,id=github_token,required=false \
-    set -e; \
-    if [ -s /run/secrets/github_token ]; then \
-        AUTH="x-access-token:$(cat /run/secrets/github_token)@"; \
-    else \
-        AUTH=""; \
-    fi; \
-    pip install --no-cache-dir \
-        "skyportalai[agent] @ git+https://${AUTH}github.com/SkyportalAi/skyportalai@${SKYPORTALAI_REF}"
+# The `agent` extra adds the daemon only dependency (wandb) on top of the SDK;
+# pyyaml is a base dependency of the package.
+RUN pip install --no-cache-dir "skyportalai[agent]==${SKYPORTALAI_VERSION}"
 
 # ---- runtime ----------------------------------------------------------------
 FROM python:3.11-slim AS runtime
