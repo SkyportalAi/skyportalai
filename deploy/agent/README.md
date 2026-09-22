@@ -222,6 +222,9 @@ Set `kubernetes.enabled=true` and the chart adds two workloads from the same ima
 | `<release>-cluster` Deployment | 1 pod | pods, events, nodes, namespaces, deployments/statefulsets, crash logs of failing pods, `kubectl top` | a read-only ClusterRole: `get`/`list`/`watch`, no secrets, no writes |
 | `<release>-node` DaemonSet | 1 pod on every node | the node's CPU, memory, disk, load (host `/proc`, read only) and GPUs (NVML) | no Kubernetes API token at all |
 
+GPU utilisation comes from the node agent (NVML), so no DCGM exporter is needed.
+vLLM serving metrics are not collected through the agent yet.
+
 SkyPortal sets how often they collect (every 30 seconds). If SkyPortal is
 unreachable, uploads are buffered on disk and delivered in order when it returns.
 The cluster pod also runs read-only `kubectl` that you ask for in SkyPortal chat.

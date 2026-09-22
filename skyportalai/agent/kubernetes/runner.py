@@ -13,7 +13,7 @@ import threading
 import uuid
 
 from ..queue import SpoolQueue
-from ..shipper import Shipper
+from ..shipper import Shipper, ShipResult, _PostOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,26 @@ class KubernetesShipper(Shipper):
 
     def _body(self, chunk: list[dict]) -> dict:
         return chunk[0]
+
+    def ship(self, queue: SpoolQueue) -> ShipResult:
+        """Deliver spooled uploads in order; drop one SkyPortal refuses permanently.
+
+        The run shipper keeps a refused batch for the next cycle. Here that would stop
+        every later upload behind it for good (an unsupported schema, a body too
+        large), so a permanent refusal is logged and the batch discarded.
+        """
+        shipped = 0
+        for batch in queue.batches():
+            if self._ship_batch(batch.runs):
+                queue.remove(batch.batch_id)
+                shipped += 1
+                continue
+            if self.last_outcome is _PostOutcome.PERMANENT:
+                logger.error("SkyPortal refused upload %s permanently; dropping it", batch.batch_id)
+                queue.remove(batch.batch_id)
+                continue
+            break  # a transient failure: keep this and later uploads for the next cycle
+        return ShipResult(shipped, shipped, len(queue))
 
     def _on_delivered(self, resp) -> None:
         try:

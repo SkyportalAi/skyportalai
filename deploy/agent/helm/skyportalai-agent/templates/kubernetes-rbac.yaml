@@ -9,9 +9,14 @@ metadata:
   labels:
     {{- include "skyportalai-agent.componentLabels" (dict "root" . "component" "cluster") | nindent 4 }}
 ---
-# Copied from skyportal-website deploy/cluster-access/clusterrole-readonly.yaml
-# (#3527), whose tests bind each rule to a command the server's gather runs. Keep
-# the two in step. No write verb anywhere: no create, update, patch, delete, exec.
+# Copied from the baseline role in skyportal-website deploy/cluster-access/
+# clusterrole-readonly.yaml (#3527). Keep the two in step. No write verb anywhere: no
+# create, update, patch, delete, exec.
+# Covers the snapshot reads (pods, events, workloads, crash logs, kubectl top). Not
+# granted: services and the pod/service proxy, which the server's DCGM and vLLM
+# scrapes use; #3527 makes those opt-in because services/proxy reaches any Service.
+# GPU numbers come from the node agent's NVML instead; vLLM serving metrics are not
+# collected on the agent route yet.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

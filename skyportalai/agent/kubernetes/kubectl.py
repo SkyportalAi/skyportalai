@@ -19,12 +19,14 @@ READONLY_SUBCOMMANDS = frozenset({
 })
 
 DEFAULT_TIMEOUT_SECONDS = 30
-# One command's output is capped so a runaway log can't blow the upload size limit.
-MAX_OUTPUT_CHARS = 8 * 1024 * 1024
+# A command whose output is larger than this is reported as failed rather than sent,
+# so a runaway log can't blow the upload size limit.
+MAX_OUTPUT_CHARS = 32 * 1024 * 1024
 
 EXIT_REFUSED = 126
 EXIT_NOT_FOUND = 127
 EXIT_TIMEOUT = 124
+EXIT_TOO_LARGE = 125
 
 
 def is_readonly(argv: list[str]) -> bool:
@@ -49,6 +51,10 @@ def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> di
         return _result(argv, EXIT_NOT_FOUND, "", "kubectl is not installed in the agent image")
     except subprocess.TimeoutExpired:
         return _result(argv, EXIT_TIMEOUT, "", f"kubectl did not finish within {timeout:g}s")
+    if len(done.stdout or "") > MAX_OUTPUT_CHARS:
+        # Reported as a failure, not cut short: truncated JSON parses as nothing, and a
+        # "successful" empty pod list would overwrite the cluster's real state.
+        return _result(argv, EXIT_TOO_LARGE, "", f"output exceeded {MAX_OUTPUT_CHARS} characters; not sent")
     return _result(argv, done.returncode, done.stdout, done.stderr)
 
 
@@ -56,6 +62,6 @@ def _result(argv: list[str], exit_code: int, stdout: str, stderr: str) -> dict:
     return {
         "argv": list(argv),
         "exit_code": exit_code,
-        "stdout": (stdout or "")[:MAX_OUTPUT_CHARS],
+        "stdout": stdout or "",
         "stderr": (stderr or "")[:MAX_OUTPUT_CHARS],
     }

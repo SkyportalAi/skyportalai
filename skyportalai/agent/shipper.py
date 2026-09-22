@@ -81,6 +81,7 @@ class Shipper:
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
         self.url = base_url.rstrip("/") + self.ingest_path
+        self.last_outcome: _PostOutcome | None = None
         self.token = token
         self.session = session or requests.Session()
         self.chunk_size = chunk_size
@@ -115,6 +116,7 @@ class Shipper:
     def _post_chunk_with_retry(self, chunk: list[dict]) -> bool:
         for attempt in range(self.max_attempts):
             outcome = self._post_chunk(chunk)
+            self.last_outcome = outcome
             if outcome is _PostOutcome.DELIVERED:
                 return True
             if outcome is _PostOutcome.PERMANENT:

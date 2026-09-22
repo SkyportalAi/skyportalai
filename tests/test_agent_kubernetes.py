@@ -104,6 +104,14 @@ class TestKubectl:
         assert seen == {"argv": GET_PODS, "shell": False}
         assert (result["exit_code"], result["stdout"]) == (0, "pods")
 
+    def test_oversized_output_is_a_failure_not_a_truncated_success(self, monkeypatch):
+        monkeypatch.setattr(kubectl, "MAX_OUTPUT_CHARS", 10)
+        monkeypatch.setattr(subprocess, "run",
+                            lambda argv, **k: subprocess.CompletedProcess(argv, 0, stdout='{"items": [1, 2, 3]}', stderr=""))
+        result = kubectl.run_kubectl(GET_PODS)
+        assert result["exit_code"] == kubectl.EXIT_TOO_LARGE
+        assert result["stdout"] == ""
+
     def test_timeout_is_reported_not_raised(self, monkeypatch):
         def slow(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
@@ -192,6 +200,21 @@ class TestKubernetesRunner:
         assert SpoolQueue(tmp_path).is_empty()
         delivered = [_sent_body(c)["collected_at"] for c in session.calls[-2:]]
         assert delivered == sorted(delivered)
+
+
+    def test_an_upload_refused_permanently_is_dropped_so_later_ones_still_ship(self, tmp_path):
+        session = FakeSession([FakeResponse(413), FakeResponse(202, {})])
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.queue.enqueue([{"stuck": True}])  # an earlier upload SkyPortal will refuse
+        runner.run_once()
+        assert SpoolQueue(tmp_path).is_empty()
+        assert len(session.calls) == 2
+
+    def test_a_transient_failure_keeps_the_upload(self, tmp_path):
+        session = FakeSession([FakeResponse(503)] * 3)
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.run_once()
+        assert len(SpoolQueue(tmp_path)) == 1
 
 
 class NodeRoleStub:
