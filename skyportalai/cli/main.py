@@ -63,7 +63,7 @@ def root(
         output=Output(json_mode=json_output, api_target=settings.base_url),
     )
     if context.invoked_subcommand is None:
-        run_shell()
+        run_shell(settings)
 
 
 @config_app.command("show")
