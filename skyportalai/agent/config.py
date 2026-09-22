@@ -24,6 +24,11 @@ DEFAULT_HEALTHZ_PORT = 8080
 DEFAULT_QUEUE_MAX_BATCHES = 1000
 DEFAULT_STATE_DIR = Path("/var/lib/skyportal-agent")
 
+ROLE_EXPERIMENTS = "experiments"
+ROLE_CLUSTER = "cluster"
+ROLE_NODE = "node"
+ROLES = (ROLE_EXPERIMENTS, ROLE_CLUSTER, ROLE_NODE)
+
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
@@ -84,6 +89,10 @@ class AgentConfig:
     state_dir: Path = DEFAULT_STATE_DIR
     healthz_port: int = DEFAULT_HEALTHZ_PORT
     queue_max_batches: int = DEFAULT_QUEUE_MAX_BATCHES
+    # experiments: the W&B/MLflow scanners. cluster / node: the Kubernetes roles (#3566).
+    role: str = ROLE_EXPERIMENTS
+    node_name: str | None = None
+    host_proc: Path | None = None
 
     @property
     def spool_dir(self) -> Path:
@@ -131,6 +140,15 @@ class AgentConfig:
                 "ingest will be skipped."
             )
 
+        role = (_get("SKYPORTALAI_AGENT_ROLE") or ROLE_EXPERIMENTS).strip().lower()
+        if role not in ROLES:
+            raise SkyportalError(f"SKYPORTALAI_AGENT_ROLE must be one of {', '.join(ROLES)}; got {role!r}")
+        node_name = (_get("SKYPORTALAI_AGENT_NODE_NAME") or "").strip() or None
+        if role == ROLE_NODE and not node_name:
+            raise SkyportalError(
+                "The node role needs SKYPORTALAI_AGENT_NODE_NAME (the chart sets it from spec.nodeName)."
+            )
+
         return cls(
             token=token,
             base_url=base_url,
@@ -161,4 +179,7 @@ class AgentConfig:
                 name="SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES",
                 minimum=1,
             ),
+            role=role,
+            node_name=node_name,
+            host_proc=_parse_path(_get("SKYPORTALAI_AGENT_HOST_PROC")),
         )

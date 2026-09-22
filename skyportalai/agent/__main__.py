@@ -13,8 +13,9 @@ import threading
 
 from .. import _env
 from .._client import Skyportal
-from .config import AgentConfig
+from .config import ROLE_CLUSTER, ROLE_EXPERIMENTS, ROLE_NODE, AgentConfig
 from .health import HealthServer
+from .kubernetes import ClusterRole, CommandPoller, KubernetesRunner, KubernetesShipper, NodeRole
 from .queue import SpoolQueue
 from .runner import AgentRunner
 from .scrapers import MlflowRestScanner, MlflowScanner, WandbScanner
@@ -57,7 +58,33 @@ def build_runner(
     )
 
 
-def _install_signal_handlers(runner: AgentRunner) -> None:
+def build_kubernetes_runner(
+    config: AgentConfig,
+    *,
+    stop_event: threading.Event | None = None,
+) -> KubernetesRunner:
+    """Assemble the collect -> queue -> ship loop for the cluster or node role."""
+    if config.role == ROLE_NODE:
+        role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir)
+    else:
+        role = ClusterRole()
+    return KubernetesRunner(
+        role=role,
+        queue=SpoolQueue(config.spool_dir, max_batches=config.queue_max_batches),
+        shipper=KubernetesShipper(config.base_url, config.token),
+        interval_seconds=config.interval_seconds,
+        stop_event=stop_event,
+    )
+
+
+def _start_command_poller(config: AgentConfig, stop_event: threading.Event) -> threading.Thread:
+    poller = CommandPoller(config.base_url, config.token, stop_event=stop_event)
+    thread = threading.Thread(target=poller.run_forever, name="kube-command-poller", daemon=True)
+    thread.start()
+    return thread
+
+
+def _install_signal_handlers(runner) -> None:
     def handle(signum, _frame):
         logger.info("Received %s; draining queue before exit", signal.Signals(signum).name)
         runner.stop()
@@ -75,13 +102,20 @@ def main() -> None:
     _env.enable_deprecation_warnings()
     logging.captureWarnings(True)
     config = AgentConfig.from_env()
-    runner = build_runner(config)
+    stop_event = threading.Event()
+    if config.role == ROLE_EXPERIMENTS:
+        runner = build_runner(config, stop_event=stop_event)
+    else:
+        runner = build_kubernetes_runner(config, stop_event=stop_event)
+    if config.role == ROLE_CLUSTER:
+        _start_command_poller(config, stop_event)
     _install_signal_handlers(runner)
 
     health = HealthServer(config.healthz_port)
     health.start()
     logger.info(
-        "skyportalai-agent started: base_url=%s interval=%ss state_dir=%s healthz=:%d",
+        "skyportalai-agent started: role=%s base_url=%s interval=%ss state_dir=%s healthz=:%d",
+        config.role,
         config.base_url,
         config.interval_seconds,
         config.state_dir,

@@ -1,0 +1,51 @@
+{{- if .Values.kubernetes.enabled }}
+{{- include "skyportalai-agent.requireKubernetesImage" . }}
+# The cluster role's identity. Read-only, cluster wide, bound below. The node
+# DaemonSet does not use it: it reads the host, never the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-cluster
+  labels:
+    {{- include "skyportalai-agent.componentLabels" (dict "root" . "component" "cluster") | nindent 4 }}
+---
+# Copied from skyportal-website deploy/cluster-access/clusterrole-readonly.yaml
+# (#3527), whose tests bind each rule to a command the server's gather runs. Keep
+# the two in step. No write verb anywhere: no create, update, patch, delete, exec.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-readonly
+  labels:
+    {{- include "skyportalai-agent.componentLabels" (dict "root" . "component" "cluster") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes, namespaces, pods, events]
+    verbs: [get, list, watch]
+  # kubectl logs --previous, fetched for failing pods only.
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list]
+  # kubectl top; without metrics-server these reads find nothing, which is fine.
+  - apiGroups: [metrics.k8s.io]
+    resources: [nodes, pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-readonly
+  labels:
+    {{- include "skyportalai-agent.componentLabels" (dict "root" . "component" "cluster") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "skyportalai-agent.fullname" . }}-readonly
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skyportalai-agent.fullname" . }}-cluster
+    namespace: {{ .Release.Namespace }}
+{{- end }}

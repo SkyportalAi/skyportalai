@@ -86,6 +86,17 @@ jobs:
             --set config.mlflowTrackingUri=https://mlflow.example.com \
             > rendered/minimal.yaml
           grep -q 'SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI' rendered/minimal.yaml
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set kubernetes.enabled=true \
+            --set image.tag=0.3.0 \
+            --set kubernetes.node.gpu.runtimeClassName=nvidia \
+            > rendered/kubernetes.yaml
+          grep -q 'kind: DaemonSet' rendered/kubernetes.yaml
+          # The Kubernetes roles are refused on an agent image that predates them.
+          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true >/dev/null 2>&1; then
+            echo "kubernetes.enabled rendered on an image without the Kubernetes roles"; exit 1
+          fi
 
       - name: Rendered chart and plain manifests are valid Kubernetes
         run: |

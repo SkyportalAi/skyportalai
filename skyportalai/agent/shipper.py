@@ -62,6 +62,8 @@ class ShipResult:
 class Shipper:
     """Drains a :class:`SpoolQueue` to the ingest endpoint, owning POST retry."""
 
+    ingest_path = INGEST_PATH
+
     def __init__(
         self,
         base_url: str,
@@ -78,7 +80,7 @@ class Shipper:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
-        self.url = base_url.rstrip("/") + INGEST_PATH
+        self.url = base_url.rstrip("/") + self.ingest_path
         self.token = token
         self.session = session or requests.Session()
         self.chunk_size = chunk_size
@@ -125,8 +127,14 @@ class Shipper:
         )
         return False
 
+    def _body(self, chunk: list[dict]) -> dict:
+        return {"new_runs": chunk}
+
+    def _on_delivered(self, resp: requests.Response) -> None:
+        """Hook for endpoints whose 2xx reply carries instructions; the run ingest's doesn't."""
+
     def _post_chunk(self, chunk: list[dict]) -> _PostOutcome:
-        body = gzip.compress(json.dumps({"new_runs": chunk}).encode("utf-8"))
+        body = gzip.compress(json.dumps(self._body(chunk)).encode("utf-8"))
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -144,6 +152,7 @@ class Shipper:
         try:
             status = resp.status_code
             if 200 <= status < 300:
+                self._on_delivered(resp)
                 return _PostOutcome.DELIVERED
             if status in RETRYABLE_STATUS_CODES or 500 <= status < 600:
                 logger.warning("Ingest POST rejected (retryable): HTTP %d", status)

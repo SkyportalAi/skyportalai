@@ -1,6 +1,6 @@
 apiVersion: v2
 name: skyportalai-agent
-description: SkyPortal observability agent. Scans local Weights & Biases and MLflow experiment stores and ships run metadata to the SkyPortal ingest API.
+description: SkyPortal observability agent. Ships Weights & Biases and MLflow run metadata to SkyPortal, and with kubernetes.enabled monitors the cluster (pods, events, crash logs) and every node (CPU, memory, disk, GPUs) over outbound HTTPS.
 type: application
 home: https://github.com/SkyportalAi/skyportalai/tree/main/deploy/agent
 sources:
@@ -11,6 +11,7 @@ keywords:
   - mlops
   - wandb
   - mlflow
+  - kubernetes
 maintainers:
   - name: SkyPortal
     email: tech@skyportal.ai
@@ -19,7 +20,7 @@ maintainers:
 # pushes versions the registry does not have yet (see deploy/agent/RELEASING.md).
 # 0.2.0 renamed the chart from skyportal-agent and moved the agent env vars from
 # SKYPORTAL_* to SKYPORTALAI_*, including the default token.secretKey.
-version: 0.2.1
+version: 0.3.0
 # The agent release this chart was written against. image.tag defaults to it
 # when left empty in values.yaml. It must match SKYPORTALAI_REF in the Dockerfile
 # and the image tag in manifests/deployment.yaml; CI checks all three agree.
