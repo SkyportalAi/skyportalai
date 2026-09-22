@@ -88,9 +88,10 @@ Image reference, shared by every workload in the chart.
 {{- end }}
 
 {{/*
-The Kubernetes roles ship in agent 0.3.0. Refuse to install them on an older image
-rather than let the pods crash loop on an unknown role. A tag that is not a plain
-version (a digest-style or custom tag) is trusted as-is.
+The Kubernetes roles ship in agent 0.3.0. An older agent ignores
+SKYPORTALAI_AGENT_ROLE and runs the experiment scanners instead, so the install
+would look healthy and send no cluster data. Refuse it at install time. A tag that
+is not a plain version (a digest-style or custom tag) is trusted as-is.
 */}}
 {{- define "skyportalai-agent.requireKubernetesImage" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
