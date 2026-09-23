@@ -190,7 +190,8 @@ def test_removed_legacy_api_key_env_is_ignored(credential_path, monkeypatch):
     monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_legacy")
 
-    assert SkyportalClient("https://app.skyportal.ai").is_authenticated() is False
+    with pytest.warns(UserWarning, match="set SKYPORTALAI_API_KEY"):
+        assert SkyportalClient("https://app.skyportal.ai").is_authenticated() is False
 
 
 def test_removed_legacy_access_token_env_does_not_override_the_api_key(credential_path, monkeypatch):
@@ -198,9 +199,10 @@ def test_removed_legacy_access_token_env_does_not_override_the_api_key(credentia
     monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_canonical")
     monkeypatch.setenv("SKYPORTAL_ACCESS_TOKEN", "skt_legacy")
 
-    client = SkyportalClient("https://app.skyportal.ai")
-    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
-        assert client.servers() == []
+    with pytest.warns(UserWarning, match="set SKYPORTALAI_ACCESS_TOKEN"):
+        client = SkyportalClient("https://app.skyportal.ai")
+        with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
+            assert client.servers() == []
 
     request = call.call_args.args[0]
     assert request.get_header("Authorization") == "Bearer " + "sk_canonical"

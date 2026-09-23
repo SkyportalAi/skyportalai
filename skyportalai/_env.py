@@ -2,9 +2,11 @@
 
 Every setting is a ``SKYPORTALAI_*`` environment variable and configuration lives
 under ``~/.skyportalai``. The pre-0.2.0 ``SKYPORTAL_*`` names were removed in 0.3.0
-and are no longer read. A leftover ``~/.skyportal`` directory is still moved to
-``~/.skyportalai`` the first time it is needed, so a late upgrade keeps its
-credentials and history.
+and are no longer read, but one that is still set draws a warning naming its
+replacement: a leftover ``SKYPORTAL_BASE_URL`` would otherwise send a self-hosted
+user's credentials to the default host without a word. A leftover ``~/.skyportal``
+directory is still moved to ``~/.skyportalai`` the first time it is needed, so a
+late upgrade keeps its credentials and history.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 PREFIX = "SKYPORTALAI_"
+REMOVED_PREFIX = "SKYPORTAL_"
 
 CONFIG_DIR_NAME = ".skyportalai"
 LEGACY_CONFIG_DIR_NAME = ".skyportal"
@@ -29,6 +32,7 @@ def lookup(name: str, default: str | None = None) -> tuple[str | None, str | Non
     value = os.environ.get(name)
     if value is not None:
         return value, name
+    _warn_if_removed_name_set(os.environ, name)
     return default, None
 
 
@@ -43,7 +47,21 @@ def get_from(environ: Mapping[str, str], name: str, default: str | None = None) 
     The agent is configured from an injected environment mapping rather than
     :data:`os.environ`, so it cannot use :func:`get`.
     """
-    return environ.get(name, default)
+    value = environ.get(name)
+    if value is not None:
+        return value
+    _warn_if_removed_name_set(environ, name)
+    return default
+
+
+def _warn_if_removed_name_set(environ: Mapping[str, str], name: str) -> None:
+    removed = REMOVED_PREFIX + name[len(PREFIX) :] if name.startswith(PREFIX) else None
+    if removed and removed in environ:
+        warnings.warn(
+            f"{removed} was removed in 0.3.0 and is ignored; set {name} instead.",
+            UserWarning,
+            stacklevel=4,
+        )
 
 
 def config_dir() -> Path:

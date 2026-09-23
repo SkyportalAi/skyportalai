@@ -1,8 +1,8 @@
 """Environment resolution and the config directory.
 
 The pre-0.2.0 SKYPORTAL_* names were deprecated in 0.2.0 and removed in 0.3.0:
-they are no longer read, and nothing warns about them. A leftover ~/.skyportal
-directory is still moved into ~/.skyportalai.
+they are no longer read, and one still set draws a UserWarning naming its
+replacement. A leftover ~/.skyportal directory is still moved into ~/.skyportalai.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import warnings
 
+import pytest
 import yaml
 
 from skyportalai import _env
@@ -22,12 +22,30 @@ def test_canonical_name_is_used_when_set(monkeypatch):
     assert _env.get("SKYPORTALAI_API_KEY") == "new"
 
 
-def test_removed_legacy_name_is_ignored_silently(monkeypatch):
+def test_removed_legacy_name_is_ignored_with_a_warning(monkeypatch):
     monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
     monkeypatch.setenv("SKYPORTAL_API_KEY", "old")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    with pytest.warns(UserWarning, match="SKYPORTAL_API_KEY was removed in 0.3.0 and is ignored; set SKYPORTALAI_API_KEY"):
         assert _env.get("SKYPORTALAI_API_KEY") is None
+
+
+def test_a_leftover_base_url_warns_instead_of_silently_using_the_default_host(monkeypatch):
+    """A self-hosted user with the new key but the old URL would otherwise ship credentials to SaaS."""
+    from skyportalai import Skyportal
+    from skyportalai._client import DEFAULT_BASE_URL
+
+    monkeypatch.delenv("SKYPORTALAI_BASE_URL", raising=False)
+    monkeypatch.setenv("SKYPORTAL_BASE_URL", "https://skyportal.internal.example")
+    with pytest.warns(UserWarning, match="set SKYPORTALAI_BASE_URL"):
+        client = Skyportal(api_key="sk_x")
+    assert client.base_url == DEFAULT_BASE_URL.rstrip("/")
+
+
+def test_no_warning_when_the_canonical_name_is_set(monkeypatch, recwarn):
+    monkeypatch.setenv("SKYPORTALAI_API_KEY", "new")
+    monkeypatch.setenv("SKYPORTAL_API_KEY", "old")
+    assert _env.get("SKYPORTALAI_API_KEY") == "new"
+    assert not [w for w in recwarn if "SKYPORTAL_API_KEY" in str(w.message)]
 
 
 def test_default_is_returned_when_unset(monkeypatch):
@@ -47,8 +65,9 @@ def test_get_from_reads_an_injected_mapping():
     assert _env.get_from({"SKYPORTALAI_AGENT_TOKEN": "t"}, "SKYPORTALAI_AGENT_TOKEN") == "t"
 
 
-def test_get_from_ignores_the_removed_legacy_name():
-    assert _env.get_from({"SKYPORTAL_AGENT_TOKEN": "t"}, "SKYPORTALAI_AGENT_TOKEN") is None
+def test_get_from_ignores_the_removed_legacy_name_with_a_warning():
+    with pytest.warns(UserWarning, match="set SKYPORTALAI_AGENT_TOKEN"):
+        assert _env.get_from({"SKYPORTAL_AGENT_TOKEN": "t"}, "SKYPORTALAI_AGENT_TOKEN") is None
 
 
 def test_config_dir_prefers_the_new_directory(tmp_path, monkeypatch):
@@ -84,11 +103,12 @@ def test_removed_legacy_config_path_override_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.delenv("SKYPORTALAI_CONFIG_PATH", raising=False)
     monkeypatch.setenv("SKYPORTAL_CONFIG_PATH", str(tmp_path / "custom.yaml"))
-    assert _env.config_path("config.yaml", "SKYPORTALAI_CONFIG_PATH") == tmp_path / ".skyportalai" / "config.yaml"
+    with pytest.warns(UserWarning, match="SKYPORTAL_CONFIG_PATH"):
+        assert _env.config_path("config.yaml", "SKYPORTALAI_CONFIG_PATH") == tmp_path / ".skyportalai" / "config.yaml"
 
 
-def test_console_script_ignores_removed_legacy_variables(tmp_path):
-    """End to end through the real entry point: no value taken, no notice printed."""
+def test_console_script_ignores_and_names_removed_legacy_variables(tmp_path):
+    """End to end through the real entry point: the value is not used, and the user is told."""
     environment = {
         **os.environ,
         "HOME": str(tmp_path),
@@ -104,7 +124,7 @@ def test_console_script_ignores_removed_legacy_variables(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "SKYPORTAL_CONFIG_PATH" not in result.stderr
+    assert "SKYPORTAL_CONFIG_PATH was removed in 0.3.0" in result.stderr
     assert "legacy.yaml" not in result.stdout
 
 
@@ -118,7 +138,8 @@ def test_configure_ignores_the_removed_legacy_url_env(tmp_path, monkeypatch):
     monkeypatch.delenv("SKYPORTALAI_URL", raising=False)
     monkeypatch.setenv("SKYPORTAL_URL", "https://legacy.example")
 
-    assert CliRunner().invoke(app, ["configure"]).exit_code == 0
+    with pytest.warns(UserWarning, match="set SKYPORTALAI_URL"):
+        assert CliRunner().invoke(app, ["configure"]).exit_code == 0
     saved = yaml.safe_load((tmp_path / ".skyportalai" / "config.yaml").read_text())
     assert saved["portal"]["base_url"] == DEFAULT_BASE_URL
 
