@@ -44,11 +44,20 @@ def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> di
     """Run argv and return {argv, exit_code, stdout, stderr}; refuses anything not read-only."""
     if not is_readonly(argv):
         return _result(argv, EXIT_REFUSED, "", "refused: the SkyPortal agent only runs read-only kubectl")
+    return run_process(argv, timeout)
+
+
+def run_process(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """Run a fixed argv (no shell, no allowlist: callers pass constants) and return its raw output."""
     try:
-        # argv, never a shell string: nothing in it is interpreted by a shell.
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        # argv, never a shell string: nothing in it is interpreted by a shell. Logs are
+        # the container's raw bytes; one invalid UTF-8 byte in a crash log must not fail
+        # the cycle, or the plan holding that command never changes.
+        done = subprocess.run(
+            argv, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, check=False
+        )
     except FileNotFoundError:
-        return _result(argv, EXIT_NOT_FOUND, "", "kubectl is not installed in the agent image")
+        return _result(argv, EXIT_NOT_FOUND, "", f"{argv[0]} is not installed in the agent image")
     except subprocess.TimeoutExpired:
         return _result(argv, EXIT_TIMEOUT, "", f"kubectl did not finish within {timeout:g}s")
     if len(done.stdout or "") > MAX_OUTPUT_CHARS:
@@ -60,7 +69,7 @@ def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> di
 
 def _result(argv: list[str], exit_code: int, stdout: str, stderr: str) -> dict:
     return {
-        "argv": list(argv),
+        "argv": list(argv) if isinstance(argv, list) else [],
         "exit_code": exit_code,
         "stdout": stdout or "",
         "stderr": (stderr or "")[:MAX_OUTPUT_CHARS],

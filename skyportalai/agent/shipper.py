@@ -50,6 +50,9 @@ class _PostOutcome(Enum):
     DELIVERED = "delivered"  # 2xx — chunk accepted, clear the batch
     RETRYABLE = "retryable"  # 5xx / 408 / 429 / network error — worth another try
     PERMANENT = "permanent"  # other 4xx — resending cannot help, stop now
+    # 401 / 403 — the token was refused, not the body. Resending now can't help either,
+    # but a fixed or reissued token can, so the upload must be kept, never dropped.
+    REJECTED_TOKEN = "rejected_token"
 
 
 @dataclass(frozen=True)
@@ -119,8 +122,8 @@ class Shipper:
             self.last_outcome = outcome
             if outcome is _PostOutcome.DELIVERED:
                 return True
-            if outcome is _PostOutcome.PERMANENT:
-                return False  # permanent client error: retrying cannot help
+            if outcome in (_PostOutcome.PERMANENT, _PostOutcome.REJECTED_TOKEN):
+                return False  # a client error: retrying in this cycle cannot help
             if attempt < self.max_attempts - 1:
                 delay = self.backoff[min(attempt, len(self.backoff) - 1)] if self.backoff else 0
                 self._sleep(delay)
@@ -159,6 +162,9 @@ class Shipper:
             if status in RETRYABLE_STATUS_CODES or 500 <= status < 600:
                 logger.warning("Ingest POST rejected (retryable): HTTP %d", status)
                 return _PostOutcome.RETRYABLE
+            if status in (401, 403):
+                logger.warning("Ingest POST refused the agent token: HTTP %d; keeping the upload", status)
+                return _PostOutcome.REJECTED_TOKEN
             if 400 <= status < 500:
                 logger.warning(
                     "Ingest POST rejected (permanent client error): HTTP %d; not retrying", status

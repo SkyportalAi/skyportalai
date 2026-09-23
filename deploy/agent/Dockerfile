@@ -40,7 +40,7 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir --upgrade pip
 
-# `.[agent]` pulls in the daemon only deps (wandb, psutil, nvidia-ml-py) on top of the SDK.
+# `.[agent]` pulls in the daemon only deps (pyyaml + wandb) on top of the SDK.
 # The optional token is a BuildKit secret: it is mounted for this RUN only and
 # never written to an image layer. Without one the clone is anonymous, which is
 # all a public repository needs.

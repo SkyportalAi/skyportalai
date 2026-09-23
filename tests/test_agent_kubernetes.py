@@ -7,11 +7,14 @@ shipper as the experiment scanners. The agent enforces read-only itself.
 
 from __future__ import annotations
 
+import errno
 import gzip
 import json
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -119,6 +122,15 @@ class TestKubectl:
         monkeypatch.setattr(subprocess, "run", slow)
         assert kubectl.run_kubectl(GET_PODS, timeout=1)["exit_code"] == kubectl.EXIT_TIMEOUT
 
+    def test_invalid_utf8_in_output_is_replaced_not_raised(self, monkeypatch):
+        # Through the real decoder: a crash log's stray byte must not fail the cycle.
+        real_run = subprocess.run
+        emit = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n\\xff\\xfe crash\\n')"]
+        monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: real_run(emit, **kwargs))
+        result = kubectl.run_kubectl(["kubectl", "logs", "-n", "ml", "trainer-0", "--previous"])
+        assert result["exit_code"] == 0
+        assert result["stdout"].startswith("ok\n") and "\ufffd" in result["stdout"]
+
 
 class TestClusterRole:
     def test_a_new_agent_uploads_no_commands_and_asks_again_soon(self):
@@ -147,25 +159,61 @@ class TestClusterRole:
         assert role.plan == [GET_PODS]
 
 
+PROC_STAT = "cpu  2255 34 2290 22625563 6290 127 456 0 0 0\ncpu0 1132 34 1441 11311718 3675 127 438 0 0 0\nctxt 1990473\n"
+MEMINFO = "MemTotal:       16303428 kB\nMemFree:          227532 kB\nMemAvailable:    8742056 kB\n"
+
+
+def _fake_host_proc(root: Path) -> Path:
+    (root / "1" / "net").mkdir(parents=True)
+    (root / "stat").write_text(PROC_STAT)
+    (root / "meminfo").write_text(MEMINFO)
+    (root / "loadavg").write_text("3.21 2.87 2.40 5/1234 99887\n")
+    (root / "1" / "net" / "dev").write_text("eth0: 8812312 1234 0 0 0 0 0 0 99123 456 0 0 0 0 0 0\n")
+    # Per-process data must never be read, whatever else is under /proc.
+    (root / "1" / "environ").write_text("DB_PASSWORD=hunter2\0")
+    return root
+
+
 class TestNodeRole:
-    def test_reports_host_metrics_and_gpus(self, monkeypatch, tmp_path):
-        import psutil
+    def _role(self, tmp_path, **kwargs):
+        smi = {"argv": ["nvidia-smi", "-q", "-x"], "exit_code": 0, "stdout": "<nvidia_smi_log/>", "stderr": ""}
+        return NodeRole("gpu-node-1", host_proc=_fake_host_proc(tmp_path / "proc"), run=lambda argv: smi, **kwargs)
 
-        monkeypatch.setattr(psutil, "cpu_percent", lambda interval: 41.5)
-        role = NodeRole("gpu-node-1", disk_path=tmp_path,
-                        read_gpus=lambda: [{"index": 0, "name": "NVIDIA H100", "utilization_pct": 93}])
-        node = role.collect()["node"]
-        assert node["name"] == "gpu-node-1"
-        assert node["cpu_usage_percent"] == 41.5
-        assert node["memory_total_bytes"] > 0 and node["disk_total_bytes"] > 0
-        assert node["gpus"][0]["name"] == "NVIDIA H100"
+    def test_sends_the_proc_files_byte_for_byte(self, tmp_path):
+        files = self._role(tmp_path).collect()["node"]["files"]
+        assert files["/proc/stat"] == PROC_STAT
+        assert files["/proc/meminfo"] == MEMINFO
+        assert files["/proc/1/net/dev"].startswith("eth0:")
 
-    def test_a_cpu_node_reports_no_gpus(self, monkeypatch):
-        import psutil
+    def test_never_reads_per_process_data(self, tmp_path):
+        node = self._role(tmp_path).collect()["node"]
+        assert "/proc/1/environ" not in node["files"]
+        assert "hunter2" not in json.dumps(node)
 
-        monkeypatch.setattr(psutil, "cpu_percent", lambda interval: 5.0)
-        node = NodeRole("cpu-node", read_gpus=lambda: []).collect()["node"]
-        assert node["gpus"] == [] and node["disk_total_bytes"] is None
+    def test_names_what_it_could_not_read(self, tmp_path):
+        # Absent here, like /proc/pressure on a kernel older than 4.20.
+        unreadable = self._role(tmp_path).collect()["node"]["unreadable"]
+        assert unreadable["/proc/pressure/cpu"] == "ENOENT"
+        assert "/proc/stat" not in unreadable
+
+    def test_sends_the_whole_statvfs_of_the_disk(self, tmp_path):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        statvfs = self._role(tmp_path, disk_path=spool).collect()["node"]["statvfs"][str(spool)]
+        assert {"f_blocks", "f_bfree", "f_bavail", "f_frsize", "f_files", "f_ffree"} <= statvfs.keys()
+
+    def test_sends_nvidia_smis_full_report(self, tmp_path):
+        (command,) = self._role(tmp_path).collect()["node"]["commands"]
+        assert command["argv"] == ["nvidia-smi", "-q", "-x"] and command["stdout"] == "<nvidia_smi_log/>"
+
+    def test_a_node_without_nvidia_smi_reports_it_missing(self):
+        result = kubectl.run_process(["skyportal-no-such-binary", "-q"])
+        assert result["exit_code"] == kubectl.EXIT_NOT_FOUND
+        assert "skyportal-no-such-binary is not installed" in result["stderr"]
+
+    def test_derives_nothing(self, tmp_path):
+        node = self._role(tmp_path).collect()["node"]
+        assert set(node) == {"name", "files", "statvfs", "commands", "unreadable"}
 
     def test_requires_a_node_name(self):
         with pytest.raises(ValueError):
@@ -216,6 +264,61 @@ class TestKubernetesRunner:
         runner.run_once()
         assert len(SpoolQueue(tmp_path)) == 1
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_token_keeps_every_queued_upload(self, tmp_path, status):
+        # 401/403 are about the token (or a WAF in front of the API), not the upload: a
+        # fixed token must still be able to deliver the backlog.
+        session = FakeSession([FakeResponse(status)] * 5)
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.queue.enqueue([{"buffered": True}])
+        runner.run_once()
+        assert len(SpoolQueue(tmp_path)) == 2
+        assert len(session.calls) == 1
+
+    def test_a_failed_collection_still_ships_the_backlog(self, tmp_path):
+        session = FakeSession([FakeResponse(202, {})])
+        runner = self._runner(tmp_path, session, FailingRole())
+        runner.queue.enqueue([{"buffered": True}])
+        runner.run_once()
+        assert SpoolQueue(tmp_path).is_empty()
+        assert _sent_body(session.calls[0]) == {"buffered": True}
+
+    def test_a_full_spool_volume_still_ships_the_backlog(self, tmp_path, monkeypatch):
+        session = FakeSession([FakeResponse(202, {})])
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.queue.enqueue([{"buffered": True}])
+
+        def disk_full(runs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(runner.queue, "enqueue", disk_full)
+        runner.run_once()
+        assert SpoolQueue(tmp_path).is_empty()
+
+    def test_a_failing_backlog_is_read_one_upload_at_a_time(self, tmp_path, monkeypatch):
+        # A long outage's backlog must not be loaded whole: the pod's memory limit is small.
+        runner = self._runner(tmp_path, FakeSession([FakeResponse(503)] * 3), NodeRoleStub())
+        for n in range(3):
+            runner.queue.enqueue([{"n": n}])
+        reads = []
+        original = SpoolQueue._read_batch
+        monkeypatch.setattr(SpoolQueue, "_read_batch", lambda self, path: reads.append(path) or original(self, path))
+        runner.shipper.ship(runner.queue)
+        assert len(reads) == 1
+
+
+class FailingRole:
+    kind = "cluster"
+
+    def collect(self):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    def apply_reply(self, reply):
+        pass
+
+    def next_delay(self, interval):
+        return interval
+
 
 class NodeRoleStub:
     kind = "node"
@@ -257,6 +360,34 @@ class TestCommandPoller:
         self._poller(session, run=kubectl.run_kubectl).poll_once()
         assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
 
+    def test_a_lease_without_argv_is_answered_refused(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("process started"))
+        session = FakeSession([FakeResponse(200, {"id": 9}), FakeResponse(200, {})])
+        assert self._poller(session, run=kubectl.run_kubectl).poll_once() is True
+        assert session.calls[1]["url"] == BASE_URL + "/agent/api/kubernetes/commands/9/result/"
+        assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
+
+    @pytest.mark.parametrize("body", [{"argv": GET_PODS}, {"id": "x", "argv": GET_PODS}, {}])
+    def test_a_lease_without_a_usable_id_is_ignored(self, body):
+        session = FakeSession([FakeResponse(200, body)])
+        assert self._poller(session, run=lambda argv: pytest.fail("ran")).poll_once() is False
+        assert len(session.calls) == 1
+
+    def test_the_poller_survives_a_command_that_raises(self):
+        # /healthz can't see this thread; if it died, chat's kubectl would time out for good.
+        def boom(argv):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        session = FakeSession([FakeResponse(200, {"id": 1, "argv": GET_PODS})] + [FakeResponse(204)] * 50)
+        poller = self._poller(session, run=boom)
+        thread = threading.Thread(target=poller.run_forever, daemon=True)
+        thread.start()
+        thread.join(0.3)
+        alive = thread.is_alive()
+        poller._stop.set()
+        thread.join(5)
+        assert alive
+
 
 class TestConfigAndEntrypoint:
     def test_role_defaults_to_the_experiment_scanners(self):
@@ -280,4 +411,30 @@ class TestConfigAndEntrypoint:
         })
         runner = agent_main.build_kubernetes_runner(config)
         assert isinstance(runner.role, expected)
+        assert runner.queue.max_bytes == 512 * 1024 * 1024
         assert runner.shipper.url == "https://app.skyportal.ai/agent/api/kubernetes/ingest/"
+
+    @pytest.mark.parametrize("role", ["cluster", "node"])
+    def test_refuses_a_plain_http_base_url(self, tmp_path, role):
+        config = self._config(tmp_path, role, "http://skyportal.example")
+        with pytest.raises(SkyportalError, match="non-HTTPS"):
+            agent_main.build_kubernetes_runner(config)
+
+    def test_allows_plain_http_to_loopback(self, tmp_path):
+        config = self._config(tmp_path, "cluster", "http://127.0.0.1:8000")
+        assert agent_main.build_kubernetes_runner(config).shipper.url.startswith("http://127.0.0.1:8000/")
+
+    def test_allows_plain_http_when_explicitly_insecure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKYPORTALAI_ALLOW_INSECURE", "1")
+        config = self._config(tmp_path, "cluster", "http://skyportal.internal:8000")
+        with pytest.warns(UserWarning, match="ALLOW_INSECURE"):
+            agent_main.build_kubernetes_runner(config)
+
+    def _config(self, tmp_path, role, base_url):
+        return AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": role,
+            "SKYPORTALAI_AGENT_NODE_NAME": "n1",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+            "SKYPORTALAI_BASE_URL": base_url,
+        })

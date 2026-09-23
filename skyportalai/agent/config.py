@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_HEALTHZ_PORT = 8080
 DEFAULT_QUEUE_MAX_BATCHES = 1000
+# The Kubernetes roles' spool cap, well under the chart's default 1Gi volume. A
+# cluster upload is the raw kubectl output, ~14 KB per pod, so batches are large.
+DEFAULT_KUBERNETES_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_STATE_DIR = Path("/var/lib/skyportal-agent")
 
 ROLE_EXPERIMENTS = "experiments"
@@ -89,6 +92,7 @@ class AgentConfig:
     state_dir: Path = DEFAULT_STATE_DIR
     healthz_port: int = DEFAULT_HEALTHZ_PORT
     queue_max_batches: int = DEFAULT_QUEUE_MAX_BATCHES
+    queue_max_bytes: int = DEFAULT_KUBERNETES_QUEUE_MAX_BYTES
     # experiments: the W&B/MLflow scanners. cluster / node: the Kubernetes roles (#3566).
     role: str = ROLE_EXPERIMENTS
     node_name: str | None = None
@@ -177,6 +181,12 @@ class AgentConfig:
                 _get("SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES"),
                 DEFAULT_QUEUE_MAX_BATCHES,
                 name="SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES",
+                minimum=1,
+            ),
+            queue_max_bytes=_parse_int(
+                _get("SKYPORTALAI_AGENT_QUEUE_MAX_BYTES"),
+                DEFAULT_KUBERNETES_QUEUE_MAX_BYTES,
+                name="SKYPORTALAI_AGENT_QUEUE_MAX_BYTES",
                 minimum=1,
             ),
             role=role,
