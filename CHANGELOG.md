@@ -11,10 +11,15 @@ All notable changes to this project are documented here. This project follows
   deprecated in 0.2.0 and are now ignored: set the `SKYPORTALAI_*` name instead
   (for example `SKYPORTALAI_API_KEY`, `SKYPORTALAI_BASE_URL`,
   `SKYPORTALAI_AGENT_TOKEN`). An old name that is still set draws a warning naming
-  its replacement. Without the new name, a setting with a default uses it (a
-  leftover `SKYPORTAL_BASE_URL` points at `https://app.skyportal.ai`), and a
-  credential has none: the agent won't start without `SKYPORTALAI_AGENT_TOKEN`,
-  and the SDK and CLI are unauthenticated without `SKYPORTALAI_API_KEY`.
+  its replacement, and without the new name the setting uses its default. Two
+  exceptions:
+  - **A leftover `SKYPORTAL_BASE_URL` or `SKYPORTAL_URL` is an error** (SDK, CLI and
+    agent) until you set `SKYPORTALAI_BASE_URL` / `SKYPORTALAI_URL` or unset it. The
+    default would be `https://app.skyportal.ai`, and a self-hosted install would
+    send its credentials there.
+  - **Credentials have no default:** the agent won't start without
+    `SKYPORTALAI_AGENT_TOKEN`, and the SDK and CLI are unauthenticated without
+    `SKYPORTALAI_API_KEY`.
 - **The `skyportal` import package is removed.** Import from `skyportalai`. This
   also ends the import-name collision with the unrelated `skyportal` astronomy
   package on PyPI.

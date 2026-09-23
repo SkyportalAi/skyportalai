@@ -2,9 +2,11 @@
 
 Every setting is a ``SKYPORTALAI_*`` environment variable and configuration lives
 under ``~/.skyportalai``. The pre-0.2.0 ``SKYPORTAL_*`` names were removed in 0.3.0
-and are no longer read, but one that is still set draws a warning naming its
-replacement: a leftover ``SKYPORTAL_BASE_URL`` would otherwise send a self-hosted
-user's credentials to the default host without a word. A leftover ``~/.skyportal``
+and are no longer read. One that is still set draws a warning naming its
+replacement, except for the settings that choose which host receives credentials:
+there a leftover ``SKYPORTAL_BASE_URL`` with no ``SKYPORTALAI_BASE_URL`` is an error,
+because falling back to the default would send a self-hosted install's key to the
+SaaS host. A leftover ``~/.skyportal``
 directory is still moved to ``~/.skyportalai`` the first time it is needed, so a
 late upgrade keeps its credentials and history.
 """
@@ -16,8 +18,13 @@ import warnings
 from collections.abc import Mapping
 from pathlib import Path
 
+from ._exceptions import SkyportalError
+
 PREFIX = "SKYPORTALAI_"
 REMOVED_PREFIX = "SKYPORTAL_"
+# Settings that decide which host receives the credentials. For these a removed name
+# is refused rather than ignored: the default is somebody else's host.
+DESTINATION_SETTINGS = frozenset({"SKYPORTALAI_BASE_URL", "SKYPORTALAI_URL"})
 
 CONFIG_DIR_NAME = ".skyportalai"
 LEGACY_CONFIG_DIR_NAME = ".skyportal"
@@ -32,7 +39,7 @@ def lookup(name: str, default: str | None = None) -> tuple[str | None, str | Non
     value = os.environ.get(name)
     if value is not None:
         return value, name
-    _warn_if_removed_name_set(os.environ, name)
+    _check_removed_name(os.environ, name)
     return default, None
 
 
@@ -50,18 +57,21 @@ def get_from(environ: Mapping[str, str], name: str, default: str | None = None) 
     value = environ.get(name)
     if value is not None:
         return value
-    _warn_if_removed_name_set(environ, name)
+    _check_removed_name(environ, name)
     return default
 
 
-def _warn_if_removed_name_set(environ: Mapping[str, str], name: str) -> None:
+def _check_removed_name(environ: Mapping[str, str], name: str) -> None:
+    """Called when ``name`` is unset: flag its removed spelling if that is set instead."""
     removed = REMOVED_PREFIX + name[len(PREFIX) :] if name.startswith(PREFIX) else None
-    if removed and removed in environ:
-        warnings.warn(
-            f"{removed} was removed in 0.3.0 and is ignored; set {name} instead.",
-            UserWarning,
-            stacklevel=4,
+    if not removed or removed not in environ:
+        return
+    message = f"{removed} was removed in 0.3.0 and is ignored; set {name} instead."
+    if name in DESTINATION_SETTINGS:
+        raise SkyportalError(
+            f"{message} Refusing to fall back to the default host, which would then receive your credentials."
         )
+    warnings.warn(message, UserWarning, stacklevel=4)
 
 
 def config_dir() -> Path:
