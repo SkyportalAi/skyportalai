@@ -14,8 +14,8 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Secrets used to pull the image when your cluster cannot read the package
-# anonymously (see "Pulling the image" in deploy/agent/README.md), e.g.
+# The image is public, so this stays empty unless you mirror it into a registry
+# that needs credentials (see "Registry access" in deploy/agent/README.md), e.g.
 #   imagePullSecrets:
 #     - name: ghcr-pull
 imagePullSecrets: []
@@ -145,6 +145,51 @@ extraVolumeMounts: []
 # that port, or networkPolicy.enabled=false below; the default policy allows
 # DNS and outbound TCP 443 only.
 extraEnv: []
+
+# Kubernetes monitoring (#3566). Off by default: the chart then installs only the
+# experiment agent above. On, it adds two workloads from the same image:
+#   - a single "cluster" Deployment that reads pods, events, workloads and crash
+#     logs through a read-only ClusterRole and uploads kubectl's raw output;
+#   - a "node" DaemonSet, one pod per node, that reads the node's CPU, memory,
+#     disk, load and GPUs from the host every cycle.
+# Both only call out, over HTTPS, to config.baseUrl. The collection interval is set
+# by SkyPortal. Needs agent 0.3.0 or newer (image.tag).
+kubernetes:
+  enabled: false
+  # TCP ports the cluster pod may reach the API server on. kubernetes.default.svc
+  # is 443, but the control plane usually listens on 6443 and most CNIs apply the
+  # NetworkPolicy to that port. Check yours: kubectl get endpoints kubernetes -n default
+  apiServerPorts:
+    - 443
+    - 6443
+  cluster:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  node:
+    # Host directory for each node's upload spool. Its filesystem is also the disk
+    # the node reports.
+    spoolHostPath: /var/lib/skyportalai-agent
+    # Tolerate every taint, so the agent runs on every node, GPU nodes included.
+    # Narrow it (or set nodeSelector) to monitor a subset.
+    tolerations:
+      - operator: Exists
+    nodeSelector: {}
+    gpu:
+      # RuntimeClass that exposes the NVIDIA driver to a pod without a GPU request,
+      # usually "nvidia" with the GPU operator. Empty: no GPU metrics.
+      runtimeClassName: ""
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
 
 # Lock the pod down with a NetworkPolicy: deny all inbound, allow only DNS and
 # outbound HTTPS (so it can reach the ingest API). Disable if your cluster has

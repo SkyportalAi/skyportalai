@@ -54,6 +54,20 @@ RUN --mount=type=secret,id=github_token,required=false \
     pip install --no-cache-dir \
         "skyportalai[agent] @ git+https://${AUTH}github.com/SkyportalAi/skyportalai@${SKYPORTALAI_REF}"
 
+# kubectl for the Kubernetes roles (#3566). Pinned to the version skyportal-website's
+# workers run (KUBECTL_VERSION in its development/Dockerfile): the server parses
+# kubectl's table output, so the agent's kubectl and the server's must agree for
+# an agent-fed cluster to record the same rows as a kubeconfig one. Checked against
+# the published sha256 before it is used.
+ARG KUBECTL_VERSION=v1.35.6
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/kubectl
+
 # ---- runtime ----------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
@@ -83,6 +97,7 @@ RUN groupadd --gid 1000 skyportal \
     && chown -R skyportal:skyportal /var/lib/skyportal-agent
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/kubectl
 
 USER skyportal
 WORKDIR /home/skyportal

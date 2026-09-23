@@ -1,0 +1,40 @@
+{{- if and .Values.kubernetes.enabled .Values.networkPolicy.enabled }}
+# Same containment as the experiment agent's policy: nothing inbound, DNS and
+# outbound HTTPS out. The cluster role also needs the API server.
+{{- range $component := list "cluster" "node" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "skyportalai-agent.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "skyportalai-agent.componentLabels" (dict "root" $ "component" $component) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skyportalai-agent.componentSelectorLabels" (dict "root" $ "component" $component) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- if eq $component "cluster" }}
+    # kubernetes.default.svc:443 forwards to the control plane's own port, and
+    # most CNIs apply this policy after that translation, so 443 alone blocks the
+    # API server. Find yours with: kubectl get endpoints kubernetes -n default
+    - ports:
+        {{- range $.Values.kubernetes.apiServerPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

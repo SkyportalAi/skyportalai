@@ -1,0 +1,97 @@
+{{- if .Values.kubernetes.enabled }}
+{{- $component := dict "root" . "component" "cluster" }}
+{{- if .Values.persistence.enabled }}
+# The cluster role's spool: uploads buffered while SkyPortal is unreachable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-cluster
+  labels:
+    {{- include "skyportalai-agent.componentLabels" $component | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
+{{- end }}
+# Exactly one instance reads cluster-wide state: N copies would upload the same
+# pods and events N times. Recreate for the same reason as the experiment agent:
+# a single writer on a ReadWriteOnce spool.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-cluster
+  labels:
+    {{- include "skyportalai-agent.componentLabels" $component | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "skyportalai-agent.componentSelectorLabels" $component | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "skyportalai-agent.componentSelectorLabels" $component | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "skyportalai-agent.fullname" . }}-cluster
+      # kubectl in the pod authenticates with this token, bound to the read-only role.
+      automountServiceAccountToken: true
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ include "skyportalai-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: SKYPORTALAI_AGENT_ROLE
+              value: cluster
+            - name: SKYPORTALAI_AGENT_STATE_DIR
+              value: {{ .Values.config.stateDir | quote }}
+            {{- include "skyportalai-agent.kubernetesEnv" . | nindent 12 }}
+          ports:
+            - name: healthz
+              containerPort: {{ .Values.config.healthzPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.kubernetes.cluster.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.config.stateDir | quote }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "skyportalai-agent.fullname" . }}-cluster
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpDir.sizeLimit | quote }}
+{{- end }}

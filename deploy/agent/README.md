@@ -1,9 +1,21 @@
 # Deploying the SkyPortal observability agent
 
-The agent is a small daemon that scans local Weights & Biases and MLflow
-experiment stores and ships run metadata to your SkyPortal instance. This is the
-operator guide for running it on Kubernetes from the published Helm chart, or
-without Helm from the plain manifests in `manifests/`.
+The agent is a small daemon that runs in your cluster and reports to SkyPortal
+over outbound HTTPS. It does two jobs:
+
+- **Experiment runs:** scans Weights & Biases and MLflow stores and ships run
+  metadata. On by default.
+- **Kubernetes monitoring** (chart 0.3.0+, agent 0.3.0+): with
+  `kubernetes.enabled`, it reports the cluster's pods, events, workloads and crash
+  logs, plus every node's CPU, memory, disk, load and GPUs. See
+  [Kubernetes monitoring](#kubernetes-monitoring).
+
+Nothing connects in to your cluster, and SkyPortal never holds a kubeconfig: you
+install the chart once with your own access, and from then on the agent uses its
+own read-only ServiceAccount.
+
+This is the operator guide for running it on Kubernetes from the published Helm
+chart, or without Helm from the plain manifests in `manifests/`.
 
 Both artifacts are built and published by CI from this directory; maintainers
 cut releases as described in [RELEASING.md](RELEASING.md).
@@ -23,9 +35,8 @@ tag to pick.
 - `helm` 3.8 or newer for the chart (OCI registry support is on by default from
   3.8). The plain manifests need only `kubectl`.
 - An agent token from your SkyPortal instance (step 1).
-- GHCR read access for the private chart and image. Log Helm in before
-  installation and configure a Kubernetes registry pull secret (see
-  [Registry access](#registry-access)).
+- Nothing else: the chart and image are public, so no registry login or pull
+  secret is needed (see [Registry access](#registry-access) to mirror them).
 
 ## 1. Mint an agent token
 
@@ -56,14 +67,10 @@ but keep it out of git.
 
 ### Option A: Helm
 
-Complete [Registry access](#registry-access) first; the chart and image are
-private packages.
-
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
   --version 0.2.1 \
   --set token.existingSecret=skyportalai-agent-token \
-  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set config.baseUrl=https://skyportal.example.com
 ```
 
@@ -201,29 +208,96 @@ mounts one by default, so this means it was removed or a custom manifest omits
 it. `ImagePullBackOff` with `unauthorized` or `denied` means your cluster cannot
 read the package; see the next section.
 
+## Kubernetes monitoring
+
+Set `kubernetes.enabled=true` and the chart adds two workloads from the same image:
+
+| Workload | Runs | Reads | Access |
+|---|---|---|---|
+| `<release>-cluster` Deployment | 1 pod | pods, events, nodes, namespaces, deployments/statefulsets, crash logs of failing pods, `kubectl top` | a read-only ClusterRole: `get`/`list`/`watch`, no secrets, no writes |
+| `<release>-node` DaemonSet | 1 pod on every node | the node's CPU, memory, disk, load (host `/proc`, read only) and GPUs (NVML) | no Kubernetes API token at all |
+
+GPU utilisation comes from the node agent (NVML), so no DCGM exporter is needed.
+vLLM serving metrics are not collected through the agent yet.
+
+SkyPortal sets how often they collect (every 30 seconds). If SkyPortal is
+unreachable, uploads are buffered on disk and delivered in order when it returns.
+The cluster pod also runs read-only `kubectl` that you ask for in SkyPortal chat.
+The agent refuses any other command itself, whatever the server sends.
+
+### Before you install
+
+```bash
+# The port your API server listens on (often 6443). Add it to kubernetes.apiServerPorts.
+kubectl get endpoints kubernetes -n default
+# GPU clusters: the RuntimeClass that exposes the NVIDIA driver, usually "nvidia".
+kubectl get runtimeclass
+```
+
+- **Egress:** outbound TCP 443 to your SkyPortal host (`app.skyportal.ai`), plus
+  DNS. If you allowlist egress, allowlist the **hostname**: its IP addresses are
+  shared and change. Your nodes also pull the image from `ghcr.io` (with its blobs
+  served from `pkg-containers.githubusercontent.com`), unless you mirror it (see
+  [Registry access](#registry-access)).
+- **Pod Security:** the node DaemonSet mounts the host's `/proc` read only and
+  keeps its buffer in a host directory. The "baseline" and "restricted" Pod
+  Security Standards refuse host mounts, so label the namespace:
+
+  ```bash
+  kubectl create namespace skyportal
+  kubectl label namespace skyportal pod-security.kubernetes.io/enforce=privileged
+  ```
+
+  The cluster Deployment needs no host access.
+
+### Install
+
+Create the agent on the **Agents** page, using the cluster's name, and create the
+token Secret as in step 2 (in the `skyportal` namespace). Then:
+
+```yaml
+# skyportal-values.yaml
+token:
+  existingSecret: skyportalai-agent-token
+kubernetes:
+  enabled: true
+  apiServerPorts: [443, 6443]   # include the port found above
+  node:
+    gpu:
+      runtimeClassName: nvidia   # "" on a cluster without GPUs
+config:
+  clusterName: my-cluster
+  # No W&B or MLflow in this cluster? Turn the experiment scanners off.
+  enableWandb: false
+  enableMlflow: false
+```
+
+```bash
+helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
+  --version <chart version> -n skyportal -f skyportal-values.yaml
+```
+
+The chart refuses `kubernetes.enabled` on an agent image older than 0.3.0: an
+older agent would run and send nothing.
+
+### Verify
+
+```bash
+kubectl -n skyportal get pods -o wide   # one -node- pod per node, one -cluster- pod
+kubectl -n skyportal logs deploy/skyportalai-agent-cluster | head   # "role=cluster"
+```
+
+Within a minute the cluster shows as Connected in SkyPortal, with its pods and
+per-node metrics.
+
+The node DaemonSet tolerates every taint so that it reaches every node, GPU and
+control-plane nodes included. To monitor a subset, set
+`kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`.
+
 ## Registry access
 
-The chart and image are private packages in GitHub Container Registry. Use a
-GitHub account with access to both packages and a token with the
-`read:packages` scope. Log Helm in to pull the chart (enter the token at the
-password prompt):
-
-```bash
-helm registry login ghcr.io --username <github user>
-```
-
-Helm's login only covers the chart download; Kubernetes needs its own pull
-secret to download the image. Create it in the agent's namespace:
-
-```bash
-kubectl create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io \
-  --docker-username=<github user> \
-  --docker-password=<token with read:packages>
-```
-
-Helm: `--set imagePullSecrets[0].name=ghcr-pull`. Manifests: uncomment
-`imagePullSecrets` in `manifests/deployment.yaml`.
+The chart and image are public in GitHub Container Registry: `helm install` and
+the image pull need no login and no pull secret.
 
 To serve the image from your own registry instead (air gapped clusters, or a
 registry your nodes already trust), mirror it and point the chart at the copy:
@@ -234,6 +308,9 @@ docker tag ghcr.io/skyportalai/skyportalai-agent:0.2.2 registry.example.com/skyp
 docker push registry.example.com/skyportalai-agent:0.2.2
 helm install ... --set image.repository=registry.example.com/skyportalai-agent
 ```
+
+If your mirror needs credentials, create a `docker-registry` Secret in the agent's
+namespace and pass it with `--set imagePullSecrets[0].name=<secret>`.
 
 Building the image from source is a maintainer task; see
 [RELEASING.md](RELEASING.md).
@@ -297,6 +374,7 @@ Every setting maps onto an environment variable the agent reads at startup
 | `SKYPORTALAI_AGENT_CLUSTER_NAME` | `config.clusterName` | none | label shipped runs |
 | `SKYPORTALAI_AGENT_STATE_DIR` | `config.stateDir` | `/var/lib/skyportal-agent` | spool and catalog location |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `config.queueMaxBatches` | `1000` | cap on spooled batches while the API is unreachable |
+| `SKYPORTALAI_AGENT_QUEUE_MAX_BYTES` | `extraEnv` | `536870912` (512 MiB) | Kubernetes roles only: cap on the spool's size on disk; the oldest uploads are dropped first. Keep it below the spool volume's size |
 | `SKYPORTALAI_AGENT_HEALTHZ_PORT` | `config.healthzPort` | `8080` | liveness port |
 
 The state directory keeps its pre-rename path on purpose: it is the agent's own

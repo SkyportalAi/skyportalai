@@ -45,6 +45,7 @@ Use this order for the handover:
    migration, authenticated package metadata requests returned HTTP 403, so
    the grant could not be verified and must be confirmed by a package admin.
 3. Keep both packages **private**, with their current explicit access rules.
+   (Superseded 2026-09-22: both are now public. See [Package visibility](#package-visibility).)
    Do not enable automatic inheritance of access from this public repository
    or change package visibility as part of the migration.
 4. Review package source/repository links separately from Actions access.
@@ -112,9 +113,7 @@ until a separately requested rebuild; the chart can use the existing image.
 
    Until this job finishes (a few minutes), the just published chart points at
    an image tag that does not exist yet, so tag right after merging.
-5. Log in to GHCR with an account that has package read access, then verify
-   the published references (see the operator README for Helm login and the
-   Kubernetes image pull secret):
+5. Verify the published references (no login needed; the packages are public):
 
    ```bash
    helm show chart oci://ghcr.io/skyportalai/charts/skyportalai-agent --version <chart version>
@@ -135,12 +134,12 @@ digest; anyone who needs immutability should pin the digest, not the tag.
 
 ## Package visibility
 
-Both existing GHCR packages remain private. Operators need an account with
-package access and a token with `read:packages`, as described in the README.
-Package visibility, repository linking, inherited access, and Actions write
-access are separate settings; this migration only moves build ownership.
-Do not make either package public or enable inherited access without a
-separate decision from the package owner.
+Both GHCR packages are **public** (changed 2026-09-22, #3566): the image and chart
+are built from this public, MIT-licensed repository and contain nothing that isn't
+already published here and on PyPI, so private packages only added a registry login
+and a pull secret to every customer install. Operators need no GitHub account.
+Package visibility, repository linking, inherited access, and Actions write access
+are still separate settings; keep inherited access disabled.
 
 ## Clean install checklist
 
@@ -161,7 +160,7 @@ Start from a cluster with no SkyPortal state and no clone of this repository.
    your `config.baseUrl`. Expected: the command returns, and `helm status`
    shows the release deployed.
 4. `kubectl rollout status deploy/skyportalai-agent` completes. The pod pulls
-   the private image using its configured pull secret and
+   the image with no pull secret and
    its logs show `skyportalai-agent started`.
 5. The `/healthz` exec from README step 4 returns `{"status": "ok"}`, and after
    two minutes the pod still shows `0` restarts.

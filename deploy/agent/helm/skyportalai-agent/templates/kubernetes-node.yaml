@@ -1,0 +1,129 @@
+{{- if .Values.kubernetes.enabled }}
+{{- $component := dict "root" . "component" "node" }}
+# One pod per node, always on: CPU, memory, disk, load and GPUs every cycle.
+#
+# Host access, all read only or confined to the agent's own directory:
+#   - the host's /proc, read only, for psutil;
+#   - a hostPath spool under /var/lib (a ReadWriteOnce claim can't be shared by N
+#     nodes); its filesystem is also the disk the node reports;
+#   - GPU visibility for NVML via kubernetes.node.gpu.runtimeClassName, on GPU
+#     nodes only. No nvidia.com/gpu request, which would take a GPU from workloads.
+# hostPath volumes are refused by the "baseline" and "restricted" Pod Security
+# Standards, so this namespace must allow them (see deploy/agent/README.md).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "skyportalai-agent.fullname" . }}-node
+  labels:
+    {{- include "skyportalai-agent.componentLabels" $component | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "skyportalai-agent.componentSelectorLabels" $component | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "skyportalai-agent.componentSelectorLabels" $component | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "skyportalai-agent.serviceAccountName" . }}
+      # The node role never calls the Kubernetes API, so it gets no token at all.
+      automountServiceAccountToken: false
+      {{- with .Values.kubernetes.node.gpu.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        # A hostPath directory is created root-owned; hand it to the agent's uid
+        # so the main container can run as non-root. Runs once per pod start.
+        - name: spool-owner
+          image: {{ include "skyportalai-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "chown 1000:1000 /spool"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN]
+          volumeMounts:
+            - name: spool
+              mountPath: /spool
+      containers:
+        - name: agent
+          image: {{ include "skyportalai-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: SKYPORTALAI_AGENT_ROLE
+              value: node
+            - name: SKYPORTALAI_AGENT_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SKYPORTALAI_AGENT_HOST_PROC
+              value: /host/proc
+            - name: SKYPORTALAI_AGENT_STATE_DIR
+              value: /var/lib/skyportalai-agent
+            {{- if .Values.kubernetes.node.gpu.runtimeClassName }}
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: utility
+            {{- end }}
+            {{- include "skyportalai-agent.kubernetesEnv" . | nindent 12 }}
+          ports:
+            - name: healthz
+              containerPort: {{ .Values.config.healthzPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.kubernetes.node.resources | nindent 12 }}
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: spool
+              mountPath: /var/lib/skyportalai-agent
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: spool
+          hostPath:
+            path: {{ .Values.kubernetes.node.spoolHostPath | quote }}
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpDir.sizeLimit | quote }}
+      {{- with .Values.kubernetes.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.kubernetes.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
