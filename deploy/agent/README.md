@@ -47,9 +47,11 @@ time, so copy it then. The Django admin works too.
 
 ## 2. Create the token Secret
 
-The chart and the manifests both read the token from an existing Secret rather
-than taking it as a plain value, so it never lands in your Helm release or a
-committed file. Create it imperatively, in the namespace you will install into:
+For production, keep the token in a Secret you create yourself, so it never
+lands in your Helm release or a committed file. (For a quick Helm install you
+can skip this step and pass the token as `token.value` instead; see
+[Option A](#option-a-helm).) Create it imperatively, in the namespace you will
+install into:
 
 ```bash
 kubectl create secret generic skyportalai-agent-token \
@@ -69,10 +71,27 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.1 \
+  --version 0.3.2 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
+
+For a quick install without step 2, pass the token itself and the chart
+creates the Secret:
+
+```bash
+read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
+helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
+  --version 0.3.2 \
+  --set-string token.value="$AGT"
+unset AGT
+```
+
+The token is then stored in the release's values (`helm get values` shows it),
+so prefer `token.existingSecret` for production and never put `token.value` in a
+committed values file. If both are set, `token.existingSecret` wins and
+`token.value` is ignored. Changing `token.value` on `helm upgrade` restarts the
+agent pods so they pick up the new token.
 
 `helm show chart oci://ghcr.io/skyportalai/charts/skyportalai-agent` prints the
 newest chart version and the agent release (`appVersion`) it installs;
@@ -80,8 +99,8 @@ newest chart version and the agent release (`appVersion`) it installs;
 explanation. Pin `--version` so an upgrade is a decision rather than a side
 effect of reinstalling.
 
-`token.existingSecret` is required: `helm install` stops with a validation error
-before anything reaches the cluster if it is unset. Leave `config.baseUrl` off
+A token is required: `helm install` stops with an error before anything
+reaches the cluster if neither `token.existingSecret` nor `token.value` is set. Leave `config.baseUrl` off
 to default to `https://app.skyportal.ai`. Every value is checked against the
 chart's `values.schema.json`, so a misspelled key or a value of the wrong type
 is rejected up front rather than rendered into a broken Deployment.
@@ -277,6 +296,10 @@ helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agen
   --version <chart version> -n skyportal -f skyportal-values.yaml
 ```
 
+To skip creating the Secret, drop `token.existingSecret` from the file and add
+`--set-string token.value="$AGT"` to the command (see [Option A](#option-a-helm)).
+The namespace label above is still needed.
+
 The chart refuses `kubernetes.enabled` on an agent image older than 0.3.0: an
 older agent would run and send nothing.
 
@@ -362,7 +385,7 @@ Every setting maps onto an environment variable the agent reads at startup
 
 | Env var | Helm value | Default | Notes |
 |---|---|---|---|
-| `SKYPORTALAI_AGENT_TOKEN` | `token.existingSecret` (Secret) | required | agent exits at startup if unset |
+| `SKYPORTALAI_AGENT_TOKEN` | `token.existingSecret` (Secret, recommended) or `token.value` (chart creates the Secret) | required | agent exits at startup if unset; `existingSecret` wins if both are set |
 | `SKYPORTALAI_BASE_URL` | `config.baseUrl` | `https://app.skyportal.ai` | SkyPortal API root |
 | `SKYPORTALAI_AGENT_INTERVAL_SECONDS` | `config.intervalSeconds` | `60` | scan and ship cadence |
 | `SKYPORTALAI_AGENT_ENABLE_WANDB` | `config.enableWandb` | `true` | toggle the W&B scanner |

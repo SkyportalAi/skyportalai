@@ -15,6 +15,18 @@ Verify the liveness endpoint from inside the pod:
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "skyportalai-agent.fullname" . }} -- \
     python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{{ .Values.config.healthzPort }}/healthz').read().decode())"
 
+{{- if include "skyportalai-agent.createsTokenSecret" . }}
+
+NOTE: the agent token was passed as token.value, so the chart created the
+Secret "{{ include "skyportalai-agent.tokenSecretName" . }}" and the token is stored in this release's
+values (helm get values shows it). For production or GitOps, create the Secret
+yourself and set token.existingSecret instead.
+{{- else if and .Values.token.existingSecret .Values.token.value }}
+
+NOTE: both token.existingSecret and token.value are set. The agent reads the
+token from the Secret "{{ .Values.token.existingSecret }}"; token.value is ignored.
+{{- end }}
+
 {{- if not .Values.persistence.enabled }}
 
 WARNING: persistence is disabled. The spool queue and run catalog live in an

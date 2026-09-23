@@ -101,13 +101,48 @@ is not a plain version (a digest-style or custom tag) is trusted as-is.
 {{- end }}
 
 {{/*
+True when the chart creates the token Secret itself: token.value is set and no
+existingSecret overrides it (existingSecret wins, as in the Datadog chart).
+*/}}
+{{- define "skyportalai-agent.createsTokenSecret" -}}
+{{- if and .Values.token.value (not .Values.token.existingSecret) -}}true{{- end -}}
+{{- end }}
+
+{{/*
+The Secret every workload reads the token from. The one place that refuses an
+install with no token.
+*/}}
+{{- define "skyportalai-agent.tokenSecretName" -}}
+{{- if .Values.token.existingSecret -}}
+{{ .Values.token.existingSecret }}
+{{- else if .Values.token.value -}}
+{{ include "skyportalai-agent.fullname" . }}-token
+{{- else -}}
+{{ fail "Set the agent token: --set token.existingSecret=<secret name> (recommended), or --set-string token.value=<agt_ token> for a quick install. See https://github.com/SkyportalAi/skyportalai/blob/main/deploy/agent/README.md" }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Pod template annotation that rolls the pods when a chart-managed token changes.
+The token is read from env at startup, so without it `helm upgrade` with a new
+token.value would update the Secret and leave the pods on the old token. Hashes
+the rendered Secret, the pattern in Helm's "Automatically Roll Deployments" and
+the Datadog chart's checksum/api_key.
+*/}}
+{{- define "skyportalai-agent.tokenChecksumAnnotations" -}}
+{{- if include "skyportalai-agent.createsTokenSecret" . -}}
+checksum/token: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+{{- end -}}
+{{- end }}
+
+{{/*
 Env shared by the Kubernetes roles: the token and the API root.
 */}}
 {{- define "skyportalai-agent.kubernetesEnv" -}}
 - name: SKYPORTALAI_AGENT_TOKEN
   valueFrom:
     secretKeyRef:
-      name: {{ required "token.existingSecret is required" .Values.token.existingSecret }}
+      name: {{ include "skyportalai-agent.tokenSecretName" . }}
       key: {{ .Values.token.secretKey }}
 {{- with .Values.config.baseUrl }}
 - name: SKYPORTALAI_BASE_URL
