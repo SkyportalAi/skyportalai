@@ -3,9 +3,35 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.0
+
+### Breaking
+
+- **The pre-0.2.0 `SKYPORTAL_*` environment variables are removed.** They were
+  deprecated in 0.2.0 and are now ignored, with no warning: set the
+  `SKYPORTALAI_*` name instead (for example `SKYPORTALAI_API_KEY`,
+  `SKYPORTALAI_BASE_URL`, `SKYPORTALAI_AGENT_TOKEN`). A deployment still using an
+  old name falls back to the default for that setting.
+- **The `skyportal` import package is removed.** Import from `skyportalai`. This
+  also ends the import-name collision with the unrelated `skyportal` astronomy
+  package on PyPI.
 
 ### Added
+
+- **The agent monitors Kubernetes from inside the cluster.** Two new agent roles,
+  selected by `SKYPORTALAI_AGENT_ROLE` (default `experiments`, the W&B/MLflow
+  scanners, unchanged):
+  - `cluster` runs the read-only `kubectl` reads SkyPortal asks for, using a
+    read-only ServiceAccount, and uploads the raw output. It also runs the
+    read-only `kubectl` you ask for in SkyPortal chat. It refuses any other
+    command itself, whatever the server sends.
+  - `node` (a DaemonSet pod per node) reports the node's CPU, memory, disk, load
+    and GPUs from the host's `/proc` and NVML, with no Kubernetes API access.
+
+  Both only call out to SkyPortal over HTTPS, and buffer on disk while it is
+  unreachable. The `agent` extra adds `psutil` and `nvidia-ml-py`. Deploy with
+  the Helm chart's `kubernetes.enabled` (chart 0.3.0 and later); see
+  `deploy/agent/README.md`.
 
 - **`/upload <path>` attaches a file to the chat.** Logs, CSV, JSON, YAML and
   images, up to 10 MB each. Ask about the file by name afterwards; the agent

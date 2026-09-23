@@ -184,36 +184,26 @@ def test_api_key_env_is_used_for_authentication(credential_path, monkeypatch):
     assert request.get_header("Authorization") == "Bearer " + "sk_env_alias"
 
 
-def test_legacy_api_key_env_still_authenticates(credential_path, monkeypatch):
-    """Pre-0.2.0 SKYPORTAL_API_KEY keeps working through the real client."""
+def test_removed_legacy_api_key_env_is_ignored(credential_path, monkeypatch):
+    """SKYPORTAL_API_KEY was removed in 0.3.0; the client no longer authenticates with it."""
     monkeypatch.delenv("SKYPORTALAI_API_KEY", raising=False)
     monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("SKYPORTAL_API_KEY", "sk_legacy")
 
-    with pytest.warns(DeprecationWarning, match="SKYPORTAL_API_KEY"):
-        client = SkyportalClient("https://app.skyportal.ai")
-        assert client.is_authenticated() is True
-
-    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
-        assert client.servers() == []
-
-    request = call.call_args.args[0]
-    assert request.get_header("Authorization") == "Bearer " + "sk_legacy"
+    assert SkyportalClient("https://app.skyportal.ai").is_authenticated() is False
 
 
-def test_legacy_access_token_env_still_authenticates(credential_path, monkeypatch):
-    """Pre-0.2.0 SKYPORTAL_ACCESS_TOKEN keeps its precedence over the API key."""
+def test_removed_legacy_access_token_env_does_not_override_the_api_key(credential_path, monkeypatch):
     monkeypatch.delenv("SKYPORTALAI_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk_canonical")
     monkeypatch.setenv("SKYPORTAL_ACCESS_TOKEN", "skt_legacy")
 
-    with pytest.warns(DeprecationWarning, match="SKYPORTAL_ACCESS_TOKEN"):
-        client = SkyportalClient("https://app.skyportal.ai")
-        with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
-            assert client.servers() == []
+    client = SkyportalClient("https://app.skyportal.ai")
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse([])) as call:
+        assert client.servers() == []
 
     request = call.call_args.args[0]
-    assert request.get_header("Authorization") == "Bearer " + "skt_legacy"
+    assert request.get_header("Authorization") == "Bearer " + "sk_canonical"
 
 
 def test_access_token_env_precedes_api_key_alias(credential_path, monkeypatch):

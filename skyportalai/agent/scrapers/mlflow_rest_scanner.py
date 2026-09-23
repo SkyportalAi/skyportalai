@@ -15,7 +15,7 @@ Follow-ups deferred for later tiers:
     - per-step history via ``GET metrics/get-history`` (history stays ``[]``).
     - auth variety (basic / bearer / databricks token); ``auth_header`` today is
       a plain header mapping merged verbatim into each request.
-    - Helm env keys (SKYPORTAL_AGENT_MLFLOW_MODE / _TRACKING_URI) and a
+    - Helm env keys (SKYPORTALAI_AGENT_MLFLOW_MODE / _TRACKING_URI) and a
       NetworkPolicy egress rule to the tracking server.
 """
 

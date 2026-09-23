@@ -102,11 +102,8 @@ def configure(
     ] = 30,
 ) -> None:
     """Save Skyportal connection settings."""
-    # Resolved here rather than by typer's envvar=, which Click reads straight out of
-    # os.environ: _env.lookup never runs, so the legacy SKYPORTAL_URL fallback and its
-    # deprecation warning are skipped and a self-hosted user is silently pointed at the
-    # SaaS host. --base-url on the root callback carries the same envvar= shape but
-    # survives it because resolve_settings() re-resolves through _env.
+    # Resolved through _env like every other setting rather than by typer's envvar=,
+    # so all environment reads go through one place.
     resolved_url = portal_url or _env.get("SKYPORTALAI_URL") or DEFAULT_BASE_URL
     config = SkyportalConfig(portal=PortalConfig(base_url=resolved_url, request_timeout=request_timeout))
     ConfigManager.save_config(config)
