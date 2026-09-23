@@ -69,7 +69,7 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.2.1 \
+  --version 0.3.1 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
@@ -303,9 +303,9 @@ To serve the image from your own registry instead (air gapped clusters, or a
 registry your nodes already trust), mirror it and point the chart at the copy:
 
 ```bash
-docker pull ghcr.io/skyportalai/skyportalai-agent:0.2.2
-docker tag ghcr.io/skyportalai/skyportalai-agent:0.2.2 registry.example.com/skyportalai-agent:0.2.2
-docker push registry.example.com/skyportalai-agent:0.2.2
+docker pull ghcr.io/skyportalai/skyportalai-agent:0.3.0
+docker tag ghcr.io/skyportalai/skyportalai-agent:0.3.0 registry.example.com/skyportalai-agent:0.3.0
+docker push registry.example.com/skyportalai-agent:0.3.0
 helm install ... --set image.repository=registry.example.com/skyportalai-agent
 ```
 

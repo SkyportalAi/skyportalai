@@ -28,7 +28,7 @@ FROM python:3.11-slim AS builder
 # when we cut the release rather than months later when someone rebuilds and
 # the commit is gone. Must match appVersion in the chart and the image tag in
 # manifests/deployment.yaml; CI checks the three agree.
-ARG SKYPORTALAI_REF=v0.2.2
+ARG SKYPORTALAI_REF=v0.3.0
 
 ENV VENV=/opt/venv
 RUN python -m venv "$VENV"
