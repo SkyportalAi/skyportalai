@@ -125,11 +125,13 @@ install with no token.
 {{/*
 Pod template annotation that rolls the pods when a chart-managed token changes.
 The token is read from env at startup, so without it `helm upgrade` with a new
-token.value would update the Secret and leave the pods on the old token.
+token.value would update the Secret and leave the pods on the old token. Hashes
+the rendered Secret, the pattern in Helm's "Automatically Roll Deployments" and
+the Datadog chart's checksum/api_key.
 */}}
 {{- define "skyportalai-agent.tokenChecksumAnnotations" -}}
 {{- if include "skyportalai-agent.createsTokenSecret" . -}}
-checksum/token: {{ .Values.token.value | sha256sum }}
+checksum/token: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
 {{- end -}}
 {{- end }}
 
