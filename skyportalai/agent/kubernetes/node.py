@@ -3,7 +3,10 @@
 Runs as a DaemonSet pod. It reads the host, not the Kubernetes API: psutil
 against the host's /proc (mounted read-only) and NVML for the GPUs. Cluster-wide
 state (pods, events) comes from the cluster role, so this role needs no
-Kubernetes permissions at all. Values are sent as read; the server stores them.
+Kubernetes permissions at all. Values are sent as read, never derived: CPU as the
+kernel's cumulative counters, memory and disk as available/free alongside the
+totals. The server computes usage from consecutive uploads, so what "used" means
+is defined in one place, and a rate covers the whole interval, not a 1s snapshot.
 """
 
 from __future__ import annotations
@@ -19,9 +22,6 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 ROLE = "node"
-# psutil's cpu_percent over a short window; the first call without one returns 0.
-_CPU_SAMPLE_SECONDS = 1.0
-
 
 class NodeRole:
     """Samples one node's host metrics."""
@@ -41,7 +41,7 @@ class NodeRole:
         self.node_name = node_name
         self.host_proc = host_proc
         # statvfs of a directory on the host filesystem reports that filesystem's
-        # usage. The node spool is a hostPath under /var/lib, so pointing here at it
+        # blocks. The node spool is a hostPath under /var/lib, so pointing here at it
         # measures the node's disk without mounting the host root.
         self.disk_path = disk_path
         self._read_gpus = read_gpus or read_nvml_gpus
@@ -67,19 +67,23 @@ class NodeRole:
             psutil.PROCFS_PATH = str(self.host_proc)
         memory = psutil.virtual_memory()
         metrics = {
-            "cpu_usage_percent": psutil.cpu_percent(interval=_CPU_SAMPLE_SECONDS),
+            # /proc/stat's cumulative seconds per state since boot (user, system, idle, iowait, ...).
+            "cpu_times": psutil.cpu_times()._asdict(),
             "cpu_cores": psutil.cpu_count(logical=True),
             # getloadavg reads the kernel's load, which is host-wide inside a container.
             "load_average_1m": os.getloadavg()[0],
             "memory_total_bytes": memory.total,
-            "memory_used_bytes": memory.total - memory.available,
+            "memory_available_bytes": memory.available,
             "disk_total_bytes": None,
-            "disk_used_bytes": None,
+            "disk_free_bytes": None,
         }
         if self.disk_path is not None:
             try:
-                disk = psutil.disk_usage(str(self.disk_path))
-                metrics["disk_total_bytes"], metrics["disk_used_bytes"] = disk.total, disk.used
+                # f_bfree, not f_bavail: blocks reserved for root are not in use, and
+                # total - free is then exactly what df reports as Used.
+                fs = os.statvfs(self.disk_path)
+                metrics["disk_total_bytes"] = fs.f_blocks * fs.f_frsize
+                metrics["disk_free_bytes"] = fs.f_bfree * fs.f_frsize
             except OSError as exc:
                 logger.warning("Could not read disk usage at %s: %s", self.disk_path, exc)
         return metrics

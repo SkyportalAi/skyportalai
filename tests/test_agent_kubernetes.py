@@ -159,22 +159,27 @@ class TestClusterRole:
 
 
 class TestNodeRole:
-    def test_reports_host_metrics_and_gpus(self, monkeypatch, tmp_path):
-        import psutil
-
-        monkeypatch.setattr(psutil, "cpu_percent", lambda interval: 41.5)
+    def test_reports_host_readings_and_gpus(self, tmp_path):
         role = NodeRole("gpu-node-1", disk_path=tmp_path,
                         read_gpus=lambda: [{"index": 0, "name": "NVIDIA H100", "utilization_pct": 93}])
         node = role.collect()["node"]
         assert node["name"] == "gpu-node-1"
-        assert node["cpu_usage_percent"] == 41.5
-        assert node["memory_total_bytes"] > 0 and node["disk_total_bytes"] > 0
+        assert node["memory_total_bytes"] >= node["memory_available_bytes"] > 0
+        assert node["disk_total_bytes"] >= node["disk_free_bytes"] > 0
         assert node["gpus"][0]["name"] == "NVIDIA H100"
 
-    def test_a_cpu_node_reports_no_gpus(self, monkeypatch):
+    def test_sends_raw_readings_not_derived_ones(self, monkeypatch):
+        # The server derives usage; the agent only reads. A 1s cpu_percent sample would
+        # also block the cycle and cover a second of a 30s interval.
         import psutil
 
-        monkeypatch.setattr(psutil, "cpu_percent", lambda interval: 5.0)
+        monkeypatch.setattr(psutil, "cpu_percent", lambda *a, **k: pytest.fail("agent sampled cpu_percent"))
+        node = NodeRole("cpu-node", read_gpus=lambda: []).collect()["node"]
+        assert {"user", "system", "idle"} <= node["cpu_times"].keys()
+        assert all(isinstance(v, float) for v in node["cpu_times"].values())
+        assert not {"cpu_usage_percent", "memory_used_bytes", "disk_used_bytes"} & node.keys()
+
+    def test_a_cpu_node_reports_no_gpus(self):
         node = NodeRole("cpu-node", read_gpus=lambda: []).collect()["node"]
         assert node["gpus"] == [] and node["disk_total_bytes"] is None
 
