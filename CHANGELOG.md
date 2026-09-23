@@ -61,6 +61,17 @@ All notable changes to this project are documented here. This project follows
   that header and has to know the new name (servers from September 2026 on
   accept both), so update the server before rolling this agent version out.
 
+### Fixed
+
+- **`--base-url` and `SKYPORTALAI_BASE_URL` now reach `login`, `ask`, `servers`,
+  `start`, `github-token` and the bare shell.** Those commands read
+  `config.yaml` directly, so the flag and variable were silently ignored and
+  `skyportalai --base-url https://staging… login` still sent the new key to
+  whatever `config.yaml` named. They now use the same resolution as every other
+  command: flag, then environment, then `config.yaml`, then the URL saved with
+  your credentials. A local-address warning names the setting that chose it and
+  how to undo that (drop the flag, unset the variable, or run `configure`).
+
 ## 0.2.2
 
 ### Added
