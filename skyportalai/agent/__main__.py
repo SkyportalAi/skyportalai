@@ -14,7 +14,7 @@ import threading
 from .._client import Skyportal, _validate_base_url
 from .config import ROLE_CLUSTER, ROLE_EXPERIMENTS, ROLE_NODE, AgentConfig
 from .health import HealthServer
-from .kubernetes import ClusterRole, CommandPoller, KubernetesRunner, KubernetesShipper, NodeRole
+from .kubernetes import ClusterRole, CommandPoller, KubeletClient, KubernetesRunner, KubernetesShipper, NodeRole
 from .queue import SpoolQueue
 from .runner import AgentRunner
 from .scrapers import MlflowRestScanner, MlflowScanner, WandbScanner
@@ -68,7 +68,17 @@ def build_kubernetes_runner(
     # the cluster role's command poller (built from the same config) polls every 2s.
     _validate_base_url(config.base_url)
     if config.role == ROLE_NODE:
-        role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir)
+        kubelet = (
+            KubeletClient(
+                config.host_ip,
+                config.kubelet_port,
+                ca_file=config.kubelet_ca_file,
+                insecure_skip_verify=config.kubelet_insecure_skip_verify,
+            )
+            if config.host_ip
+            else None
+        )
+        role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir, kubelet=kubelet)
     else:
         role = ClusterRole()
     return KubernetesRunner(

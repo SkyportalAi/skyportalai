@@ -26,6 +26,7 @@ DEFAULT_QUEUE_MAX_BATCHES = 1000
 # cluster upload is the raw kubectl output, ~14 KB per pod, so batches are large.
 DEFAULT_KUBERNETES_QUEUE_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_STATE_DIR = Path("/var/lib/skyportal-agent")
+DEFAULT_KUBELET_PORT = 10250
 
 ROLE_EXPERIMENTS = "experiments"
 ROLE_CLUSTER = "cluster"
@@ -97,6 +98,12 @@ class AgentConfig:
     role: str = ROLE_EXPERIMENTS
     node_name: str | None = None
     host_proc: Path | None = None
+    # The node role's own kubelet, for per-pod CPU/memory without metrics-server (#3588).
+    # host_ip unset turns the kubelet read off.
+    host_ip: str | None = None
+    kubelet_port: int = DEFAULT_KUBELET_PORT
+    kubelet_ca_file: Path | None = None
+    kubelet_insecure_skip_verify: bool = False
 
     @property
     def spool_dir(self) -> Path:
@@ -192,4 +199,14 @@ class AgentConfig:
             role=role,
             node_name=node_name,
             host_proc=_parse_path(_get("SKYPORTALAI_AGENT_HOST_PROC")),
+            host_ip=(_get("SKYPORTALAI_AGENT_HOST_IP") or "").strip() or None,
+            kubelet_port=_parse_int(
+                _get("SKYPORTALAI_AGENT_KUBELET_PORT"),
+                DEFAULT_KUBELET_PORT,
+                name="SKYPORTALAI_AGENT_KUBELET_PORT",
+                minimum=1,
+                maximum=65535,
+            ),
+            kubelet_ca_file=_parse_path(_get("SKYPORTALAI_AGENT_KUBELET_CA_FILE")),
+            kubelet_insecure_skip_verify=_parse_bool(_get("SKYPORTALAI_AGENT_KUBELET_INSECURE_SKIP_VERIFY"), False),
         )

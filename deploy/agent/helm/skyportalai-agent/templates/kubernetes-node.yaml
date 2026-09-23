@@ -35,9 +35,15 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.kubernetes.node.kubelet.enabled }}
+      {{- /* Its own account, bound only to `get nodes/stats`, so the experiment agent never inherits kubelet access. */}}
+      serviceAccountName: {{ include "skyportalai-agent.fullname" . }}-node
+      automountServiceAccountToken: true
+      {{- else }}
       serviceAccountName: {{ include "skyportalai-agent.serviceAccountName" . }}
       # The node role never calls the Kubernetes API, so it gets no token at all.
       automountServiceAccountToken: false
+      {{- end }}
       {{- with .Values.kubernetes.node.gpu.runtimeClassName }}
       runtimeClassName: {{ . | quote }}
       {{- end }}
@@ -82,6 +88,18 @@ spec:
               value: /host/proc
             - name: SKYPORTALAI_AGENT_STATE_DIR
               value: /var/lib/skyportalai-agent
+            {{- with .Values.kubernetes.node.kubelet }}
+            {{- if .enabled }}
+            - name: SKYPORTALAI_AGENT_HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: SKYPORTALAI_AGENT_KUBELET_PORT
+              value: {{ .port | quote }}
+            - name: SKYPORTALAI_AGENT_KUBELET_INSECURE_SKIP_VERIFY
+              value: {{ .insecureSkipVerify | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.kubernetes.node.gpu.runtimeClassName }}
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
