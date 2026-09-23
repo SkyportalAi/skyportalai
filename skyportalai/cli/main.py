@@ -56,7 +56,12 @@ def root(
     # by name because the Context comes from Typer's vendored Click.
     source = context.get_parameter_source("base_url")
     typed_on_command_line = source is not None and source.name == "COMMANDLINE"
-    settings = resolve_settings(base_url=base_url if typed_on_command_line else None)
+    try:
+        settings = resolve_settings(base_url=base_url if typed_on_command_line else None)
+    except SkyportalError as exc:
+        # No settings yet to name a target with; report and stop rather than traceback.
+        Output(json_mode=json_output, api_target="unresolved").failure(str(exc))
+        raise typer.Exit(1) from None
     context.obj = CLIContext(
         settings=settings,
         output=Output(json_mode=json_output, api_target=settings.base_url),

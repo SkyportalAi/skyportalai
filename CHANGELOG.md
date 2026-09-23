@@ -8,10 +8,18 @@ All notable changes to this project are documented here. This project follows
 ### Breaking
 
 - **The pre-0.2.0 `SKYPORTAL_*` environment variables are removed.** They were
-  deprecated in 0.2.0 and are now ignored, with no warning: set the
-  `SKYPORTALAI_*` name instead (for example `SKYPORTALAI_API_KEY`,
-  `SKYPORTALAI_BASE_URL`, `SKYPORTALAI_AGENT_TOKEN`). A deployment still using an
-  old name falls back to the default for that setting.
+  deprecated in 0.2.0 and are now ignored: set the `SKYPORTALAI_*` name instead
+  (for example `SKYPORTALAI_API_KEY`, `SKYPORTALAI_BASE_URL`,
+  `SKYPORTALAI_AGENT_TOKEN`). An old name that is still set draws a warning naming
+  its replacement, and without the new name the setting uses its default. Two
+  exceptions:
+  - **A leftover `SKYPORTAL_BASE_URL` or `SKYPORTAL_URL` is an error** (SDK, CLI and
+    agent) until you set `SKYPORTALAI_BASE_URL` / `SKYPORTALAI_URL` or unset it. The
+    default would be `https://app.skyportal.ai`, and a self-hosted install would
+    send its credentials there.
+  - **Credentials have no default:** the agent won't start without
+    `SKYPORTALAI_AGENT_TOKEN`, and the SDK and CLI are unauthenticated without
+    `SKYPORTALAI_API_KEY`.
 - **The `skyportal` import package is removed.** Import from `skyportalai`. This
   also ends the import-name collision with the unrelated `skyportal` astronomy
   package on PyPI.
@@ -30,8 +38,8 @@ All notable changes to this project are documented here. This project follows
 
   Both only call out to SkyPortal over HTTPS, and buffer on disk while it is
   unreachable. The `agent` extra adds `psutil` and `nvidia-ml-py`. Deploy with
-  the Helm chart's `kubernetes.enabled` (chart 0.3.0 and later); see
-  `deploy/agent/README.md`.
+  the Helm chart's `kubernetes.enabled`, which needs the 0.3.0 agent image
+  (chart 0.3.1 and later default to it); see `deploy/agent/README.md`.
 
 - **`/upload <path>` attaches a file to the chat.** Logs, CSV, JSON, YAML and
   images, up to 10 MB each. Ask about the file by name afterwards; the agent

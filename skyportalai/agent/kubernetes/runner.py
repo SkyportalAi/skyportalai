@@ -41,7 +41,7 @@ class KubernetesShipper(Shipper):
         large), so a permanent refusal is logged and the batch discarded.
         """
         shipped = 0
-        for batch in queue.batches():
+        for batch in queue.iter_batches():
             if self._ship_batch(batch.runs):
                 queue.remove(batch.batch_id)
                 shipped += 1
@@ -80,9 +80,14 @@ class KubernetesRunner:
         self._stop = stop_event or threading.Event()
 
     def run_once(self) -> None:
-        payload = self.role.collect()
-        payload["batch_id"] = uuid.uuid4().hex
-        self.queue.enqueue([payload])
+        try:
+            payload = self.role.collect()
+            payload["batch_id"] = uuid.uuid4().hex
+            self.queue.enqueue([payload])
+        except Exception:  # noqa: BLE001 — the backlog still ships below
+            # A failed collection (a full spool volume, a command that raises) must not
+            # stop what is already queued from reaching SkyPortal.
+            logger.exception("%s collection failed; shipping the queued uploads", self.role.kind)
         self.shipper.last_response = None
         result = self.shipper.ship(self.queue)
         reply = self.shipper.last_response

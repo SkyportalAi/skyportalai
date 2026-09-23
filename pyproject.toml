@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-agent = ["wandb>=0.29.0,<1.0", "psutil>=5.9,<8.0", "nvidia-ml-py>=12.535,<14.0"]
+agent = ["wandb>=0.29.0,<1.0"]
 
 [project.scripts]
 skyportalai = "skyportalai.cli:main"

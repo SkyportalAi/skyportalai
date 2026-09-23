@@ -374,6 +374,7 @@ Every setting maps onto an environment variable the agent reads at startup
 | `SKYPORTALAI_AGENT_CLUSTER_NAME` | `config.clusterName` | none | label shipped runs |
 | `SKYPORTALAI_AGENT_STATE_DIR` | `config.stateDir` | `/var/lib/skyportal-agent` | spool and catalog location |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `config.queueMaxBatches` | `1000` | cap on spooled batches while the API is unreachable |
+| `SKYPORTALAI_AGENT_QUEUE_MAX_BYTES` | `extraEnv` | `536870912` (512 MiB) | Kubernetes roles only: cap on the spool's size on disk; the oldest uploads are dropped first. Keep it below the spool volume's size |
 | `SKYPORTALAI_AGENT_HEALTHZ_PORT` | `config.healthzPort` | `8080` | liveness port |
 
 The state directory keeps its pre-rename path on purpose: it is the agent's own
