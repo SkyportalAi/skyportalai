@@ -20,7 +20,8 @@ maintainers:
 # pushes versions the registry does not have yet (see deploy/agent/RELEASING.md).
 # 0.2.0 renamed the chart from skyportal-agent and moved the agent env vars from
 # SKYPORTAL_* to SKYPORTALAI_*, including the default token.secretKey.
-version: 0.3.1
+# 0.3.2 added token.value (chart-created Secret) beside token.existingSecret.
+version: 0.3.2
 # The agent release this chart was written against. image.tag defaults to it
 # when left empty in values.yaml. It must match SKYPORTALAI_REF in the Dockerfile
 # and the image tag in manifests/deployment.yaml; CI checks all three agree.

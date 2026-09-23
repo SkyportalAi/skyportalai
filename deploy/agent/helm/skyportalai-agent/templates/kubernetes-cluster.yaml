@@ -39,6 +39,10 @@ spec:
     metadata:
       labels:
         {{- include "skyportalai-agent.componentSelectorLabels" $component | nindent 8 }}
+      {{- with include "skyportalai-agent.tokenChecksumAnnotations" . }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "skyportalai-agent chart values",
-  "description": "Validated by Helm on install, upgrade, lint and template. token.existingSecret is the only value without a usable default.",
+  "description": "Validated by Helm on install, upgrade, lint and template. The token (token.existingSecret or token.value) is the only value without a usable default.",
   "type": "object",
   "additionalProperties": false,
   "required": ["image", "config", "token", "persistence"],
@@ -201,12 +201,19 @@
     "token": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["existingSecret", "secretKey"],
+      "required": ["secretKey"],
+      "anyOf": [
+        {"required": ["existingSecret"], "properties": {"existingSecret": {"minLength": 1}}},
+        {"required": ["value"], "properties": {"value": {"minLength": 1}}}
+      ],
       "properties": {
         "existingSecret": {
           "type": "string",
-          "minLength": 1,
-          "description": "Name of an existing Secret in the release namespace that holds the agent token. Required."
+          "description": "Name of an existing Secret in the release namespace that holds the agent token. Recommended; takes precedence over value."
+        },
+        "value": {
+          "type": "string",
+          "description": "The agent token itself; the chart creates the Secret. Stored in Helm's release values. Ignored when existingSecret is set."
         },
         "secretKey": {
           "type": "string",

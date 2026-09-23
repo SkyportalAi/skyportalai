@@ -22,6 +22,10 @@ spec:
     metadata:
       labels:
         {{- include "skyportalai-agent.selectorLabels" . | nindent 8 }}
+      {{- with include "skyportalai-agent.tokenChecksumAnnotations" . }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -43,12 +47,12 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
-            # Token from the existing Secret. `required` makes the chart fail to
-            # render if token.existingSecret was not supplied.
+            # tokenSecretName fails the render when neither token.existingSecret
+            # nor token.value was supplied.
             - name: SKYPORTALAI_AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "token.existingSecret is required: create a Secret holding the agent token and pass --set token.existingSecret=<name> (see https://github.com/SkyportalAi/skyportalai/blob/main/deploy/agent/README.md)." .Values.token.existingSecret }}
+                  name: {{ include "skyportalai-agent.tokenSecretName" . }}
                   key: {{ .Values.token.secretKey }}
             {{- with .Values.config.baseUrl }}
             - name: SKYPORTALAI_BASE_URL

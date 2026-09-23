@@ -106,11 +106,18 @@ config:
   wandbDir: ""
   mlflowDir: ""
 
-# The agent token is read from an existing Kubernetes Secret. Create it out of
-# band (deploy/agent/README.md, step 2) and pass its name here; the chart
-# refuses to install without it.
+# The agent token (agt_...). Set exactly one way; the chart refuses to install
+# with neither.
+#   existingSecret: recommended for production and GitOps. Name a Secret you
+#     create out of band (deploy/agent/README.md, step 2), so the token never
+#     appears in a values file or Helm's release history.
+#   value: quick installs. The chart creates the Secret from it. The token is
+#     then stored in Helm's release values, so keep it out of committed files
+#     and pass it with --set-string token.value=... or --set-file.
+# If both are set, existingSecret wins and value is ignored.
 token:
   existingSecret: ""
+  value: ""
   secretKey: SKYPORTALAI_AGENT_TOKEN
 
 # Disk backed state (spool queue + run catalog). Enabled by default so an
