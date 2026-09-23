@@ -1,30 +1,49 @@
-"""Node role: read this node's CPU, memory, disk, load and GPUs, every cycle, on every node.
+"""Node role: upload this node's raw host readings, every cycle, on every node.
 
-Runs as a DaemonSet pod. It reads the host, not the Kubernetes API: psutil
-against the host's /proc (mounted read-only) and NVML for the GPUs. Cluster-wide
-state (pods, events) comes from the cluster role, so this role needs no
-Kubernetes permissions at all. Values are sent as read, never derived: CPU as the
-kernel's cumulative counters, memory and disk as available/free alongside the
-totals. The server computes usage from consecutive uploads, so what "used" means
-is defined in one place, and a rate covers the whole interval, not a 1s snapshot.
+Runs as a DaemonSet pod. It reads the host, not the Kubernetes API, so it needs no
+Kubernetes permissions at all. Everything is sent as read and nothing is derived
+here: the kernel's /proc files as text, the whole statvfs of the node's disk, and
+nvidia-smi's full XML report. The server parses them and computes every metric
+(CPU from consecutive /proc/stat, used memory, GPU utilization), so what a metric
+means is decided in one place, and the raw readings are kept in R2 as uploaded.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
 
 from ..scrapers.base_scanner import iso_now
+from .kubectl import run_process
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 ROLE = "node"
 
+# Fixed here, never taken from the server: the host's /proc also holds every
+# process's environ and cmdline, so a server-chosen path could read other workloads'
+# secrets. The system-wide files below hold no per-process data.
+PROC_FILES = (
+    "stat", "meminfo", "loadavg", "uptime", "vmstat", "diskstats", "cpuinfo",
+    "pressure/cpu", "pressure/memory", "pressure/io",
+    # /proc/net resolves through /proc/self, i.e. this pod's network namespace; PID 1's
+    # is the node's.
+    "1/net/dev",
+)
+# Everything the driver reports. Present only when the pod runs with the NVIDIA
+# runtime (kubernetes.node.gpu.runtimeClassName); elsewhere it exits 127, which is
+# itself the "no GPUs visible" reading.
+NVIDIA_SMI = ["nvidia-smi", "-q", "-x"]
+# /proc/cpuinfo is ~1 KB per core, so even a 512-core node stays far below this.
+MAX_FILE_CHARS = 4 * 1024 * 1024
+
+
 class NodeRole:
-    """Samples one node's host metrics."""
+    """Reads one node's raw host readings."""
 
     kind = ROLE
 
@@ -34,24 +53,33 @@ class NodeRole:
         *,
         host_proc: Path | None = None,
         disk_path: Path | None = None,
-        read_gpus: Callable[[], list[dict]] | None = None,
+        run: Callable[[list[str]], dict] = run_process,
     ):
         if not node_name:
             raise ValueError("node_name is required for the node role (set from spec.nodeName)")
         self.node_name = node_name
-        self.host_proc = host_proc
-        # statvfs of a directory on the host filesystem reports that filesystem's
-        # blocks. The node spool is a hostPath under /var/lib, so pointing here at it
-        # measures the node's disk without mounting the host root.
+        self.host_proc = Path(host_proc) if host_proc is not None else Path("/proc")
+        # statvfs of a directory on the host filesystem reports that filesystem. The
+        # node spool is a hostPath under /var/lib, so pointing here at it reads the
+        # node's disk without mounting the host root.
         self.disk_path = disk_path
-        self._read_gpus = read_gpus or read_nvml_gpus
+        self._run = run
 
     def collect(self) -> dict:
+        files, unreadable = self._read_proc_files()
+        statvfs = self._read_statvfs(unreadable)
         return {
             "schema_version": SCHEMA_VERSION,
             "role": ROLE,
             "collected_at": iso_now(),
-            "node": {"name": self.node_name, **self._host_metrics(), "gpus": self._read_gpus()},
+            "node": {
+                "name": self.node_name,
+                "files": files,
+                "statvfs": statvfs,
+                "commands": [self._run(list(NVIDIA_SMI))],
+                # What was asked for and could not be read, so a gap is never silent.
+                "unreadable": unreadable,
+            },
         }
 
     def apply_reply(self, reply: dict) -> None:
@@ -60,61 +88,34 @@ class NodeRole:
     def next_delay(self, interval_seconds: float) -> float:
         return interval_seconds
 
-    def _host_metrics(self) -> dict:
-        import psutil
-
-        if self.host_proc is not None:
-            psutil.PROCFS_PATH = str(self.host_proc)
-        memory = psutil.virtual_memory()
-        metrics = {
-            # /proc/stat's cumulative seconds per state since boot (user, system, idle, iowait, ...).
-            "cpu_times": psutil.cpu_times()._asdict(),
-            "cpu_cores": psutil.cpu_count(logical=True),
-            # getloadavg reads the kernel's load, which is host-wide inside a container.
-            "load_average_1m": os.getloadavg()[0],
-            "memory_total_bytes": memory.total,
-            "memory_available_bytes": memory.available,
-            "disk_total_bytes": None,
-            "disk_free_bytes": None,
-        }
-        if self.disk_path is not None:
+    def _read_proc_files(self) -> tuple[dict[str, str], dict[str, str]]:
+        files: dict[str, str] = {}
+        unreadable: dict[str, str] = {}
+        for rel in PROC_FILES:
+            # Keyed by the node's own path, not this pod's mount point.
+            name = f"/proc/{rel}"
             try:
-                # f_bfree, not f_bavail: blocks reserved for root are not in use, and
-                # total - free is then exactly what df reports as Used.
-                fs = os.statvfs(self.disk_path)
-                metrics["disk_total_bytes"] = fs.f_blocks * fs.f_frsize
-                metrics["disk_free_bytes"] = fs.f_bfree * fs.f_frsize
+                text = (self.host_proc / rel).read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
-                logger.warning("Could not read disk usage at %s: %s", self.disk_path, exc)
-        return metrics
+                unreadable[name] = _errno_name(exc)
+                continue
+            if len(text) > MAX_FILE_CHARS:
+                unreadable[name] = "EFBIG"
+                continue
+            files[name] = text
+        return files, unreadable
+
+    def _read_statvfs(self, unreadable: dict[str, str]) -> dict[str, dict[str, int]]:
+        if self.disk_path is None:
+            return {}
+        try:
+            fs = os.statvfs(self.disk_path)
+        except OSError as exc:
+            unreadable[str(self.disk_path)] = _errno_name(exc)
+            return {}
+        # The whole struct: which of free/available counts as "used" is the server's call.
+        return {str(self.disk_path): {field: getattr(fs, field) for field in dir(fs) if field.startswith("f_")}}
 
 
-def read_nvml_gpus() -> list[dict]:
-    """Every GPU NVML can see, or [] on a node without NVIDIA GPUs or driver access."""
-    try:
-        import pynvml
-    except ImportError:
-        return []
-    try:
-        pynvml.nvmlInit()
-    except pynvml.NVMLError:
-        return []  # no driver in reach: a CPU node, or the pod wasn't given GPU access
-    try:
-        gpus = []
-        for index in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
-            memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            name = pynvml.nvmlDeviceGetName(handle)
-            gpus.append({
-                "index": index,
-                "name": name.decode() if isinstance(name, bytes) else name,
-                "utilization_pct": pynvml.nvmlDeviceGetUtilizationRates(handle).gpu,
-                "memory_used_bytes": memory.used,
-                "memory_total_bytes": memory.total,
-            })
-        return gpus
-    except pynvml.NVMLError as exc:
-        logger.warning("NVML read failed: %s", exc)
-        return []
-    finally:
-        pynvml.nvmlShutdown()
+def _errno_name(exc: OSError) -> str:
+    return errno.errorcode.get(exc.errno, type(exc).__name__) if exc.errno else type(exc).__name__

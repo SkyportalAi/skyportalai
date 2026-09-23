@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -158,30 +159,61 @@ class TestClusterRole:
         assert role.plan == [GET_PODS]
 
 
+PROC_STAT = "cpu  2255 34 2290 22625563 6290 127 456 0 0 0\ncpu0 1132 34 1441 11311718 3675 127 438 0 0 0\nctxt 1990473\n"
+MEMINFO = "MemTotal:       16303428 kB\nMemFree:          227532 kB\nMemAvailable:    8742056 kB\n"
+
+
+def _fake_host_proc(root: Path) -> Path:
+    (root / "1" / "net").mkdir(parents=True)
+    (root / "stat").write_text(PROC_STAT)
+    (root / "meminfo").write_text(MEMINFO)
+    (root / "loadavg").write_text("3.21 2.87 2.40 5/1234 99887\n")
+    (root / "1" / "net" / "dev").write_text("eth0: 8812312 1234 0 0 0 0 0 0 99123 456 0 0 0 0 0 0\n")
+    # Per-process data must never be read, whatever else is under /proc.
+    (root / "1" / "environ").write_text("DB_PASSWORD=hunter2\0")
+    return root
+
+
 class TestNodeRole:
-    def test_reports_host_readings_and_gpus(self, tmp_path):
-        role = NodeRole("gpu-node-1", disk_path=tmp_path,
-                        read_gpus=lambda: [{"index": 0, "name": "NVIDIA H100", "utilization_pct": 93}])
-        node = role.collect()["node"]
-        assert node["name"] == "gpu-node-1"
-        assert node["memory_total_bytes"] >= node["memory_available_bytes"] > 0
-        assert node["disk_total_bytes"] >= node["disk_free_bytes"] > 0
-        assert node["gpus"][0]["name"] == "NVIDIA H100"
+    def _role(self, tmp_path, **kwargs):
+        smi = {"argv": ["nvidia-smi", "-q", "-x"], "exit_code": 0, "stdout": "<nvidia_smi_log/>", "stderr": ""}
+        return NodeRole("gpu-node-1", host_proc=_fake_host_proc(tmp_path / "proc"), run=lambda argv: smi, **kwargs)
 
-    def test_sends_raw_readings_not_derived_ones(self, monkeypatch):
-        # The server derives usage; the agent only reads. A 1s cpu_percent sample would
-        # also block the cycle and cover a second of a 30s interval.
-        import psutil
+    def test_sends_the_proc_files_byte_for_byte(self, tmp_path):
+        files = self._role(tmp_path).collect()["node"]["files"]
+        assert files["/proc/stat"] == PROC_STAT
+        assert files["/proc/meminfo"] == MEMINFO
+        assert files["/proc/1/net/dev"].startswith("eth0:")
 
-        monkeypatch.setattr(psutil, "cpu_percent", lambda *a, **k: pytest.fail("agent sampled cpu_percent"))
-        node = NodeRole("cpu-node", read_gpus=lambda: []).collect()["node"]
-        assert {"user", "system", "idle"} <= node["cpu_times"].keys()
-        assert all(isinstance(v, float) for v in node["cpu_times"].values())
-        assert not {"cpu_usage_percent", "memory_used_bytes", "disk_used_bytes"} & node.keys()
+    def test_never_reads_per_process_data(self, tmp_path):
+        node = self._role(tmp_path).collect()["node"]
+        assert "/proc/1/environ" not in node["files"]
+        assert "hunter2" not in json.dumps(node)
 
-    def test_a_cpu_node_reports_no_gpus(self):
-        node = NodeRole("cpu-node", read_gpus=lambda: []).collect()["node"]
-        assert node["gpus"] == [] and node["disk_total_bytes"] is None
+    def test_names_what_it_could_not_read(self, tmp_path):
+        # Absent here, like /proc/pressure on a kernel older than 4.20.
+        unreadable = self._role(tmp_path).collect()["node"]["unreadable"]
+        assert unreadable["/proc/pressure/cpu"] == "ENOENT"
+        assert "/proc/stat" not in unreadable
+
+    def test_sends_the_whole_statvfs_of_the_disk(self, tmp_path):
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        statvfs = self._role(tmp_path, disk_path=spool).collect()["node"]["statvfs"][str(spool)]
+        assert {"f_blocks", "f_bfree", "f_bavail", "f_frsize", "f_files", "f_ffree"} <= statvfs.keys()
+
+    def test_sends_nvidia_smis_full_report(self, tmp_path):
+        (command,) = self._role(tmp_path).collect()["node"]["commands"]
+        assert command["argv"] == ["nvidia-smi", "-q", "-x"] and command["stdout"] == "<nvidia_smi_log/>"
+
+    def test_a_node_without_nvidia_smi_reports_it_missing(self):
+        result = kubectl.run_process(["skyportal-no-such-binary", "-q"])
+        assert result["exit_code"] == kubectl.EXIT_NOT_FOUND
+        assert "skyportal-no-such-binary is not installed" in result["stderr"]
+
+    def test_derives_nothing(self, tmp_path):
+        node = self._role(tmp_path).collect()["node"]
+        assert set(node) == {"name", "files", "statvfs", "commands", "unreadable"}
 
     def test_requires_a_node_name(self):
         with pytest.raises(ValueError):
