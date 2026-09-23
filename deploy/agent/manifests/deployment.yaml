@@ -45,7 +45,7 @@ spec:
         - name: agent
           # EDIT: pin to a published agent release. This tag tracks the chart's
           # appVersion; CI keeps the two in step.
-          image: ghcr.io/skyportalai/skyportalai-agent:0.2.2
+          image: ghcr.io/skyportalai/skyportalai-agent:0.3.0
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: true

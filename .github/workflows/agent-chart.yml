@@ -94,7 +94,7 @@ jobs:
             > rendered/kubernetes.yaml
           grep -q 'kind: DaemonSet' rendered/kubernetes.yaml
           # The Kubernetes roles are refused on an agent image that predates them.
-          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true >/dev/null 2>&1; then
+          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true --set-string image.tag=0.2.2 >/dev/null 2>&1; then
             echo "kubernetes.enabled rendered on an image without the Kubernetes roles"; exit 1
           fi
 
