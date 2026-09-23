@@ -227,6 +227,17 @@ class TestKubernetesRunner:
         runner.run_once()
         assert len(SpoolQueue(tmp_path)) == 1
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_token_keeps_every_queued_upload(self, tmp_path, status):
+        # 401/403 are about the token (or a WAF in front of the API), not the upload: a
+        # fixed token must still be able to deliver the backlog.
+        session = FakeSession([FakeResponse(status)] * 5)
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.queue.enqueue([{"buffered": True}])
+        runner.run_once()
+        assert len(SpoolQueue(tmp_path)) == 2
+        assert len(session.calls) == 1
+
     def test_a_failed_collection_still_ships_the_backlog(self, tmp_path):
         session = FakeSession([FakeResponse(202, {})])
         runner = self._runner(tmp_path, session, FailingRole())
@@ -365,3 +376,28 @@ class TestConfigAndEntrypoint:
         assert isinstance(runner.role, expected)
         assert runner.queue.max_bytes == 512 * 1024 * 1024
         assert runner.shipper.url == "https://app.skyportal.ai/agent/api/kubernetes/ingest/"
+
+    @pytest.mark.parametrize("role", ["cluster", "node"])
+    def test_refuses_a_plain_http_base_url(self, tmp_path, role):
+        config = self._config(tmp_path, role, "http://skyportal.example")
+        with pytest.raises(SkyportalError, match="non-HTTPS"):
+            agent_main.build_kubernetes_runner(config)
+
+    def test_allows_plain_http_to_loopback(self, tmp_path):
+        config = self._config(tmp_path, "cluster", "http://127.0.0.1:8000")
+        assert agent_main.build_kubernetes_runner(config).shipper.url.startswith("http://127.0.0.1:8000/")
+
+    def test_allows_plain_http_when_explicitly_insecure(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKYPORTALAI_ALLOW_INSECURE", "1")
+        config = self._config(tmp_path, "cluster", "http://skyportal.internal:8000")
+        with pytest.warns(UserWarning, match="ALLOW_INSECURE"):
+            agent_main.build_kubernetes_runner(config)
+
+    def _config(self, tmp_path, role, base_url):
+        return AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": role,
+            "SKYPORTALAI_AGENT_NODE_NAME": "n1",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+            "SKYPORTALAI_BASE_URL": base_url,
+        })

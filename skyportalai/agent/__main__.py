@@ -12,7 +12,7 @@ import signal
 import threading
 
 from .. import _env
-from .._client import Skyportal
+from .._client import Skyportal, _validate_base_url
 from .config import ROLE_CLUSTER, ROLE_EXPERIMENTS, ROLE_NODE, AgentConfig
 from .health import HealthServer
 from .kubernetes import ClusterRole, CommandPoller, KubernetesRunner, KubernetesShipper, NodeRole
@@ -64,6 +64,10 @@ def build_kubernetes_runner(
     stop_event: threading.Event | None = None,
 ) -> KubernetesRunner:
     """Assemble the collect -> queue -> ship loop for the cluster or node role."""
+    # These roles build their transport from config, not through the Skyportal client,
+    # so its HTTPS check must be applied here: the agent token rides every request, and
+    # the cluster role's command poller (built from the same config) polls every 2s.
+    _validate_base_url(config.base_url)
     if config.role == ROLE_NODE:
         role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir)
     else:
