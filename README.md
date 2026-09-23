@@ -159,6 +159,41 @@ Run `skyportalai --help` for the complete command reference.
 
 ## Kubernetes clusters
 
+There are two ways to connect a cluster:
+
+- **In-cluster agent (Helm chart).** Read-only monitoring for any cluster,
+  including private ones. The agent runs inside the cluster and only connects
+  out to Skyportal, so no cluster credential leaves the cluster.
+- **Kubeconfig.** Skyportal connects in to the cluster's API server, which must
+  be publicly reachable. Mutating commands are possible, behind the approval gate.
+
+### In-cluster agent (Helm)
+
+Create an agent token for the cluster on the **Agents** page
+(`https://app.skyportal.ai/agents/`), then install the chart. It runs a
+`-cluster` Deployment (pods, events, `kubectl top`, read-only chat commands) and
+a `-node` DaemonSet (CPU, memory, disk and GPU per node):
+
+```bash
+kubectl create namespace skyportal
+kubectl label namespace skyportal pod-security.kubernetes.io/enforce=privileged
+read -rs AGT   # paste the agt_ token
+printf %s "$AGT" | helm upgrade --install skyportalai-agent \
+  oci://ghcr.io/skyportalai/charts/skyportalai-agent --version 0.3.2 -n skyportal \
+  --set-file token.value=/dev/stdin \
+  --set kubernetes.enabled=true --set config.clusterName=my-cluster
+unset AGT
+```
+
+The namespace label is needed because the node pods read the host's `/proc`
+(read-only). For production, create the token Secret yourself and set
+`token.existingSecret` instead of `token.value`. CPU and memory figures need
+metrics-server in the cluster. The full guide, covering GPU nodes, egress,
+upgrades and troubleshooting, is in
+[deploy/agent/README.md](deploy/agent/README.md#kubernetes-monitoring).
+
+### Kubeconfig
+
 Connect a cluster with its kubeconfig. The CLI sends the credential only to the
 authenticated Skyportal API, where the same validation and encrypted storage as
 the web application are used; kubeconfigs are never returned by lifecycle APIs.

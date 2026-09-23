@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Helm chart
+
+- **Chart 0.3.2 accepts the agent token inline as `token.value`** (#89). The chart
+  then creates the Secret itself, so a quick install is one `helm install`.
+  `token.existingSecret` is unchanged, still recommended for production, and wins
+  when both are set. A `checksum/token` pod annotation restarts the agent pods
+  when an inline token changes. The chart still installs agent 0.3.0.
+
 ## 0.3.0
 
 ### Breaking

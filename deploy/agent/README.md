@@ -148,8 +148,18 @@ helm upgrade skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agen
 
 If you installed with `token.value`, that token is not in `my-values.yaml`, and
 an upgrade with `-f` does not carry the previous release's values forward: the
-upgrade stops with a missing-token error. Add `--reuse-values` to keep the
-installed token, or pass it again as in [Option A](#option-a-helm)
+upgrade stops with a missing-token error. Add `--reset-then-reuse-values`
+(Helm 3.14+), which starts from the new chart's defaults and re-applies the
+installed release's values, token included:
+
+```bash
+helm upgrade skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
+  --version <new chart version> --reset-then-reuse-values -f my-values.yaml
+```
+
+Prefer it over `--reuse-values`, which reuses the old release's values as they
+were and ignores defaults a newer chart adds. Or pass the token again as in
+[Option A](#option-a-helm)
 (`printf %s "$AGT" | helm upgrade ... --set-file token.value=/dev/stdin`).
 
 ### Option B: plain manifests
