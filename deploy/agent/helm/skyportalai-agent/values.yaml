@@ -14,8 +14,8 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Secrets used to pull the image when your cluster cannot read the package
-# anonymously (see "Pulling the image" in deploy/agent/README.md), e.g.
+# The image is public, so this stays empty unless you mirror it into a registry
+# that needs credentials (see "Registry access" in deploy/agent/README.md), e.g.
 #   imagePullSecrets:
 #     - name: ghcr-pull
 imagePullSecrets: []

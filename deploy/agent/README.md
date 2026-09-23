@@ -35,9 +35,8 @@ tag to pick.
 - `helm` 3.8 or newer for the chart (OCI registry support is on by default from
   3.8). The plain manifests need only `kubectl`.
 - An agent token from your SkyPortal instance (step 1).
-- GHCR read access for the private chart and image. Log Helm in before
-  installation and configure a Kubernetes registry pull secret (see
-  [Registry access](#registry-access)).
+- Nothing else: the chart and image are public, so no registry login or pull
+  secret is needed (see [Registry access](#registry-access) to mirror them).
 
 ## 1. Mint an agent token
 
@@ -68,14 +67,10 @@ but keep it out of git.
 
 ### Option A: Helm
 
-Complete [Registry access](#registry-access) first; the chart and image are
-private packages.
-
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
   --version 0.2.1 \
   --set token.existingSecret=skyportalai-agent-token \
-  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set config.baseUrl=https://skyportal.example.com
 ```
 
@@ -241,7 +236,9 @@ kubectl get runtimeclass
 
 - **Egress:** outbound TCP 443 to your SkyPortal host (`app.skyportal.ai`), plus
   DNS. If you allowlist egress, allowlist the **hostname**: its IP addresses are
-  shared and change.
+  shared and change. Your nodes also pull the image from `ghcr.io` (with its blobs
+  served from `pkg-containers.githubusercontent.com`), unless you mirror it (see
+  [Registry access](#registry-access)).
 - **Pod Security:** the node DaemonSet mounts the host's `/proc` read only and
   keeps its buffer in a host directory. The "baseline" and "restricted" Pod
   Security Standards refuse host mounts, so label the namespace:
@@ -299,27 +296,8 @@ control-plane nodes included. To monitor a subset, set
 
 ## Registry access
 
-The chart and image are private packages in GitHub Container Registry. Use a
-GitHub account with access to both packages and a token with the
-`read:packages` scope. Log Helm in to pull the chart (enter the token at the
-password prompt):
-
-```bash
-helm registry login ghcr.io --username <github user>
-```
-
-Helm's login only covers the chart download; Kubernetes needs its own pull
-secret to download the image. Create it in the agent's namespace:
-
-```bash
-kubectl create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io \
-  --docker-username=<github user> \
-  --docker-password=<token with read:packages>
-```
-
-Helm: `--set imagePullSecrets[0].name=ghcr-pull`. Manifests: uncomment
-`imagePullSecrets` in `manifests/deployment.yaml`.
+The chart and image are public in GitHub Container Registry: `helm install` and
+the image pull need no login and no pull secret.
 
 To serve the image from your own registry instead (air gapped clusters, or a
 registry your nodes already trust), mirror it and point the chart at the copy:
@@ -330,6 +308,9 @@ docker tag ghcr.io/skyportalai/skyportalai-agent:0.2.2 registry.example.com/skyp
 docker push registry.example.com/skyportalai-agent:0.2.2
 helm install ... --set image.repository=registry.example.com/skyportalai-agent
 ```
+
+If your mirror needs credentials, create a `docker-registry` Secret in the agent's
+namespace and pass it with `--set imagePullSecrets[0].name=<secret>`.
 
 Building the image from source is a maintainer task; see
 [RELEASING.md](RELEASING.md).
