@@ -51,6 +51,9 @@ class CommandPoller:
             except requests.RequestException as exc:
                 logger.warning("Command poll failed: %s", type(exc).__name__)
                 handled = False
+            except Exception:  # noqa: BLE001 — /healthz can't see this thread, so it must not die
+                logger.exception("Command poll failed")
+                handled = False
             if not handled:
                 self._stop.wait(POLL_SECONDS)
 
@@ -61,11 +64,26 @@ class CommandPoller:
             return False
         resp.raise_for_status()
         command = resp.json()
-        result = self._run(command["argv"])
+        command_id = _command_id(command)
+        if command_id is None:
+            logger.warning("Ignored a leased command with no usable id")
+            return False
+        # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
+        # one still gets a result back and chat fails fast instead of waiting it out.
+        result = self._run(command.get("argv"))
         self.session.post(
-            self.base_url + RESULT_PATH.format(id=int(command["id"])),
+            self.base_url + RESULT_PATH.format(id=command_id),
             json={key: result[key] for key in ("exit_code", "stdout", "stderr")},
             headers=self.headers,
             timeout=_HTTP_TIMEOUT,
         ).raise_for_status()
         return True
+
+
+def _command_id(command) -> int | None:
+    if not isinstance(command, dict):
+        return None
+    try:
+        return int(command.get("id"))
+    except (TypeError, ValueError):
+        return None

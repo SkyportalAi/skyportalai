@@ -45,8 +45,12 @@ def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> di
     if not is_readonly(argv):
         return _result(argv, EXIT_REFUSED, "", "refused: the SkyPortal agent only runs read-only kubectl")
     try:
-        # argv, never a shell string: nothing in it is interpreted by a shell.
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+        # argv, never a shell string: nothing in it is interpreted by a shell. Logs are
+        # the container's raw bytes; one invalid UTF-8 byte in a crash log must not fail
+        # the cycle, or the plan holding that command never changes.
+        done = subprocess.run(
+            argv, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, check=False
+        )
     except FileNotFoundError:
         return _result(argv, EXIT_NOT_FOUND, "", "kubectl is not installed in the agent image")
     except subprocess.TimeoutExpired:
@@ -60,7 +64,7 @@ def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> di
 
 def _result(argv: list[str], exit_code: int, stdout: str, stderr: str) -> dict:
     return {
-        "argv": list(argv),
+        "argv": list(argv) if isinstance(argv, list) else [],
         "exit_code": exit_code,
         "stdout": stdout or "",
         "stderr": (stderr or "")[:MAX_OUTPUT_CHARS],

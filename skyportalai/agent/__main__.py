@@ -70,7 +70,7 @@ def build_kubernetes_runner(
         role = ClusterRole()
     return KubernetesRunner(
         role=role,
-        queue=SpoolQueue(config.spool_dir, max_batches=config.queue_max_batches),
+        queue=SpoolQueue(config.spool_dir, max_batches=config.queue_max_batches, max_bytes=config.queue_max_bytes),
         shipper=KubernetesShipper(config.base_url, config.token),
         interval_seconds=config.interval_seconds,
         stop_event=stop_event,

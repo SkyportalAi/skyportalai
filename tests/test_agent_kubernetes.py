@@ -7,9 +7,11 @@ shipper as the experiment scanners. The agent enforces read-only itself.
 
 from __future__ import annotations
 
+import errno
 import gzip
 import json
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 
@@ -119,6 +121,15 @@ class TestKubectl:
         monkeypatch.setattr(subprocess, "run", slow)
         assert kubectl.run_kubectl(GET_PODS, timeout=1)["exit_code"] == kubectl.EXIT_TIMEOUT
 
+    def test_invalid_utf8_in_output_is_replaced_not_raised(self, monkeypatch):
+        # Through the real decoder: a crash log's stray byte must not fail the cycle.
+        real_run = subprocess.run
+        emit = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok\\n\\xff\\xfe crash\\n')"]
+        monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: real_run(emit, **kwargs))
+        result = kubectl.run_kubectl(["kubectl", "logs", "-n", "ml", "trainer-0", "--previous"])
+        assert result["exit_code"] == 0
+        assert result["stdout"].startswith("ok\n") and "\ufffd" in result["stdout"]
+
 
 class TestClusterRole:
     def test_a_new_agent_uploads_no_commands_and_asks_again_soon(self):
@@ -216,6 +227,50 @@ class TestKubernetesRunner:
         runner.run_once()
         assert len(SpoolQueue(tmp_path)) == 1
 
+    def test_a_failed_collection_still_ships_the_backlog(self, tmp_path):
+        session = FakeSession([FakeResponse(202, {})])
+        runner = self._runner(tmp_path, session, FailingRole())
+        runner.queue.enqueue([{"buffered": True}])
+        runner.run_once()
+        assert SpoolQueue(tmp_path).is_empty()
+        assert _sent_body(session.calls[0]) == {"buffered": True}
+
+    def test_a_full_spool_volume_still_ships_the_backlog(self, tmp_path, monkeypatch):
+        session = FakeSession([FakeResponse(202, {})])
+        runner = self._runner(tmp_path, session, NodeRoleStub())
+        runner.queue.enqueue([{"buffered": True}])
+
+        def disk_full(runs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(runner.queue, "enqueue", disk_full)
+        runner.run_once()
+        assert SpoolQueue(tmp_path).is_empty()
+
+    def test_a_failing_backlog_is_read_one_upload_at_a_time(self, tmp_path, monkeypatch):
+        # A long outage's backlog must not be loaded whole: the pod's memory limit is small.
+        runner = self._runner(tmp_path, FakeSession([FakeResponse(503)] * 3), NodeRoleStub())
+        for n in range(3):
+            runner.queue.enqueue([{"n": n}])
+        reads = []
+        original = SpoolQueue._read_batch
+        monkeypatch.setattr(SpoolQueue, "_read_batch", lambda self, path: reads.append(path) or original(self, path))
+        runner.shipper.ship(runner.queue)
+        assert len(reads) == 1
+
+
+class FailingRole:
+    kind = "cluster"
+
+    def collect(self):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    def apply_reply(self, reply):
+        pass
+
+    def next_delay(self, interval):
+        return interval
+
 
 class NodeRoleStub:
     kind = "node"
@@ -257,6 +312,34 @@ class TestCommandPoller:
         self._poller(session, run=kubectl.run_kubectl).poll_once()
         assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
 
+    def test_a_lease_without_argv_is_answered_refused(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("process started"))
+        session = FakeSession([FakeResponse(200, {"id": 9}), FakeResponse(200, {})])
+        assert self._poller(session, run=kubectl.run_kubectl).poll_once() is True
+        assert session.calls[1]["url"] == BASE_URL + "/agent/api/kubernetes/commands/9/result/"
+        assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
+
+    @pytest.mark.parametrize("body", [{"argv": GET_PODS}, {"id": "x", "argv": GET_PODS}, {}])
+    def test_a_lease_without_a_usable_id_is_ignored(self, body):
+        session = FakeSession([FakeResponse(200, body)])
+        assert self._poller(session, run=lambda argv: pytest.fail("ran")).poll_once() is False
+        assert len(session.calls) == 1
+
+    def test_the_poller_survives_a_command_that_raises(self):
+        # /healthz can't see this thread; if it died, chat's kubectl would time out for good.
+        def boom(argv):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        session = FakeSession([FakeResponse(200, {"id": 1, "argv": GET_PODS})] + [FakeResponse(204)] * 50)
+        poller = self._poller(session, run=boom)
+        thread = threading.Thread(target=poller.run_forever, daemon=True)
+        thread.start()
+        thread.join(0.3)
+        alive = thread.is_alive()
+        poller._stop.set()
+        thread.join(5)
+        assert alive
+
 
 class TestConfigAndEntrypoint:
     def test_role_defaults_to_the_experiment_scanners(self):
@@ -280,4 +363,5 @@ class TestConfigAndEntrypoint:
         })
         runner = agent_main.build_kubernetes_runner(config)
         assert isinstance(runner.role, expected)
+        assert runner.queue.max_bytes == 512 * 1024 * 1024
         assert runner.shipper.url == "https://app.skyportal.ai/agent/api/kubernetes/ingest/"
