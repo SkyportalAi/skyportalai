@@ -1,6 +1,6 @@
 [project]
 name = "skyportalai"
-version = "0.2.2"
+version = "0.3.0"
 description = "Official Python SDK and command-line client for the Skyportal API"
 authors = [{ name = "Skyportal", email = "tech@skyportal.ai" }]
 readme = "README.md"
@@ -43,8 +43,7 @@ Repository = "https://github.com/SkyportalAi/skyportalai"
 Issues = "https://github.com/SkyportalAi/skyportalai/issues"
 
 [tool.poetry]
-# `skyportal` is a deprecated import shim through 0.2.x; drop it in 0.3.0.
-packages = [{ include = "skyportalai" }, { include = "skyportal" }]
+packages = [{ include = "skyportalai" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.4.2,<10.0.0"

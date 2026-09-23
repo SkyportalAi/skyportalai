@@ -103,11 +103,10 @@ the project is created on the first successful upload.
 
 - The workflow attaches [PEP 740](https://peps.python.org/pep-0740/) digital
   attestations automatically; no extra configuration is required.
-- The distribution is named `skyportalai`. Through 0.2.x it still installs a
-  deprecated top-level `skyportal` import shim. An unrelated astronomy project
-  owns the `skyportal` *distribution* name on PyPI, so installing both in one
-  environment collides on that import name; dropping the shim in 0.3.0 removes
-  the collision.
+- The distribution is named `skyportalai`. Through 0.2.x it also installed a
+  deprecated top-level `skyportal` import shim, which collided with an unrelated
+  astronomy project that owns the `skyportal` name on PyPI. 0.3.0 removed the
+  shim, and with it the collision.
 - A "pending" publisher does not reserve the project name. If someone else
   registers `skyportalai` before the first successful upload, the pending
   publisher is invalidated. The name is only held once a release actually

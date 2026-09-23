@@ -52,12 +52,16 @@ def root(
     del version
     # Click fills --base-url from SKYPORTALAI_BASE_URL, so a value here does not
     # mean the user typed a flag. Only a real flag is forwarded: resolution reads
-    # the environment itself, where it also honours the legacy SKYPORTAL_BASE_URL
-    # spelling and can say which setting selected the URL. The source is matched
+    # the environment itself, where it can say which setting selected the URL. The source is matched
     # by name because the Context comes from Typer's vendored Click.
     source = context.get_parameter_source("base_url")
     typed_on_command_line = source is not None and source.name == "COMMANDLINE"
-    settings = resolve_settings(base_url=base_url if typed_on_command_line else None)
+    try:
+        settings = resolve_settings(base_url=base_url if typed_on_command_line else None)
+    except SkyportalError as exc:
+        # No settings yet to name a target with; report and stop rather than traceback.
+        Output(json_mode=json_output, api_target="unresolved").failure(str(exc))
+        raise typer.Exit(1) from None
     context.obj = CLIContext(
         settings=settings,
         output=Output(json_mode=json_output, api_target=settings.base_url),
