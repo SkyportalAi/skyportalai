@@ -106,18 +106,18 @@ config:
   wandbDir: ""
   mlflowDir: ""
 
-# The agent token (agt_...). Set exactly one way; the chart refuses to install
-# with neither.
-#   existingSecret: recommended for production and GitOps. Name a Secret you
-#     create out of band (deploy/agent/README.md, step 2), so the token never
-#     appears in a values file or Helm's release history.
-#   value: quick installs. The chart creates the Secret from it. The token is
-#     then stored in Helm's release values, so keep it out of committed files
-#     and pass it with --set-string token.value=... or --set-file.
-# If both are set, existingSecret wins and value is ignored.
+# token is the agent token (agt_...). Set existingSecret or value; the chart
+# refuses to install with neither. If both are set, existingSecret wins.
 token:
+  # existingSecret is the name of a Secret you create out of band
+  # (deploy/agent/README.md, step 2). Recommended for production and GitOps:
+  # the token never appears in a values file or Helm's release history.
   existingSecret: ""
+  # value is the token itself, for quick installs; the chart creates the Secret.
+  # It is stored in Helm's release values, so never commit it: pass it with
+  # --set-string token.value=... or --set-file.
   value: ""
+  # secretKey is the key inside the Secret that holds the token.
   secretKey: SKYPORTALAI_AGENT_TOKEN
 
 # Disk backed state (spool queue + run catalog). Enabled by default so an
