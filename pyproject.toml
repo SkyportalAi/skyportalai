@@ -21,16 +21,16 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.32,<3.0",
-    "click>=8.4.2,<9.0",
-    "prompt-toolkit>=3.0.43,<4.0",
-    "pydantic>=2.0,<3.0",
+    "click>=8.5.0,<9.0",
+    "prompt-toolkit>=3.0.53,<4.0",
+    "pydantic>=2.13.5,<3.0",
     "rich>=13.0,<16.0",
     "typer>=0.27.2,<1.0",
     "pyyaml>=6.0,<7.0",
 ]
 
 [project.optional-dependencies]
-agent = ["wandb>=0.29.0,<1.0"]
+agent = ["wandb>=0.30.0,<1.0"]
 
 [project.scripts]
 skyportalai = "skyportalai.cli:main"
@@ -48,7 +48,7 @@ packages = [{ include = "skyportalai" }]
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.4.2,<10.0.0"
 requests-mock = "^1.12"
-ruff = "^0.16.4"
+ruff = "^0.16.7"
 # Present in dev so the MLflow scanner tests run (they skip without pyyaml)
 # without forcing the heavy `agent` extra in CI.
 pyyaml = "^6.0"
