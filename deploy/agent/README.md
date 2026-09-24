@@ -159,8 +159,8 @@ helm upgrade skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agen
 
 Prefer it over `--reuse-values`, which reuses the old release's values as they
 were and ignores defaults a newer chart adds. Or pass the token again as in
-[Option A](#option-a-helm)
-(`printf %s "$AGT" | helm upgrade ... --set-file token.value=/dev/stdin`).
+[Option A](#option-a-helm): `read -rs AGT` first (Option A ends with `unset AGT`), then
+`printf %s "$AGT" | helm upgrade ... --set-file token.value=/dev/stdin`.
 
 ### Option B: plain manifests
 
@@ -316,9 +316,10 @@ helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agen
   --version <chart version> -n skyportal -f skyportal-values.yaml
 ```
 
-To skip creating the Secret, drop `token.existingSecret` from the file, pipe the
-token in with `printf %s "$AGT" |`, and add `--set-file token.value=/dev/stdin` to
-the command (see [Option A](#option-a-helm)).
+To skip creating the Secret, drop `token.existingSecret` from the file, run
+`read -rs AGT` to paste the token, pipe it in with `printf %s "$AGT" |`, add
+`--set-file token.value=/dev/stdin` to the command, then `unset AGT` (see
+[Option A](#option-a-helm)).
 The namespace label above is still needed.
 
 The chart refuses `kubernetes.enabled` on an agent image older than 0.3.0: an
