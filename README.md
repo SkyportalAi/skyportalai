@@ -187,8 +187,9 @@ unset AGT
 
 The namespace label is needed because the node pods read the host's `/proc`
 (read-only). For production, create the token Secret yourself and set
-`token.existingSecret` instead of `token.value`. CPU and memory figures need
-metrics-server in the cluster. The full guide, covering GPU nodes, egress,
+`token.existingSecret` instead of `token.value`. Node CPU, memory, disk and GPU
+figures come from the node pods and need no metrics-server; per-pod CPU and memory
+usage still does. The full guide, covering GPU nodes, egress,
 upgrades and troubleshooting, is in
 [deploy/agent/README.md](deploy/agent/README.md#kubernetes-monitoring).
 
