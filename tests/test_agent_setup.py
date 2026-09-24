@@ -73,8 +73,15 @@ def test_helm_install_uses_the_existing_secret_never_the_token(monkeypatch):
     assert ["--version", agent_setup.CHART_VERSION] == argv[5:7]
     assert "token.existingSecret=skyportalai-agent-token" in argv
     assert "kubernetes.enabled=true" in argv
-    assert "config.clusterName=prod-gpu-1" in argv
+    assert argv[argv.index("config.clusterName=prod-gpu-1") - 1] == "--set-literal"
     assert calls[0][1] is None
+
+
+def test_helm_install_passes_the_cluster_name_literally(monkeypatch):
+    calls = _recorder(monkeypatch)
+    agent_setup.helm_install("kind-x", "gpu,east=1")
+    argv = calls[0][0]
+    assert argv[argv.index("config.clusterName=gpu,east=1") - 1] == "--set-literal"
 
 
 def test_manual_commands_use_the_chart_key_and_stdin():

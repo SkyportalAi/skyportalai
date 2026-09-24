@@ -1030,6 +1030,7 @@ class InteractiveShell:
             )
         self.chat_id = chat_id
         render_state = self._new_render_state()
+        turn = None
         try:
             with self.console.status(self._THINKING_STATUS, spinner="dots12") as status:
                 turn = self.client.wait_for_chat(
@@ -1046,6 +1047,10 @@ class InteractiveShell:
         except KeyboardInterrupt:
             self._cancel_active_turn(chat_id)
             return
+        finally:
+            if turn is None:
+                # No turn reaches _process_turn, so hand over what the wait already recorded.
+                self._deliver_agent_tokens(render_state)
         self._process_turn(turn, render_state=render_state)
 
     def _cancel_active_turn(self, chat_id: int) -> None:
@@ -1193,6 +1198,15 @@ class InteractiveShell:
         """Render a completed turn and resolve requested approvals."""
         if render_state is None:
             render_state = self._new_render_state()
+        try:
+            self._resolve_turn(turn, render_state)
+        finally:
+            # However the turn ends (settled, an error, Ctrl-C, a failed approval),
+            # a token minted in it still reaches the user, once.
+            self._deliver_agent_tokens(render_state)
+
+    def _resolve_turn(self, turn: ChatTurnResult, render_state: Dict[str, Any]) -> None:
+        """Render the turn and answer its approvals until it settles."""
         handled_approvals: set[str] = set()
         approval_settlement_deadline: Optional[float] = None
         while True:
@@ -1201,12 +1215,10 @@ class InteractiveShell:
             self._render_incremental_messages(turn.messages, render_state)
             self.last_sequence = max(self.last_sequence, turn.latest_sequence)
             if turn.status == "error":
-                self._deliver_agent_tokens(render_state)
                 raise PortalError(
                     "The Skyportal agent reported an error for chat #{}".format(turn.chat_id)
                 )
             if turn.status != "awaiting_approval":
-                self._deliver_agent_tokens(render_state)
                 if not render_state.get("rendered"):
                     # _render_assistant_messages() now surfaces thoughts,
                     # tool-call announcements, and generic tool results (not
@@ -1432,7 +1444,8 @@ class InteractiveShell:
         collect = getattr(self.client, "collect_agent_token", None)
         if collect is None:
             return
-        cluster = self._bounded_one_line(delivery.get("cluster_name") or "your cluster", 120)
+        cluster_name = str(delivery.get("cluster_name") or "")
+        cluster = self._bounded_one_line(cluster_name or "your cluster", 120)
         try:
             token = str(collect(str(delivery.get("handle") or ""))["key"])
         except (PortalError, KeyError, TypeError) as error:
@@ -1455,17 +1468,17 @@ class InteractiveShell:
                         agent_setup.SECRET_NAME, agent_setup.NAMESPACE, escape(context)
                     )
                 )
-                self._offer_helm_install(context, cluster)
+                self._offer_helm_install(context, cluster_name)
                 return
             self.console.print(Text("kubectl failed: " + self._clean_terminal_text(error), style="red"))
         self._print_token_once(token)
 
-    def _offer_helm_install(self, context: str, cluster: str) -> None:
+    def _offer_helm_install(self, context: str, cluster_name: str) -> None:
         if not self._confirm(
             "Install the agent now with helm upgrade --install (chart {})? [y/N]: ".format(agent_setup.CHART_VERSION)
         ):
             return
-        error = agent_setup.helm_install(context, cluster)
+        error = agent_setup.helm_install(context, cluster_name)
         if error is None:
             self.console.print("[green]skyportalai-agent installed in namespace {}.[/green]".format(agent_setup.NAMESPACE))
         else:

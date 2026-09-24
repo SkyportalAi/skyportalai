@@ -66,7 +66,8 @@ def helm_install(context: str, cluster_name: str) -> Optional[str]:
         "--kube-context", context, "-n", NAMESPACE,
         "--set", f"token.existingSecret={SECRET_NAME}",
         "--set", "kubernetes.enabled=true",
-        "--set", f"config.clusterName={cluster_name}",
+        # A cluster name can hold commas or look like a number; --set would split or retype it.
+        "--set-literal", f"config.clusterName={cluster_name}",
     ])
     if isinstance(result, str) or result.returncode != 0:
         return _error(result)

@@ -9,13 +9,13 @@ from skyportalai.shell.interactive import InteractiveShell
 from skyportalai.shell.portal import ChatTurnResult, PortalError
 
 
-def _delivery(sequence=5):
+def _delivery(sequence=5, cluster="prod"):
     return {
         "role": "assistant",
         "sequence": sequence,
         "content": [{"type": "text", "text": "Agent token created for cluster **prod**."}],
         "metadata": {
-            "type": "agent_token_delivery", "handle": "h-1", "cluster_name": "prod",
+            "type": "agent_token_delivery", "handle": "h-1", "cluster_name": cluster,
             "server_id": 2, "token_id": 3, "expires_at": None,
         },
     }
@@ -155,6 +155,59 @@ def test_a_turn_that_errors_still_delivers_the_token(tmp_path, monkeypatch):
     except PortalError:
         pass
 
+    assert client.collected == ["h-1"]
+
+
+def test_helm_gets_the_cluster_name_not_its_display_label(tmp_path, monkeypatch):
+    seen = {}
+    name = "gpu-" + "x" * 130
+    monkeypatch.setattr(agent_setup, "current_context", lambda: "kind-x")
+    monkeypatch.setattr(agent_setup, "create_secret", lambda ctx, token: None)
+    monkeypatch.setattr(agent_setup, "helm_install", lambda ctx, cluster_name: seen.update(helm=cluster_name))
+    shell, _ = _shell(tmp_path, monkeypatch, Client(), ["y", "y"])
+
+    shell._process_turn(_turn([_delivery(cluster=name)]))
+
+    assert seen["helm"] == name
+
+
+def test_a_failed_approval_still_delivers_the_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_setup, "current_context", lambda: None)
+    client = Client()
+    shell, _ = _shell(tmp_path, monkeypatch, client, [])
+
+    try:
+        shell._process_turn(_turn(status="awaiting_approval"))
+    except PortalError:
+        pass
+
+    assert client.collected == ["h-1"]
+
+
+class _InterruptedClient(Client):
+    def __init__(self):
+        super().__init__()
+        self.cancelled = []
+
+    def begin_chat_turn(self, message, **kwargs):
+        return 42
+
+    def wait_for_chat(self, chat_id, on_progress=None, **kwargs):
+        on_progress([_delivery()])
+        raise KeyboardInterrupt
+
+    def cancel_chat(self, chat_id, reason=""):
+        self.cancelled.append((chat_id, list(self.collected)))
+
+
+def test_ctrl_c_while_waiting_cancels_then_delivers_the_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_setup, "current_context", lambda: None)
+    client = _InterruptedClient()
+    shell, _ = _shell(tmp_path, monkeypatch, client, [])
+
+    shell._send_prompt("connect my cluster")
+
+    assert client.cancelled == [(42, [])]
     assert client.collected == ["h-1"]
 
 
