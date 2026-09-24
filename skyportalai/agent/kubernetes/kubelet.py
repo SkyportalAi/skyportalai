@@ -47,7 +47,13 @@ class KubeletClient:
         except OSError as exc:
             return None, f"token unreadable ({type(exc).__name__})"
         request = urllib.request.Request(self.url, headers={"Authorization": f"Bearer {token}"})
-        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=self._tls_context()), _NoRedirect)
+        try:
+            # Inside the handled boundary: a CA file holding bad data raises here, and that
+            # must cost only the kubelet read, never the cycle's /proc upload.
+            context = self._tls_context()
+        except (ssl.SSLError, OSError, ValueError) as exc:
+            return None, f"TLS: CA file unusable ({type(exc).__name__})"
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), _NoRedirect)
         try:
             with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
                 raw = response.read(max_chars + 1)

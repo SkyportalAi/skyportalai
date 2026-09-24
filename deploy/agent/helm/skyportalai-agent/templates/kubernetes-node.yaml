@@ -98,6 +98,12 @@ spec:
               value: {{ .port | quote }}
             - name: SKYPORTALAI_AGENT_KUBELET_INSECURE_SKIP_VERIFY
               value: {{ .insecureSkipVerify | quote }}
+            {{- with .caSecret }}
+            {{- if .name }}
+            - name: SKYPORTALAI_AGENT_KUBELET_CA_FILE
+              value: /etc/skyportalai/kubelet-ca/{{ .key }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if .Values.kubernetes.node.gpu.runtimeClassName }}
@@ -128,6 +134,11 @@ spec:
               mountPath: /var/lib/skyportalai-agent
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.kubernetes.node.kubelet.enabled .Values.kubernetes.node.kubelet.caSecret.name }}
+            - name: kubelet-ca
+              mountPath: /etc/skyportalai/kubelet-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: host-proc
           hostPath:
@@ -140,6 +151,16 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: {{ .Values.tmpDir.sizeLimit | quote }}
+        {{- with .Values.kubernetes.node.kubelet }}
+        {{- if and .enabled .caSecret.name }}
+        - name: kubelet-ca
+          secret:
+            secretName: {{ .caSecret.name }}
+            items:
+              - key: {{ .caSecret.key }}
+                path: {{ .caSecret.key }}
+        {{- end }}
+        {{- end }}
       {{- with .Values.kubernetes.node.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

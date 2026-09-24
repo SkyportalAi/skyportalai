@@ -5,6 +5,7 @@ source metrics-server itself reads. `get` on nodes/stats and nothing else: not
 nodes/proxy, which reaches the kubelet's exec, attach and log endpoints.
 */}}
 {{- if and .Values.kubernetes.enabled .Values.kubernetes.node.kubelet.enabled }}
+{{- include "skyportalai-agent.requireKubeletImage" . }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

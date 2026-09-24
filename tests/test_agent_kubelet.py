@@ -96,6 +96,15 @@ class TestKubeletClient:
         assert body is None and reason.startswith("token unreadable")
         assert opener.requests == []
 
+    def test_a_malformed_ca_file_is_a_reason_not_a_raise(self, tmp_path, token_file):
+        # Review (CodeRabbit): the TLS context was built before the try, so a CA file holding
+        # garbage raised out of stats_summary and the node lost that whole cycle's upload.
+        bad_ca = tmp_path / "ca.crt"
+        bad_ca.write_text("-----BEGIN CERTIFICATE-----\nnot base64 at all\n-----END CERTIFICATE-----\n")
+        client = KubeletClient("10.0.0.7", 10250, ca_file=bad_ca, token_file=token_file)
+        body, reason = client.stats_summary(max_chars=100)
+        assert body is None and reason.startswith("TLS")
+
     def test_never_follows_a_redirect(self):
         handler = kubelet_mod._NoRedirect()
         assert handler.redirect_request(None, None, 302, "Found", {}, "https://elsewhere/") is None

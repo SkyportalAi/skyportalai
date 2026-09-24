@@ -202,6 +202,14 @@ kubernetes:
       # for kubelets with self-signed certificates. The node pods' token (nodes/stats
       # only) is then exposed to anyone who can intercept traffic to the node.
       insecureSkipVerify: false
+      # caSecret mounts the CA that signed the kubelet's serving certificate from a Secret
+      # in the release namespace, for kubelets not signed by the cluster CA. Verifying
+      # against it keeps TLS on where insecureSkipVerify would turn it off.
+      caSecret:
+        # name of the Secret; empty mounts nothing and verifies against the cluster CA.
+        name: ""
+        # key inside the Secret holding the PEM bundle.
+        key: ca.crt
     resources:
       requests:
         cpu: 20m
