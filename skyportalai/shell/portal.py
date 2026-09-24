@@ -392,6 +392,11 @@ class SkyportalClient:
         """Remove the stored GitHub Personal Access Token from the server."""
         self._request("DELETE", "/api/v1/agent/github-token/delete/")
 
+    def collect_agent_token(self, handle: str) -> Dict[str, Any]:
+        """Redeem a one-time agent-token delivery from chat; the raw key comes back exactly once."""
+        # The handle goes in the body, never the URL: request paths end up in logs.
+        return self._request("POST", "/api/v1/agent-tokens/collect/", json_body={"handle": handle})
+
     def get_permission_mode(self) -> str:
         """Return the account's shared agent-approval mode."""
         payload = self._request("GET", "/api/v1/agent/permission/")

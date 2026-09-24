@@ -1046,6 +1046,33 @@ def test_save_github_token_posts_token_and_optional_repo(credential_path):
     assert json.loads(request.data) == {"token": "ghp_realtoken", "repo": "owner/repo"}
 
 
+def test_collect_agent_token_posts_the_handle_in_the_body(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai")
+    payload = {"key": "agt_x", "token_id": 3, "cluster": "prod", "expires_at": None}
+
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse(payload)) as call:
+        assert client.collect_agent_token("h-1") == payload
+
+    request = call.call_args.args[0]
+    assert request.full_url == "https://app.skyportal.ai/api/v1/agent-tokens/collect/"
+    assert request.get_method() == "POST"
+    assert json.loads(request.data) == {"handle": "h-1"}
+    assert request.get_header("Authorization") == "Bearer sk_test"
+
+
+def test_collect_agent_token_surfaces_the_server_detail(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch(
+        "skyportalai.shell.portal.urlopen",
+        side_effect=api_error(404, {"detail": "This token was already collected or has expired."}),
+    ):
+        with pytest.raises(PortalError, match="already collected"):
+            client.collect_agent_token("h-1")
+
+
 def test_save_github_token_omits_repo_when_not_given(credential_path):
     CredentialStore.save(
         {"access_token": "sk_test", "base_url": "https://app.skyportal.ai"}
