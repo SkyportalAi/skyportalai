@@ -1457,9 +1457,8 @@ class InteractiveShell:
         self._print_section("Agent token for {}".format(escape(cluster)), style="yellow")
         context = agent_setup.current_context()
         if context and self._confirm(
-            "Create Secret {} in namespace {} using kubectl context '{}'? [y/N]: ".format(
-                agent_setup.SECRET_NAME, agent_setup.NAMESPACE, context
-            )
+            "Create Secret {} in namespace {} and set that namespace's Pod Security enforcement to privileged, "
+            "using kubectl context '{}'? [y/N]: ".format(agent_setup.SECRET_NAME, agent_setup.NAMESPACE, context)
         ):
             error = agent_setup.create_secret(context, token)
             if error is None:

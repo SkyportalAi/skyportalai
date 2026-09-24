@@ -84,6 +84,7 @@ def test_confirmed_secret_uses_the_token_and_never_prints_it(tmp_path, monkeypat
     assert seen == {"ctx": "kind-x", "token": "agt_SECRET"}
     assert "agt_SECRET" not in output
     assert "kind-x" in prompts[0]
+    assert "privileged" in prompts[0]
     assert "helm" not in seen
 
 
