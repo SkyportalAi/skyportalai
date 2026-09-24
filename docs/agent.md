@@ -4,6 +4,10 @@
 run batches in a bounded disk queue, and sends them to Skyportal. It is intended
 for a dedicated host or container with only the experiment volumes it needs.
 
+The same agent also monitors Kubernetes clusters: install it with the Helm chart
+and `kubernetes.enabled=true`
+([deploy/agent/README.md](../deploy/agent/README.md#kubernetes-monitoring)).
+
 ## Install and run
 
 ```console

@@ -81,11 +81,15 @@ creates the Secret:
 
 ```bash
 read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
-helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
+printf %s "$AGT" | helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
   --version 0.3.2 \
-  --set-string token.value="$AGT"
+  --set-file token.value=/dev/stdin
 unset AGT
 ```
+
+`--set-file ... /dev/stdin` keeps the token out of Helm's command-line
+arguments, where another user on the same host could read it with `ps`;
+`--set-string token.value="$AGT"` would put it there.
 
 The token is then stored in the release's values (`helm get values` shows it),
 so prefer `token.existingSecret` for production and never put `token.value` in a
@@ -141,6 +145,22 @@ so moving to a newer chart carries them along:
 helm upgrade skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
   --version <new chart version> -f my-values.yaml
 ```
+
+If you installed with `token.value`, that token is not in `my-values.yaml`, and
+an upgrade with `-f` does not carry the previous release's values forward: the
+upgrade stops with a missing-token error. Add `--reset-then-reuse-values`
+(Helm 3.14+), which starts from the new chart's defaults and re-applies the
+installed release's values, token included:
+
+```bash
+helm upgrade skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
+  --version <new chart version> --reset-then-reuse-values -f my-values.yaml
+```
+
+Prefer it over `--reuse-values`, which reuses the old release's values as they
+were and ignores defaults a newer chart adds. Or pass the token again as in
+[Option A](#option-a-helm): `read -rs AGT` first (Option A ends with `unset AGT`), then
+`printf %s "$AGT" | helm upgrade ... --set-file token.value=/dev/stdin`.
 
 ### Option B: plain manifests
 
@@ -296,8 +316,10 @@ helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agen
   --version <chart version> -n skyportal -f skyportal-values.yaml
 ```
 
-To skip creating the Secret, drop `token.existingSecret` from the file and add
-`--set-string token.value="$AGT"` to the command (see [Option A](#option-a-helm)).
+To skip creating the Secret, drop `token.existingSecret` from the file, run
+`read -rs AGT` to paste the token, pipe it in with `printf %s "$AGT" |`, add
+`--set-file token.value=/dev/stdin` to the command, then `unset AGT` (see
+[Option A](#option-a-helm)).
 The namespace label above is still needed.
 
 The chart refuses `kubernetes.enabled` on an agent image older than 0.3.0: an
