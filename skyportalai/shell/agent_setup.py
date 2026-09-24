@@ -22,8 +22,10 @@ MANUAL_COMMANDS = "\n".join([
     "kubectl create namespace skyportal --dry-run=client -o yaml | kubectl apply -f -",
     "kubectl label namespace skyportal pod-security.kubernetes.io/enforce=privileged --overwrite",
     "read -rs AGT   # paste the token; it is not echoed or kept in history",
-    "printf '%s' \"$AGT\" | kubectl -n skyportal create secret generic skyportalai-agent-token "
-    "--from-file=SKYPORTALAI_AGENT_TOKEN=/dev/stdin",
+    (
+        "printf '%s' \"$AGT\" | kubectl -n skyportal create secret generic skyportalai-agent-token "
+        "--from-file=SKYPORTALAI_AGENT_TOKEN=/dev/stdin"
+    ),
     "unset AGT",
 ])
 

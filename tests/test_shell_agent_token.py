@@ -2,6 +2,7 @@
 
 from io import StringIO
 
+import pytest
 from rich.console import Console
 
 from skyportalai.shell import agent_setup
@@ -150,10 +151,8 @@ def test_a_turn_that_errors_still_delivers_the_token(tmp_path, monkeypatch):
     client = Client()
     shell, _ = _shell(tmp_path, monkeypatch, client, [])
 
-    try:
+    with pytest.raises(PortalError):
         shell._process_turn(_turn(status="error"))
-    except PortalError:
-        pass
 
     assert client.collected == ["h-1"]
 
@@ -176,10 +175,8 @@ def test_a_failed_approval_still_delivers_the_token(tmp_path, monkeypatch):
     client = Client()
     shell, _ = _shell(tmp_path, monkeypatch, client, [])
 
-    try:
+    with pytest.raises(PortalError, match="without approval details"):
         shell._process_turn(_turn(status="awaiting_approval"))
-    except PortalError:
-        pass
 
     assert client.collected == ["h-1"]
 
