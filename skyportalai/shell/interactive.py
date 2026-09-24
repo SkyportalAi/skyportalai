@@ -25,6 +25,7 @@ from rich.text import Text
 
 from skyportalai import _env
 
+from . import agent_setup
 from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
@@ -156,6 +157,7 @@ class InteractiveShell:
         client_factory: Callable[[], SkyportalClient],
         session: Optional[Any] = None,
         token_prompt: Optional[Callable[[str], str]] = None,
+        confirm_prompt: Optional[Callable[[str], str]] = None,
     ):
         self.console = console
         self.client = client_factory()
@@ -168,6 +170,7 @@ class InteractiveShell:
         self.selected_server_names: List[str] = []
         self.previous_chat_id: Optional[int] = self._load_previous_chat_id()
         self._token_prompt = token_prompt or self._default_token_prompt
+        self._confirm_prompt = confirm_prompt or self._default_confirm_prompt
         self.session = session or self._create_prompt_session()
         self._handlers: Dict[str, Callable[[List[str]], None]] = {
             "/help": self._cmd_help,
@@ -243,6 +246,12 @@ class InteractiveShell:
     @staticmethod
     def _default_token_prompt(message: str) -> str:
         return secure_prompt(message, is_password=True)
+
+    @staticmethod
+    def _default_confirm_prompt(message: str) -> str:
+        # A fresh prompt with in-memory history, unlike self.session, which saves every
+        # answer to ~/.skyportalai/history.
+        return secure_prompt(message)
 
     def run(self) -> None:
         """Run until `/exit` or Ctrl-D, preserving the prompt after errors."""
@@ -1098,6 +1107,9 @@ class InteractiveShell:
         # whole batch. If a callback render raises, PortalClient retains every
         # message in ChatTurnResult so the final pass can safely retry it.
         seen.update(fresh_keys)
+        # Recorded here, the one place that sees each new message exactly once;
+        # handled when the turn settles, never inside the progress spinner.
+        render_state.setdefault("deliveries", []).extend(self._agent_token_deliveries(fresh))
         if sequences:
             self.last_sequence = max(self.last_sequence, max(sequences))
         return rendered
@@ -1189,10 +1201,12 @@ class InteractiveShell:
             self._render_incremental_messages(turn.messages, render_state)
             self.last_sequence = max(self.last_sequence, turn.latest_sequence)
             if turn.status == "error":
+                self._deliver_agent_tokens(render_state)
                 raise PortalError(
                     "The Skyportal agent reported an error for chat #{}".format(turn.chat_id)
                 )
             if turn.status != "awaiting_approval":
+                self._deliver_agent_tokens(render_state)
                 if not render_state.get("rendered"):
                     # _render_assistant_messages() now surfaces thoughts,
                     # tool-call announcements, and generic tool results (not
@@ -1398,6 +1412,76 @@ class InteractiveShell:
             or approval.get("reason")
             or json.dumps(approval, indent=2, sort_keys=True)
         )
+
+    @staticmethod
+    def _agent_token_deliveries(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Agent tokens minted in this turn (skyportal-website#3575); only their handles travel in chat."""
+        return [
+            message["metadata"]
+            for message in messages
+            if isinstance(message.get("metadata"), dict)
+            and message["metadata"].get("type") == "agent_token_delivery"
+        ]
+
+    def _deliver_agent_tokens(self, render_state: Dict[str, Any]) -> None:
+        for delivery in render_state.pop("deliveries", []):
+            self._deliver_agent_token(delivery)
+
+    def _deliver_agent_token(self, delivery: Dict[str, Any]) -> None:
+        """Collect the token once and hand it to kubectl, or print it once; it is never written anywhere."""
+        collect = getattr(self.client, "collect_agent_token", None)
+        if collect is None:
+            return
+        cluster = self._bounded_one_line(delivery.get("cluster_name") or "your cluster", 120)
+        try:
+            token = str(collect(str(delivery.get("handle") or ""))["key"])
+        except (PortalError, KeyError, TypeError) as error:
+            self.console.print(
+                "[yellow]Could not collect the agent token for {} ({}). Rotate it on the Agents page "
+                "to get a new one.[/yellow]".format(escape(cluster), escape(str(error)))
+            )
+            return
+        self._print_section("Agent token for {}".format(escape(cluster)), style="yellow")
+        context = agent_setup.current_context()
+        if context and self._confirm(
+            "Create Secret {} in namespace {} using kubectl context '{}'? [y/N]: ".format(
+                agent_setup.SECRET_NAME, agent_setup.NAMESPACE, context
+            )
+        ):
+            error = agent_setup.create_secret(context, token)
+            if error is None:
+                self.console.print(
+                    "[green]Secret {} created in namespace {} ({}).[/green]".format(
+                        agent_setup.SECRET_NAME, agent_setup.NAMESPACE, escape(context)
+                    )
+                )
+                self._offer_helm_install(context, cluster)
+                return
+            self.console.print(Text("kubectl failed: " + self._clean_terminal_text(error), style="red"))
+        self._print_token_once(token)
+
+    def _offer_helm_install(self, context: str, cluster: str) -> None:
+        if not self._confirm(
+            "Install the agent now with helm upgrade --install (chart {})? [y/N]: ".format(agent_setup.CHART_VERSION)
+        ):
+            return
+        error = agent_setup.helm_install(context, cluster)
+        if error is None:
+            self.console.print("[green]skyportalai-agent installed in namespace {}.[/green]".format(agent_setup.NAMESPACE))
+        else:
+            self.console.print(Text("helm failed: " + self._clean_terminal_text(error), style="red"))
+
+    def _print_token_once(self, token: str) -> None:
+        self.console.print("[bold]Copy this token now. It won't be shown again.[/bold]")
+        self.console.print(Text(token))
+        self.console.print("[dim]Create the Secret the agent reads (key {}):[/dim]".format(agent_setup.SECRET_KEY))
+        self.console.print(Text(agent_setup.MANUAL_COMMANDS))
+
+    def _confirm(self, message: str) -> bool:
+        try:
+            return self._confirm_prompt(message).strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            return False
 
     def _render_assistant_messages(
         self,
