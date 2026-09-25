@@ -27,6 +27,13 @@ NOTE: both token.existingSecret and token.value are set. The agent reads the
 token from the Secret "{{ .Values.token.existingSecret }}"; token.value is ignored.
 {{- end }}
 
+{{- if and .Values.kubernetes.enabled .Values.kubernetes.node.kubelet.enabled .Values.kubernetes.node.kubelet.insecureSkipVerify }}
+
+WARNING: kubernetes.node.kubelet.insecureSkipVerify is on. The node pods do not
+verify the kubelet's TLS certificate, so their token (get nodes/stats only) can be
+read by anyone able to intercept traffic to the node.
+{{- end }}
+
 {{- if not .Values.persistence.enabled }}
 
 WARNING: persistence is disabled. The spool queue and run catalog live in an

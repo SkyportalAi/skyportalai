@@ -190,6 +190,26 @@ kubernetes:
       # RuntimeClass that exposes the NVIDIA driver to a pod without a GPU request,
       # usually "nvidia" with the GPU operator. Empty: no GPU metrics.
       runtimeClassName: ""
+    # kubelet is each node pod reading its own node's kubelet /stats/summary: per-pod
+    # CPU and memory without metrics-server (#3588). Needs agent 0.4.0.
+    kubelet:
+      # enabled gives the node pods their own ServiceAccount with only `get` on
+      # nodes/stats, and allows egress to the kubelet port.
+      enabled: false
+      # port is the kubelet's secure port on the node IP.
+      port: 10250
+      # insecureSkipVerify skips TLS verification of the kubelet's serving certificate,
+      # for kubelets with self-signed certificates. The node pods' token (nodes/stats
+      # only) is then exposed to anyone who can intercept traffic to the node.
+      insecureSkipVerify: false
+      # caSecret mounts the CA that signed the kubelet's serving certificate from a Secret
+      # in the release namespace, for kubelets not signed by the cluster CA. Verifying
+      # against it keeps TLS on where insecureSkipVerify would turn it off.
+      caSecret:
+        # name of the Secret; empty mounts nothing and verifies against the cluster CA.
+        name: ""
+        # key inside the Secret holding the PEM bundle.
+        key: ca.crt
     resources:
       requests:
         cpu: 20m

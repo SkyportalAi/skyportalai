@@ -213,7 +213,7 @@ class TestNodeRole:
 
     def test_derives_nothing(self, tmp_path):
         node = self._role(tmp_path).collect()["node"]
-        assert set(node) == {"name", "files", "statvfs", "commands", "unreadable"}
+        assert set(node) == {"name", "files", "statvfs", "commands", "kubelet", "unreadable"}
 
     def test_requires_a_node_name(self):
         with pytest.raises(ValueError):

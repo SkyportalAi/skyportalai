@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..scrapers.base_scanner import iso_now
 from .kubectl import run_process
+from .kubelet import STATS_SUMMARY_PATH, KubeletClient
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class NodeRole:
         host_proc: Path | None = None,
         disk_path: Path | None = None,
         run: Callable[[list[str]], dict] = run_process,
+        kubelet: KubeletClient | None = None,
     ):
         if not node_name:
             raise ValueError("node_name is required for the node role (set from spec.nodeName)")
@@ -64,6 +66,7 @@ class NodeRole:
         # node's disk without mounting the host root.
         self.disk_path = disk_path
         self._run = run
+        self._kubelet = kubelet
 
     def collect(self) -> dict:
         files, unreadable = self._read_proc_files()
@@ -77,6 +80,9 @@ class NodeRole:
                 "files": files,
                 "statvfs": statvfs,
                 "commands": [self._run(list(NVIDIA_SMI))],
+                # Keyed by the kubelet path, raw body, like files. An additive key: a server
+                # that predates it ignores it, and the /proc readings above still land.
+                "kubelet": self._read_kubelet(unreadable),
                 # What was asked for and could not be read, so a gap is never silent.
                 "unreadable": unreadable,
             },
@@ -104,6 +110,15 @@ class NodeRole:
                 continue
             files[name] = text
         return files, unreadable
+
+    def _read_kubelet(self, unreadable: dict[str, str]) -> dict[str, str]:
+        if self._kubelet is None:
+            return {}
+        body, reason = self._kubelet.stats_summary(MAX_FILE_CHARS)
+        if body is None:
+            unreadable[f"kubelet:{STATS_SUMMARY_PATH}"] = reason or "unknown"
+            return {}
+        return {STATS_SUMMARY_PATH: body}
 
     def _read_statvfs(self, unreadable: dict[str, str]) -> dict[str, dict[str, int]]:
         if self.disk_path is None:
