@@ -39,6 +39,9 @@ _PERMISSION_MODES = frozenset({"ask", "autoapprove"})
 _AUTOAPPROVE_TYPES = frozenset({"", "bash_command", "plan"})
 _APPROVAL_SETTLEMENT_TIMEOUT = 300.0
 _APPROVAL_SETTLEMENT_POLL_INTERVAL = 0.25
+# Cluster-wide namespace scope; must match ALL_NAMESPACES in the website's
+# website/chat/environment/kube_namespace.py.
+ALL_NAMESPACES = "__all__"
 
 
 class _AutoapprovalPolicyConflict(RuntimeError):
@@ -80,6 +83,10 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/server <name> [name ...] | auto",
         "Select one or more servers by name for agent execution",
     ),
+    "/namespace": CommandInfo(
+        "/namespace <name> [name ...] | all | clear",
+        "Choose the namespaces the agent may use on the selected Kubernetes cluster",
+    ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
     "/about": CommandInfo("/about", "Show Skyportal CLI information"),
     "/exit": CommandInfo("/exit", "Leave Skyportal"),
@@ -111,6 +118,11 @@ class SkyportalCompleter(Completer):
             options = (("--no-browser", "print the API-key URL"),)
         elif command == "/server":
             options = (("auto", "let the agent choose a server"),)
+        elif command == "/namespace":
+            options = (
+                ("all", "every namespace in the cluster"),
+                ("clear", "remove the namespace selection"),
+            )
         elif command == "/github-token":
             options = (
                 ("set", "save a GitHub PAT"),
@@ -168,6 +180,10 @@ class InteractiveShell:
         self.selected_server_id: Optional[int] = None
         self.selected_server_ids: List[int] = []
         self.selected_server_names: List[str] = []
+        # Kubernetes clusters refuse every command until namespaces are chosen,
+        # the same rule the web Scope pill enforces; these mirror that choice.
+        self.selected_namespaces: Dict[int, List[str]] = {}
+        self.kubernetes_namespaces: Dict[int, List[str]] = {}
         self.previous_chat_id: Optional[int] = self._load_previous_chat_id()
         self._token_prompt = token_prompt or self._default_token_prompt
         self._confirm_prompt = confirm_prompt or self._default_confirm_prompt
@@ -185,6 +201,7 @@ class InteractiveShell:
             "/upload": self._cmd_upload,
             "/servers": self._cmd_servers,
             "/server": self._cmd_server,
+            "/namespace": self._cmd_namespace,
             "/clear": self._cmd_clear,
             "/about": self._cmd_about,
             "/exit": self._cmd_exit,
@@ -303,6 +320,9 @@ class InteractiveShell:
             fragments.append(("class:context", " server#{}".format(labels[0])))
         elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
+        namespace_label = self._namespace_label(all_label="all")
+        if namespace_label:
+            fragments.append(("class:context", " ns#{}".format(namespace_label)))
         fragments.append(("class:arrow", "  > "))
         return fragments
 
@@ -568,6 +588,8 @@ class InteractiveShell:
         self.selected_server_id = None
         self.selected_server_ids = []
         self.selected_server_names = []
+        self.selected_namespaces = {}
+        self.kubernetes_namespaces = {}
         self._forget_chat()
         self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
 
@@ -737,6 +759,8 @@ class InteractiveShell:
         )
         if len(labels) > 1:
             rows.add_row("Default", labels[0])
+        if self.kubernetes_namespaces:
+            rows.add_row("Namespaces", self._namespace_label() or "[yellow]none selected[/yellow]")
         if isinstance(remote, dict):
             workflow_status = self._clean_terminal_text(remote.get("status", "unknown"))
             status_style = {
@@ -913,6 +937,8 @@ class InteractiveShell:
             self.selected_server_id = None
             self.selected_server_ids = []
             self.selected_server_names = []
+            self.selected_namespaces = {}
+            self.kubernetes_namespaces = {}
             self.console.print("[green]✓ Server selection set to automatic.[/green]")
             return
         if any(argument.lower() == "auto" for argument in args):
@@ -949,6 +975,13 @@ class InteractiveShell:
         self.selected_server_ids = server_ids
         self.selected_server_id = server_ids[0]
         self.selected_server_names = names
+        self.kubernetes_namespaces = self._kubernetes_namespaces_for(server_ids, servers)
+        # Matches the server, which drops picks for clusters that left the scope.
+        self.selected_namespaces = {
+            server_id: namespaces
+            for server_id, namespaces in self.selected_namespaces.items()
+            if server_id in self.kubernetes_namespaces
+        }
         if len(names) == 1:
             message = "Server {} selected.".format(names[0])
         else:
@@ -957,6 +990,110 @@ class InteractiveShell:
                 names[0],
             )
         self.console.print("[green]✓ {}[/green]".format(message))
+        self._print_namespace_hint()
+
+    @staticmethod
+    def _kubernetes_namespaces_for(
+        server_ids: List[int], servers: List[Dict[str, Any]]
+    ) -> Dict[int, List[str]]:
+        """Known namespaces of each selected Kubernetes cluster, from the /servers listing."""
+        found: Dict[int, List[str]] = {}
+        for server in servers:
+            try:
+                server_id = int(server.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if server_id in server_ids and server.get("target_kind") == "kubernetes":
+                found[server_id] = [str(namespace) for namespace in server.get("namespaces") or []]
+        return found
+
+    def _server_name(self, server_id: int) -> str:
+        names = dict(zip(self.selected_server_ids, self.selected_server_names, strict=False))
+        return names.get(server_id, str(server_id))
+
+    def _print_namespace_hint(self) -> None:
+        for server_id, known in self.kubernetes_namespaces.items():
+            if server_id in self.selected_namespaces:
+                continue
+            self.console.print(
+                "[yellow]{} is a Kubernetes cluster. Choose the namespaces the agent may use: "
+                "[bold]/namespace all[/bold] or [bold]/namespace <name>[/bold][/yellow]".format(
+                    escape(self._server_name(server_id))
+                )
+            )
+            if known:
+                self.console.print("[dim]Namespaces: {}[/dim]".format(escape(", ".join(known))))
+
+    def _cmd_namespace(self, args: List[str]) -> None:
+        usage = "[yellow]Usage:[/yellow] /namespace <name> [name ...] | all | clear"
+        tokens = [part.strip() for argument in args for part in argument.split(",") if part.strip()]
+        if not tokens:
+            self.console.print(usage)
+            return
+        cluster_ids = [
+            server_id for server_id in self.selected_server_ids if server_id in self.kubernetes_namespaces
+        ]
+        if not cluster_ids:
+            self.console.print(
+                "[yellow]Select a Kubernetes cluster first with [bold]/server <name>[/bold].[/yellow]"
+            )
+            return
+        keywords = {token.lower() for token in tokens} & {"all", "clear"}
+        if keywords and len(tokens) > 1:
+            self.console.print(usage)
+            return
+        if "clear" in keywords:
+            chosen: List[str] = []
+        elif "all" in keywords:
+            chosen = [ALL_NAMESPACES]
+        else:
+            chosen = list(dict.fromkeys(tokens))
+            for server_id in cluster_ids:
+                known = self.kubernetes_namespaces[server_id]
+                # An empty listing means SkyPortal has no pod snapshot yet; the
+                # server validates the names live in that case.
+                missing = [namespace for namespace in chosen if known and namespace not in known]
+                if missing:
+                    raise PortalError(
+                        "Namespace {} not found on {}. Known namespaces: {}".format(
+                            ", ".join(missing), self._server_name(server_id), ", ".join(known)
+                        )
+                    )
+        updated = {
+            server_id: namespaces
+            for server_id, namespaces in self.selected_namespaces.items()
+            if server_id not in cluster_ids
+        }
+        if chosen:
+            updated.update({server_id: list(chosen) for server_id in cluster_ids})
+        if self.chat_id is not None:
+            with self.console.status("[cyan]Updating namespace scope…[/cyan]", spinner="dots"):
+                self.client.select_chat_servers(
+                    self.chat_id,
+                    self.selected_server_ids,
+                    active_server_id=self.selected_server_id,
+                    selected_namespaces=self._namespace_payload(updated),
+                )
+        self.selected_namespaces = updated
+        clusters = ", ".join(self._server_name(server_id) for server_id in cluster_ids)
+        if chosen:
+            self.console.print(
+                "[green]✓ {}: {}[/green]".format(escape(clusters), escape(self._namespace_label()))
+            )
+        else:
+            self.console.print("[green]✓ Namespace selection cleared for {}.[/green]".format(escape(clusters)))
+
+    @staticmethod
+    def _namespace_payload(selected: Dict[int, List[str]]) -> Dict[str, List[str]]:
+        return {str(server_id): list(namespaces) for server_id, namespaces in selected.items()}
+
+    def _namespace_label(self, all_label: str = "all namespaces") -> str:
+        labels = [
+            all_label if namespace == ALL_NAMESPACES else namespace
+            for namespaces in self.selected_namespaces.values()
+            for namespace in namespaces
+        ]
+        return ", ".join(dict.fromkeys(labels))
 
     @staticmethod
     def _resolve_server_tokens(
@@ -1015,13 +1152,17 @@ class InteractiveShell:
         self._require_api_connection()
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
         # server-side, not just stop the shell from listening.
-        if len(self.selected_server_ids) > 1:
-            chat_id = self.client.begin_chat_turn(
-                message,
-                chat_id=self.chat_id,
-                server_ids=self.selected_server_ids,
-                active_server_id=self.selected_server_id,
-            )
+        namespaces = self._namespace_payload(self.selected_namespaces)
+        if len(self.selected_server_ids) > 1 or namespaces:
+            # Namespaces only travel on the plural create, so a single
+            # Kubernetes cluster with a namespace choice takes this path too.
+            scope: Dict[str, Any] = {
+                "server_ids": self.selected_server_ids,
+                "active_server_id": self.selected_server_id,
+            }
+            if namespaces:
+                scope["selected_namespaces"] = namespaces
+            chat_id = self.client.begin_chat_turn(message, chat_id=self.chat_id, **scope)
         else:
             chat_id = self.client.begin_chat_turn(
                 message,

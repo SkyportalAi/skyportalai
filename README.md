@@ -61,7 +61,9 @@ cd skyportalai
 ```
 
 Inside the terminal, run `/login` once, list infrastructure with `/servers`,
-select one or more hosts with `/server`, and ask what changed:
+select one or more hosts with `/server`, and ask what changed. For a Kubernetes
+cluster, also choose the namespaces the agent may use with `/namespace` — every
+command is refused until you do, as in the web app's Scope pill:
 
 ```text
 skyportalai [connected] > diagnose the latest deployment
@@ -73,6 +75,7 @@ Useful commands:
 /login          Connect your Skyportal account
 /servers        List available infrastructure
 /server <id> [id ...]  Select one or more servers; the first is the default
+/namespace <name> [name ...] | all | clear  Choose namespaces on a selected Kubernetes cluster
 /permission [ask|autoapprove]  Show or change the shared approval setting
 /status         Show the active context
 /new            Start a new investigation

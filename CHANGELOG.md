@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A Kubernetes cluster selected in the interactive terminal can now be used.**
+  `/server <cluster>` put the cluster in scope with no namespaces, and SkyPortal
+  refuses every command on a cluster until namespaces are chosen (the web app's
+  Scope pill). The terminal had no way to choose them, so every question about a
+  connected cluster ended in "no namespace is in scope". The new
+  `/namespace <name> [name ...] | all | clear` sets them, on the first message or
+  on an existing chat; `/server` now says so when it selects a cluster and lists
+  the cluster's namespaces, and the prompt and `/status` show the choice.
+
 ## 0.3.0
 
 ### Breaking
