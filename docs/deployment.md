@@ -76,9 +76,8 @@ skyportalai
 ```
 
 `skyportalai` also reads `SKYPORTALAI_ACCESS_TOKEN`, which takes precedence over
-`SKYPORTALAI_API_KEY`. The pre-0.2.0 `SKYPORTAL_API_KEY` and
-`SKYPORTAL_ACCESS_TOKEN` still work in 0.2.x and warn on use; they are removed
-in 0.3.0.
+`SKYPORTALAI_API_KEY`. The pre-0.2.0 `SKYPORTAL_*` names were removed in 0.3.0
+and are ignored.
 
 Avoid putting credentials directly in shell history. Do not use `agt_` observability-agent tokens with the CLI.
 

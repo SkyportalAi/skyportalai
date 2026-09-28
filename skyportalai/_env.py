@@ -1,83 +1,55 @@
 """Environment and path resolution for the ``skyportalai`` surface.
 
-Every knob was named ``SKYPORTAL_*`` before 0.2.0 and lives under
-``~/.skyportal``. The canonical names are now ``SKYPORTALAI_*`` and
-``~/.skyportalai``. The old names keep working for one release: reads fall back
-to them and emit a :class:`DeprecationWarning`, and the config directory is
-migrated in place the first time it is needed.
+Every setting is a ``SKYPORTALAI_*`` environment variable and configuration lives
+under ``~/.skyportalai``. The pre-0.2.0 ``SKYPORTAL_*`` names were removed in 0.3.0
+and are no longer read. One that is still set draws a warning naming its
+replacement, except for the settings that choose which host receives credentials:
+there a leftover ``SKYPORTAL_BASE_URL`` with no ``SKYPORTALAI_BASE_URL`` is an error,
+because falling back to the default would send a self-hosted install's key to the
+SaaS host. A leftover ``~/.skyportal``
+directory is still moved to ``~/.skyportalai`` the first time it is needed, so a
+late upgrade keeps its credentials and history.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import warnings
 from collections.abc import Mapping
 from pathlib import Path
 
-PREFIX = "SKYPORTALAI_"
-LEGACY_PREFIX = "SKYPORTAL_"
+from ._exceptions import SkyportalError
 
-REMOVAL_RELEASE = "0.3.0"
-_REMOVAL_NOTICE = f"will be removed in {REMOVAL_RELEASE}"
+PREFIX = "SKYPORTALAI_"
+REMOVED_PREFIX = "SKYPORTAL_"
+# Settings that decide which host receives the credentials. For these a removed name
+# is refused rather than ignored: the default is somebody else's host.
+DESTINATION_SETTINGS = frozenset({"SKYPORTALAI_BASE_URL", "SKYPORTALAI_URL"})
 
 CONFIG_DIR_NAME = ".skyportalai"
 LEGACY_CONFIG_DIR_NAME = ".skyportal"
 
 
-def enable_deprecation_warnings() -> None:
-    """Make this package's deprecation notices visible to CLI users.
-
-    Python silences :class:`DeprecationWarning` outside ``__main__`` by
-    default, so without this every "will be removed in 0.3.0" notice is
-    emitted and then swallowed — the people who need to migrate before 0.3.0
-    would never see one. Entry points call this; library importers keep
-    Python's default behaviour.
-    """
-    warnings.filterwarnings(
-        "always",
-        category=DeprecationWarning,
-        message=rf".*{re.escape(_REMOVAL_NOTICE)}.*",
-    )
-
-
-def legacy_name(name: str) -> str:
-    """Return the pre-0.2.0 spelling of a ``SKYPORTALAI_*`` variable."""
-    if not name.startswith(PREFIX):
-        raise ValueError(f"{name!r} is not a {PREFIX}* variable")
-    return LEGACY_PREFIX + name[len(PREFIX) :]
-
-
 def lookup(name: str, default: str | None = None) -> tuple[str | None, str | None]:
-    """Resolve ``name``, falling back to its legacy spelling.
+    """Resolve ``name`` from the environment.
 
-    Returns the value and the variable it actually came from, so callers can
-    report the source without re-implementing the fallback.
+    Returns the value and the variable it came from (None when the default was
+    used), so callers can report the source.
     """
     value = os.environ.get(name)
     if value is not None:
         return value, name
-
-    legacy = legacy_name(name)
-    value = os.environ.get(legacy)
-    if value is not None:
-        warnings.warn(
-            f"{legacy} is deprecated and {_REMOVAL_NOTICE}; use {name} instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        return value, legacy
-
+    _check_removed_name(os.environ, name)
     return default, None
 
 
 def get(name: str, default: str | None = None) -> str | None:
-    """Resolve ``name``, falling back to its legacy spelling."""
+    """Resolve ``name`` from the environment."""
     return lookup(name, default)[0]
 
 
 def get_from(environ: Mapping[str, str], name: str, default: str | None = None) -> str | None:
-    """Resolve ``name`` from an explicit mapping, falling back to its legacy spelling.
+    """Resolve ``name`` from an explicit mapping.
 
     The agent is configured from an injected environment mapping rather than
     :data:`os.environ`, so it cannot use :func:`get`.
@@ -85,26 +57,29 @@ def get_from(environ: Mapping[str, str], name: str, default: str | None = None) 
     value = environ.get(name)
     if value is not None:
         return value
-
-    legacy = legacy_name(name)
-    value = environ.get(legacy)
-    if value is not None:
-        warnings.warn(
-            f"{legacy} is deprecated and {_REMOVAL_NOTICE}; use {name} instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        return value
-
+    _check_removed_name(environ, name)
     return default
 
 
-def config_dir() -> Path:
-    """Return the CLI config directory, migrating ``~/.skyportal`` if needed.
+def _check_removed_name(environ: Mapping[str, str], name: str) -> None:
+    """Called when ``name`` is unset: flag its removed spelling if that is set instead."""
+    removed = REMOVED_PREFIX + name[len(PREFIX) :] if name.startswith(PREFIX) else None
+    if not removed or removed not in environ:
+        return
+    message = f"{removed} was removed in 0.3.0 and is ignored; set {name} instead."
+    if name in DESTINATION_SETTINGS:
+        raise SkyportalError(
+            f"{message} Refusing to fall back to the default host, which would then receive your credentials."
+        )
+    warnings.warn(message, UserWarning, stacklevel=4)
 
-    The migration is a rename, so it runs once and is a no-op afterwards. If it
-    cannot be performed the legacy directory is used as-is rather than silently
-    starting from an empty configuration.
+
+def config_dir() -> Path:
+    """Return the CLI config directory, moving a leftover ``~/.skyportal`` into place.
+
+    The move is a rename, so it runs once and is a no-op afterwards. If it cannot
+    be performed the old directory is used as-is rather than silently starting from
+    an empty configuration.
     """
     home = Path.home()
     current = home / CONFIG_DIR_NAME
@@ -119,9 +94,8 @@ def config_dir() -> Path:
         legacy.rename(current)
     except OSError:
         warnings.warn(
-            f"Could not migrate {legacy} to {current}; continuing to use {legacy}. "
-            f"It {_REMOVAL_NOTICE}; move it manually before then.",
-            DeprecationWarning,
+            f"Could not move {legacy} to {current}; continuing to use {legacy}. Move it manually.",
+            UserWarning,
             stacklevel=2,
         )
         return legacy

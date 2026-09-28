@@ -39,7 +39,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
 
@@ -86,6 +86,17 @@ jobs:
             --set config.mlflowTrackingUri=https://mlflow.example.com \
             > rendered/minimal.yaml
           grep -q 'SKYPORTALAI_AGENT_MLFLOW_TRACKING_URI' rendered/minimal.yaml
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set kubernetes.enabled=true \
+            --set image.tag=0.3.0 \
+            --set kubernetes.node.gpu.runtimeClassName=nvidia \
+            > rendered/kubernetes.yaml
+          grep -q 'kind: DaemonSet' rendered/kubernetes.yaml
+          # The Kubernetes roles are refused on an agent image that predates them.
+          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true --set-string image.tag=0.2.2 >/dev/null 2>&1; then
+            echo "kubernetes.enabled rendered on an image without the Kubernetes roles"; exit 1
+          fi
 
       - name: Rendered chart and plain manifests are valid Kubernetes
         run: |
@@ -134,14 +145,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build the agent image the chart's appVersion points at
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
@@ -151,7 +162,7 @@ jobs:
           tags: skyportalai-agent:ci
 
       - name: Create a kind cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
         with:
           cluster_name: agent-ci
 
@@ -233,7 +244,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
 

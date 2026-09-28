@@ -1,5 +1,4 @@
 import skyportalai
-from skyportal import __version__ as cli_version
 
 
 def test_public_exports_present():
@@ -34,4 +33,3 @@ def test_top_level_import_works():
 
 def test_dunder_version_exported():
     assert isinstance(skyportalai.__version__, str)
-    assert cli_version == skyportalai.__version__

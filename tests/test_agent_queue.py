@@ -200,3 +200,47 @@ def test_remove_refuses_path_traversal_id(tmp_path: Path):
     q.remove("../VICTIM")
 
     assert victim.exists()  # the traversal target is untouched
+
+
+def test_byte_cap_drops_the_oldest_batches_first(tmp_path: Path):
+    q = SpoolQueue(tmp_path, max_bytes=1)
+    q.enqueue(_runs("a"))
+    q.enqueue(_runs("b"))
+    newest = q.enqueue(_runs("c"))
+    assert [b.batch_id for b in q.batches()] == [newest]
+
+
+def test_byte_cap_keeps_batches_that_fit(tmp_path: Path):
+    q = SpoolQueue(tmp_path, max_bytes=10_000)
+    for rid in ("a", "b", "c"):
+        q.enqueue(_runs(rid))
+    assert len(q) == 3
+
+
+def test_init_rejects_non_positive_max_bytes(tmp_path: Path):
+    with pytest.raises(ValueError, match="max_bytes"):
+        SpoolQueue(tmp_path, max_bytes=0)
+
+
+def test_a_failed_write_removes_its_partial_tmp_file(tmp_path: Path, monkeypatch):
+    # On a full volume the partial .tmp would otherwise keep the volume full.
+    def disk_full(obj, fh):
+        fh.write('{"partial": ')
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("skyportalai.agent.queue.json.dump", disk_full)
+    with pytest.raises(OSError):
+        SpoolQueue(tmp_path).enqueue(_runs("a"))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_iter_batches_reads_one_file_per_step(tmp_path: Path, monkeypatch):
+    q = SpoolQueue(tmp_path)
+    for rid in ("a", "b", "c"):
+        q.enqueue(_runs(rid))
+    reads = []
+    original = SpoolQueue._read_batch
+    monkeypatch.setattr(SpoolQueue, "_read_batch", lambda self, path: reads.append(path) or original(self, path))
+    first = next(q.iter_batches())
+    assert first.runs == _runs("a")
+    assert len(reads) == 1

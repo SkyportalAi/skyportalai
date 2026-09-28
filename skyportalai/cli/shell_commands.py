@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from skyportalai import _env
+from skyportalai import SkyportalError, _env
 from skyportalai._client import DEFAULT_BASE_URL, describe_base_url
 from skyportalai.shell import (
     ConfigManager,
@@ -102,12 +102,13 @@ def configure(
     ] = 30,
 ) -> None:
     """Save Skyportal connection settings."""
-    # Resolved here rather than by typer's envvar=, which Click reads straight out of
-    # os.environ: _env.lookup never runs, so the legacy SKYPORTAL_URL fallback and its
-    # deprecation warning are skipped and a self-hosted user is silently pointed at the
-    # SaaS host. --base-url on the root callback carries the same envvar= shape but
-    # survives it because resolve_settings() re-resolves through _env.
-    resolved_url = portal_url or _env.get("SKYPORTALAI_URL") or DEFAULT_BASE_URL
+    # Resolved through _env like every other setting rather than by typer's envvar=,
+    # so all environment reads go through one place.
+    try:
+        resolved_url = portal_url or _env.get("SKYPORTALAI_URL") or DEFAULT_BASE_URL
+    except SkyportalError as exc:
+        err_console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from None
     config = SkyportalConfig(portal=PortalConfig(base_url=resolved_url, request_timeout=request_timeout))
     ConfigManager.save_config(config)
     console.print(f"[green]✓[/green] Skyportal configuration saved to {ConfigManager.get_config_path()}")

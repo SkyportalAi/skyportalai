@@ -23,7 +23,7 @@ FROM python:3.11-slim AS builder
 # so a range would make every rebuild resolve to a different image. Must match
 # appVersion in the chart and the image tag in manifests/deployment.yaml; CI
 # checks the three agree.
-ARG SKYPORTALAI_VERSION=0.2.2
+ARG SKYPORTALAI_VERSION=0.3.0
 
 ENV VENV=/opt/venv
 RUN python -m venv "$VENV"
@@ -34,6 +34,20 @@ RUN pip install --no-cache-dir --upgrade pip
 # The `agent` extra adds the daemon only dependency (wandb) on top of the SDK;
 # pyyaml is a base dependency of the package.
 RUN pip install --no-cache-dir "skyportalai[agent]==${SKYPORTALAI_VERSION}"
+
+# kubectl for the Kubernetes roles (#3566). Pinned to the version skyportal-website's
+# workers run (KUBECTL_VERSION in its development/Dockerfile): the server parses
+# kubectl's table output, so the agent's kubectl and the server's must agree for
+# an agent-fed cluster to record the same rows as a kubeconfig one. Checked against
+# the published sha256 before it is used.
+ARG KUBECTL_VERSION=v1.35.6
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/kubectl
 
 # ---- runtime ----------------------------------------------------------------
 FROM python:3.11-slim AS runtime
@@ -64,6 +78,7 @@ RUN groupadd --gid 1000 skyportal \
     && chown -R skyportal:skyportal /var/lib/skyportal-agent
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/kubectl
 
 USER skyportal
 WORKDIR /home/skyportal

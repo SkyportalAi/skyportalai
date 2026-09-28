@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Agent release to build: the skyportalai version on PyPI, e.g. 0.2.2'
+        description: 'Agent release to build: the skyportalai version on PyPI, e.g. 0.3.0'
         required: true
         type: string
       push:
@@ -116,7 +116,7 @@ jobs:
           version: ${{ needs.build.outputs.version }}
 
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

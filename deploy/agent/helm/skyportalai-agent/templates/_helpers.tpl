@@ -58,3 +58,99 @@ Name of the ServiceAccount to use.
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Selector labels for the Kubernetes monitoring workloads (#3566). A distinct name,
+not a component label on the shared one: the experiment Deployment's selector
+(name + instance) is immutable, and pods carrying its labels would match it too.
+Call with (dict "root" $ "component" "cluster").
+*/}}
+{{- define "skyportalai-agent.componentSelectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-%s" (include "skyportalai-agent.name" .root) .component | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{- define "skyportalai-agent.componentLabels" -}}
+helm.sh/chart: {{ include "skyportalai-agent.chart" .root }}
+{{ include "skyportalai-agent.componentSelectorLabels" . }}
+{{- if .root.Chart.AppVersion }}
+app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+{{- end }}
+
+{{/*
+Image reference, shared by every workload in the chart.
+*/}}
+{{- define "skyportalai-agent.image" -}}
+{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+{{- end }}
+
+{{/*
+The Kubernetes roles ship in agent 0.3.0. An older agent ignores
+SKYPORTALAI_AGENT_ROLE and runs the experiment scanners instead, so the install
+would look healthy and send no cluster data. Refuse it at install time. A tag that
+is not a plain version (a digest-style or custom tag) is trusted as-is.
+*/}}
+{{- define "skyportalai-agent.requireKubernetesImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) (semverCompare "<0.3.0" $tag) -}}
+{{- fail (printf "kubernetes.enabled needs skyportalai-agent 0.3.0 or newer; image tag %s predates it. Set image.tag." $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+True when the chart creates the token Secret itself: token.value is set and no
+existingSecret overrides it (existingSecret wins, as in the Datadog chart).
+*/}}
+{{- define "skyportalai-agent.createsTokenSecret" -}}
+{{- if and .Values.token.value (not .Values.token.existingSecret) -}}true{{- end -}}
+{{- end }}
+
+{{/*
+The Secret every workload reads the token from. The one place that refuses an
+install with no token.
+*/}}
+{{- define "skyportalai-agent.tokenSecretName" -}}
+{{- if .Values.token.existingSecret -}}
+{{ .Values.token.existingSecret }}
+{{- else if .Values.token.value -}}
+{{ include "skyportalai-agent.fullname" . }}-token
+{{- else -}}
+{{ fail "Set the agent token: --set token.existingSecret=<secret name> (recommended), or --set-string token.value=<agt_ token> for a quick install. See https://github.com/SkyportalAi/skyportalai/blob/main/deploy/agent/README.md" }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Pod template annotation that rolls the pods when a chart-managed token changes.
+The token is read from env at startup, so without it `helm upgrade` with a new
+token.value would update the Secret and leave the pods on the old token. Hashes
+the rendered Secret, the pattern in Helm's "Automatically Roll Deployments" and
+the Datadog chart's checksum/api_key.
+*/}}
+{{- define "skyportalai-agent.tokenChecksumAnnotations" -}}
+{{- if include "skyportalai-agent.createsTokenSecret" . -}}
+checksum/token: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+{{- end -}}
+{{- end }}
+
+{{/*
+Env shared by the Kubernetes roles: the token and the API root.
+*/}}
+{{- define "skyportalai-agent.kubernetesEnv" -}}
+- name: SKYPORTALAI_AGENT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "skyportalai-agent.tokenSecretName" . }}
+      key: {{ .Values.token.secretKey }}
+{{- with .Values.config.baseUrl }}
+- name: SKYPORTALAI_BASE_URL
+  value: {{ . | quote }}
+{{- end }}
+- name: SKYPORTALAI_AGENT_HEALTHZ_PORT
+  value: {{ .Values.config.healthzPort | quote }}
+{{- with .Values.extraEnv }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}

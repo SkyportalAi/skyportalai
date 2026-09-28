@@ -50,6 +50,9 @@ class _PostOutcome(Enum):
     DELIVERED = "delivered"  # 2xx — chunk accepted, clear the batch
     RETRYABLE = "retryable"  # 5xx / 408 / 429 / network error — worth another try
     PERMANENT = "permanent"  # other 4xx — resending cannot help, stop now
+    # 401 / 403 — the token was refused, not the body. Resending now can't help either,
+    # but a fixed or reissued token can, so the upload must be kept, never dropped.
+    REJECTED_TOKEN = "rejected_token"
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,8 @@ class ShipResult:
 
 class Shipper:
     """Drains a :class:`SpoolQueue` to the ingest endpoint, owning POST retry."""
+
+    ingest_path = INGEST_PATH
 
     def __init__(
         self,
@@ -78,7 +83,8 @@ class Shipper:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
-        self.url = base_url.rstrip("/") + INGEST_PATH
+        self.url = base_url.rstrip("/") + self.ingest_path
+        self.last_outcome: _PostOutcome | None = None
         self.token = token
         self.session = session or requests.Session()
         self.chunk_size = chunk_size
@@ -113,10 +119,11 @@ class Shipper:
     def _post_chunk_with_retry(self, chunk: list[dict]) -> bool:
         for attempt in range(self.max_attempts):
             outcome = self._post_chunk(chunk)
+            self.last_outcome = outcome
             if outcome is _PostOutcome.DELIVERED:
                 return True
-            if outcome is _PostOutcome.PERMANENT:
-                return False  # permanent client error: retrying cannot help
+            if outcome in (_PostOutcome.PERMANENT, _PostOutcome.REJECTED_TOKEN):
+                return False  # a client error: retrying in this cycle cannot help
             if attempt < self.max_attempts - 1:
                 delay = self.backoff[min(attempt, len(self.backoff) - 1)] if self.backoff else 0
                 self._sleep(delay)
@@ -125,8 +132,14 @@ class Shipper:
         )
         return False
 
+    def _body(self, chunk: list[dict]) -> dict:
+        return {"new_runs": chunk}
+
+    def _on_delivered(self, resp: requests.Response) -> None:
+        """Hook for endpoints whose 2xx reply carries instructions; the run ingest's doesn't."""
+
     def _post_chunk(self, chunk: list[dict]) -> _PostOutcome:
-        body = gzip.compress(json.dumps({"new_runs": chunk}).encode("utf-8"))
+        body = gzip.compress(json.dumps(self._body(chunk)).encode("utf-8"))
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -144,10 +157,14 @@ class Shipper:
         try:
             status = resp.status_code
             if 200 <= status < 300:
+                self._on_delivered(resp)
                 return _PostOutcome.DELIVERED
             if status in RETRYABLE_STATUS_CODES or 500 <= status < 600:
                 logger.warning("Ingest POST rejected (retryable): HTTP %d", status)
                 return _PostOutcome.RETRYABLE
+            if status in (401, 403):
+                logger.warning("Ingest POST refused the agent token: HTTP %d; keeping the upload", status)
+                return _PostOutcome.REJECTED_TOKEN
             if 400 <= status < 500:
                 logger.warning(
                     "Ingest POST rejected (permanent client error): HTTP %d; not retrying", status

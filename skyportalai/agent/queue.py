@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,14 +39,19 @@ class Batch:
 class SpoolQueue:
     """A bounded, disk-backed FIFO of run batches awaiting delivery."""
 
-    def __init__(self, spool_dir: Path, max_batches: int = DEFAULT_MAX_BATCHES):
+    def __init__(self, spool_dir: Path, max_batches: int = DEFAULT_MAX_BATCHES, max_bytes: int | None = None):
         self.spool_dir = Path(spool_dir)
         # enqueue() writes the batch first and only then enforces the bound, so a
         # non-positive max_batches would evict the batch just persisted (excess =
         # len(files) - max_batches >= len(files)). Fail fast instead of dropping data.
         if max_batches < 1:
             raise ValueError(f"max_batches must be >= 1, got {max_batches}")
+        if max_bytes is not None and max_bytes < 1:
+            raise ValueError(f"max_bytes must be >= 1, got {max_bytes}")
         self.max_batches = max_batches
+        # Batch sizes vary with what is spooled (a cluster's kubectl output grows with its
+        # pod count), so a batch count alone can outgrow the volume the spool lives on.
+        self.max_bytes = max_bytes
 
     def enqueue(self, runs: list[dict]) -> str | None:
         """Persist *runs* as a new batch; return its batch_id (None if empty)."""
@@ -59,12 +65,14 @@ class SpoolQueue:
 
     def batches(self) -> list[Batch]:
         """Pending batches, oldest first. Unreadable files are skipped."""
-        result: list[Batch] = []
+        return list(self.iter_batches())
+
+    def iter_batches(self) -> Iterator[Batch]:
+        """Pending batches, oldest first, read one at a time so a backlog never sits in memory whole."""
         for path in self._batch_files():
             batch = self._read_batch(path)
             if batch is not None:
-                result.append(batch)
-        return result
+                yield batch
 
     def remove(self, batch_id: str) -> None:
         """Delete a delivered batch. Missing files are ignored (idempotent)."""
@@ -108,9 +116,15 @@ class SpoolQueue:
         final = self.spool_dir / f"{batch_id}.json"
         tmp = self.spool_dir / f"{batch_id}.json.tmp"
         payload = {"batch_id": batch_id, "created_at": iso_now(), "runs": runs}
-        with tmp.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, final)  # atomic on POSIX; never leaves a partial *.json
+        try:
+            with tmp.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, final)  # atomic on POSIX; never leaves a partial *.json
+        except BaseException:
+            # A partial .tmp is invisible to the queue but still holds disk: on a full
+            # volume, leaving it would keep the volume full after delivery resumes.
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _read_batch(self, path: Path) -> Batch | None:
         try:
@@ -146,14 +160,29 @@ class SpoolQueue:
 
     def _enforce_bound(self) -> None:
         files = self._batch_files()
-        excess = len(files) - self.max_batches
-        for path in files[: max(0, excess)]:
+        evict = files[: max(0, len(files) - self.max_batches)]
+        if self.max_bytes is not None:
+            kept = files[len(evict):]
+            total = sum(_size(path) for path in kept)
+            # The newest batch, the one just written, is never evicted.
+            while len(kept) > 1 and total > self.max_bytes:
+                total -= _size(kept[0])
+                evict.append(kept.pop(0))
+        for path in evict:
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
             logger.warning(
-                "SpoolQueue full (max_batches=%d); evicted oldest batch %s",
+                "SpoolQueue full (max_batches=%d, max_bytes=%s); evicted oldest batch %s",
                 self.max_batches,
+                self.max_bytes,
                 path.stem,
             )
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
