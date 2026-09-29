@@ -28,6 +28,12 @@ class FakeClient:
                 "namespaces": ["kube-system", "storefront"],
             },
             {"id": 7, "hostname": "gpu-7", "target_kind": "ssh"},
+            {
+                "id": 6,
+                "hostname": "gpu-cluster",
+                "target_kind": "kubernetes",
+                "namespaces": ["monitoring", "training"],
+            },
         ]
 
     def select_chat_servers(
@@ -166,6 +172,70 @@ def test_ssh_host_keeps_the_legacy_first_turn(shell):
 
     assert client.begin_calls == [("check disk usage", None, 7, None, None, None)]
     assert "Kubernetes cluster" not in console.file.getvalue()
+
+
+def test_each_cluster_gets_its_own_namespaces_with_cluster_option(shell):
+    """Two clusters with disjoint namespaces: each choice lands on its own cluster only."""
+    instance, client, _console = shell
+    instance._cmd_server(["backblaze-test-1", "gpu-cluster"])
+
+    instance._cmd_namespace(["storefront", "--cluster", "backblaze-test-1"])
+    instance._cmd_namespace(["monitoring", "--cluster=gpu-cluster"])
+    instance._send_prompt("what is failing?")
+
+    assert client.begin_calls[0][5] == {"5": ["storefront"], "6": ["monitoring"]}
+
+
+def test_names_without_cluster_are_refused_when_several_clusters_are_selected(shell):
+    instance, client, console = shell
+    instance._cmd_server(["backblaze-test-1", "gpu-cluster"])
+
+    instance._cmd_namespace(["storefront"])
+
+    assert "Several clusters are selected" in console.file.getvalue()
+    assert instance.selected_namespaces == {}
+    assert client.scope_calls == []
+
+
+def test_all_without_cluster_applies_to_every_selected_cluster(shell):
+    instance, _client, _console = shell
+    instance._cmd_server(["backblaze-test-1", "gpu-cluster"])
+
+    instance._cmd_namespace(["all"])
+
+    assert instance.selected_namespaces == {5: ["__all__"], 6: ["__all__"]}
+
+
+def test_unknown_cluster_option_is_refused(shell):
+    instance, _client, _console = shell
+    instance._cmd_server(["backblaze-test-1"])
+
+    with pytest.raises(PortalError, match="gpu-7 is not a selected Kubernetes cluster"):
+        instance._cmd_namespace(["all", "--cluster", "gpu-7"])
+
+    assert instance.selected_namespaces == {}
+
+
+def test_cluster_option_without_a_name_shows_usage(shell):
+    instance, _client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+
+    instance._cmd_namespace(["all", "--cluster"])
+
+    assert "Usage:" in console.file.getvalue()
+    assert instance.selected_namespaces == {}
+
+
+def test_label_shows_each_cluster_including_unselected_ones(shell):
+    """A choice on one cluster must not read as the scope of every cluster."""
+    instance, _client, _console = shell
+    instance._cmd_server(["backblaze-test-1", "gpu-cluster"])
+
+    instance._cmd_namespace(["all", "--cluster", "backblaze-test-1"])
+
+    prompt = "".join(part[1] for part in instance._prompt_fragments())
+    assert "ns#backblaze-test-1: all; gpu-cluster: none" in prompt
+    assert instance._namespace_label() == "backblaze-test-1: all namespaces; gpu-cluster: none"
 
 
 def test_switching_away_from_a_cluster_drops_its_namespaces(shell):

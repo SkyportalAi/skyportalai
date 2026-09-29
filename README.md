@@ -75,7 +75,7 @@ Useful commands:
 /login          Connect your Skyportal account
 /servers        List available infrastructure
 /server <id> [id ...]  Select one or more servers; the first is the default
-/namespace <name> [name ...] | all | clear  Choose namespaces on a selected Kubernetes cluster
+/namespace <name> [name ...] | all | clear [--cluster <name>]  Choose namespaces on a selected Kubernetes cluster
 /permission [ask|autoapprove]  Show or change the shared approval setting
 /status         Show the active context
 /new            Start a new investigation

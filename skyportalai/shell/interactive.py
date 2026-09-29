@@ -84,8 +84,8 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Select one or more servers by name for agent execution",
     ),
     "/namespace": CommandInfo(
-        "/namespace <name> [name ...] | all | clear",
-        "Choose the namespaces the agent may use on the selected Kubernetes cluster",
+        "/namespace <name> [name ...] | all | clear [--cluster <name>]",
+        "Choose the namespaces the agent may use on a selected Kubernetes cluster",
     ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
     "/about": CommandInfo("/about", "Show Skyportal CLI information"),
@@ -122,6 +122,7 @@ class SkyportalCompleter(Completer):
             options = (
                 ("all", "every namespace in the cluster"),
                 ("clear", "remove the namespace selection"),
+                ("--cluster", "apply to one of several selected clusters"),
             )
         elif command == "/github-token":
             options = (
@@ -320,9 +321,8 @@ class InteractiveShell:
             fragments.append(("class:context", " server#{}".format(labels[0])))
         elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
-        namespace_label = self._namespace_label(all_label="all")
-        if namespace_label:
-            fragments.append(("class:context", " ns#{}".format(namespace_label)))
+        if self.selected_namespaces:
+            fragments.append(("class:context", " ns#{}".format(self._namespace_label(all_label="all"))))
         fragments.append(("class:arrow", "  > "))
         return fragments
 
@@ -1025,7 +1025,12 @@ class InteractiveShell:
                 self.console.print("[dim]Namespaces: {}[/dim]".format(escape(", ".join(known))))
 
     def _cmd_namespace(self, args: List[str]) -> None:
-        usage = "[yellow]Usage:[/yellow] /namespace <name> [name ...] | all | clear"
+        usage = "[yellow]Usage:[/yellow] /namespace <name> [name ...] | all | clear [--cluster <name>]"
+        try:
+            target, args = self._split_cluster_option(args)
+        except ValueError:
+            self.console.print(usage)
+            return
         tokens = [part.strip() for argument in args for part in argument.split(",") if part.strip()]
         if not tokens:
             self.console.print(usage)
@@ -1038,27 +1043,20 @@ class InteractiveShell:
                 "[yellow]Select a Kubernetes cluster first with [bold]/server <name>[/bold].[/yellow]"
             )
             return
+        if target is not None:
+            cluster_ids = [self._resolve_selected_cluster(target, cluster_ids)]
         keywords = {token.lower() for token in tokens} & {"all", "clear"}
         if keywords and len(tokens) > 1:
             self.console.print(usage)
             return
-        if "clear" in keywords:
-            chosen: List[str] = []
-        elif "all" in keywords:
-            chosen = [ALL_NAMESPACES]
-        else:
-            chosen = list(dict.fromkeys(tokens))
-            for server_id in cluster_ids:
-                known = self.kubernetes_namespaces[server_id]
-                # An empty listing means SkyPortal has no pod snapshot yet; the
-                # server validates the names live in that case.
-                missing = [namespace for namespace in chosen if known and namespace not in known]
-                if missing:
-                    raise PortalError(
-                        "Namespace {} not found on {}. Known namespaces: {}".format(
-                            ", ".join(missing), self._server_name(server_id), ", ".join(known)
-                        )
-                    )
+        if not keywords and len(cluster_ids) > 1:
+            # Clusters have different namespaces, so names need a cluster to belong to.
+            self.console.print(
+                "[yellow]Several clusters are selected. Name one: "
+                "[bold]/namespace <name> --cluster <cluster>[/bold][/yellow]"
+            )
+            return
+        chosen = self._chosen_namespaces(tokens, keywords, cluster_ids)
         updated = {
             server_id: namespaces
             for server_id, namespaces in self.selected_namespaces.items()
@@ -1066,6 +1064,63 @@ class InteractiveShell:
         }
         if chosen:
             updated.update({server_id: list(chosen) for server_id in cluster_ids})
+        self._apply_namespace_scope(updated)
+        for server_id in cluster_ids:
+            name = escape(self._server_name(server_id))
+            if chosen:
+                self.console.print("[green]✓ {}: {}[/green]".format(name, escape(self._describe_namespaces(chosen))))
+            else:
+                self.console.print("[green]✓ Namespace selection cleared for {}.[/green]".format(name))
+
+    @staticmethod
+    def _split_cluster_option(args: List[str]) -> Tuple[Optional[str], List[str]]:
+        """Pull an optional ``--cluster <name>`` (or ``--cluster=<name>``) out of the arguments."""
+        target: Optional[str] = None
+        rest: List[str] = []
+        remaining = iter(args)
+        for argument in remaining:
+            if argument == "--cluster":
+                target = next(remaining, "")
+            elif argument.startswith("--cluster="):
+                target = argument.split("=", 1)[1]
+            else:
+                rest.append(argument)
+                continue
+            if not target:
+                raise ValueError("--cluster needs a cluster name")
+        return target, rest
+
+    def _resolve_selected_cluster(self, target: str, cluster_ids: List[int]) -> int:
+        for server_id in cluster_ids:
+            name = self._server_name(server_id)
+            if target in (name, str(server_id)) or target.casefold() == name.casefold():
+                return server_id
+        raise PortalError(
+            "{} is not a selected Kubernetes cluster. Selected clusters: {}".format(
+                target, ", ".join(self._server_name(server_id) for server_id in cluster_ids)
+            )
+        )
+
+    def _chosen_namespaces(self, tokens: List[str], keywords: set, cluster_ids: List[int]) -> List[str]:
+        if "clear" in keywords:
+            return []
+        if "all" in keywords:
+            return [ALL_NAMESPACES]
+        chosen = list(dict.fromkeys(tokens))
+        for server_id in cluster_ids:
+            known = self.kubernetes_namespaces[server_id]
+            # An empty listing means SkyPortal has no pod snapshot yet; the
+            # server validates the names live in that case.
+            missing = [namespace for namespace in chosen if known and namespace not in known]
+            if missing:
+                raise PortalError(
+                    "Namespace {} not found on {}. Known namespaces: {}".format(
+                        ", ".join(missing), self._server_name(server_id), ", ".join(known)
+                    )
+                )
+        return chosen
+
+    def _apply_namespace_scope(self, updated: Dict[int, List[str]]) -> None:
         if self.chat_id is not None:
             with self.console.status("[cyan]Updating namespace scope…[/cyan]", spinner="dots"):
                 self.client.select_chat_servers(
@@ -1075,25 +1130,31 @@ class InteractiveShell:
                     selected_namespaces=self._namespace_payload(updated),
                 )
         self.selected_namespaces = updated
-        clusters = ", ".join(self._server_name(server_id) for server_id in cluster_ids)
-        if chosen:
-            self.console.print(
-                "[green]✓ {}: {}[/green]".format(escape(clusters), escape(self._namespace_label()))
-            )
-        else:
-            self.console.print("[green]✓ Namespace selection cleared for {}.[/green]".format(escape(clusters)))
 
     @staticmethod
     def _namespace_payload(selected: Dict[int, List[str]]) -> Dict[str, List[str]]:
         return {str(server_id): list(namespaces) for server_id, namespaces in selected.items()}
 
+    @staticmethod
+    def _describe_namespaces(namespaces: List[str], all_label: str = "all namespaces") -> str:
+        return ", ".join(all_label if namespace == ALL_NAMESPACES else namespace for namespace in namespaces)
+
     def _namespace_label(self, all_label: str = "all namespaces") -> str:
-        labels = [
-            all_label if namespace == ALL_NAMESPACES else namespace
-            for namespaces in self.selected_namespaces.values()
-            for namespace in namespaces
-        ]
-        return ", ".join(dict.fromkeys(labels))
+        """The namespace scope as shown to the user; per cluster once more than one is selected."""
+        if len(self.kubernetes_namespaces) <= 1:
+            return ", ".join(
+                self._describe_namespaces(namespaces, all_label)
+                for namespaces in self.selected_namespaces.values()
+            )
+        return "; ".join(
+            "{}: {}".format(
+                self._server_name(server_id),
+                self._describe_namespaces(self.selected_namespaces[server_id], all_label)
+                if server_id in self.selected_namespaces
+                else "none",
+            )
+            for server_id in self.kubernetes_namespaces
+        )
 
     @staticmethod
     def _resolve_server_tokens(
