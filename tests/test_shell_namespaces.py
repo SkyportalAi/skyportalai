@@ -238,6 +238,103 @@ def test_label_shows_each_cluster_including_unselected_ones(shell):
     assert instance._namespace_label() == "backblaze-test-1: all namespaces; gpu-cluster: none"
 
 
+def test_question_without_a_namespace_is_stopped_before_anything_is_sent(shell):
+    """Review case: /server <cluster> then a question used to spend a turn on the server's refusal."""
+    instance, client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+
+    instance._send_prompt("which pods are not running, and why?")
+
+    output = console.file.getvalue()
+    assert "No namespace selected for backblaze-test-1" in output
+    assert "/namespace all" in output
+    assert "Scope pill" not in output
+    assert client.begin_calls == []
+    assert instance.chat_id is None
+
+
+def test_question_is_stopped_while_any_selected_cluster_lacks_a_namespace(shell):
+    instance, client, console = shell
+    instance._cmd_server(["backblaze-test-1", "gpu-cluster"])
+    instance._cmd_namespace(["all", "--cluster", "backblaze-test-1"])
+
+    instance._send_prompt("compare both clusters")
+
+    assert "No namespace selected for gpu-cluster" in console.file.getvalue()
+    assert client.begin_calls == []
+
+
+def test_add_extends_the_current_list(shell):
+    instance, client, _console = shell
+    instance._cmd_server(["backblaze-test-1"])
+    instance._cmd_namespace(["storefront"])
+
+    instance._cmd_namespace(["add", "kube-system"])
+    instance._send_prompt("what is failing?")
+
+    assert client.begin_calls[0][5] == {"5": ["storefront", "kube-system"]}
+
+
+def test_add_after_all_narrows_to_the_named_namespaces(shell):
+    """Matches the web Scope pill: picking a specific namespace leaves cluster-wide scope."""
+    instance, _client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+    instance._cmd_namespace(["all"])
+
+    instance._cmd_namespace(["add", "storefront"])
+
+    assert instance.selected_namespaces == {5: ["storefront"]}
+    assert "backblaze-test-1: storefront" in console.file.getvalue()
+
+
+def test_remove_drops_names_and_updates_an_existing_chat(shell):
+    instance, client, _console = shell
+    instance.chat_id = 42
+    instance._cmd_server(["backblaze-test-1"])
+    instance._cmd_namespace(["storefront", "kube-system"])
+
+    instance._cmd_namespace(["remove", "storefront"])
+
+    assert instance.selected_namespaces == {5: ["kube-system"]}
+    assert client.scope_calls[-1] == (42, [5], 5, {"5": ["kube-system"]})
+
+
+def test_removing_the_last_namespace_clears_the_cluster(shell):
+    instance, client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+    instance._cmd_namespace(["storefront"])
+
+    instance._cmd_namespace(["remove", "storefront"])
+    instance._send_prompt("anything failing?")
+
+    assert instance.selected_namespaces == {}
+    assert "Namespace selection cleared for backblaze-test-1" in console.file.getvalue()
+    assert client.begin_calls == []
+
+
+def test_remove_needs_a_list_to_remove_from(shell):
+    instance, _client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+    instance._cmd_namespace(["all"])
+
+    instance._cmd_namespace(["remove", "storefront"])
+
+    assert instance.selected_namespaces == {5: ["__all__"]}
+    assert "no namespace list to remove from" in console.file.getvalue()
+
+
+@pytest.mark.parametrize("arguments", [["add"], ["remove", "all"], ["add", "clear"]])
+def test_add_and_remove_need_namespace_names(shell, arguments):
+    instance, client, console = shell
+    instance._cmd_server(["backblaze-test-1"])
+
+    instance._cmd_namespace(arguments)
+
+    assert "Usage:" in console.file.getvalue()
+    assert instance.selected_namespaces == {}
+    assert client.scope_calls == []
+
+
 def test_switching_away_from_a_cluster_drops_its_namespaces(shell):
     instance, _client, _console = shell
     instance._cmd_server(["backblaze-test-1"])

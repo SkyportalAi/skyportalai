@@ -84,7 +84,7 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Select one or more servers by name for agent execution",
     ),
     "/namespace": CommandInfo(
-        "/namespace <name> [name ...] | all | clear [--cluster <name>]",
+        "/namespace <name> [name ...] | add|remove <name> ... | all | clear [--cluster <name>]",
         "Choose the namespaces the agent may use on a selected Kubernetes cluster",
     ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
@@ -122,6 +122,8 @@ class SkyportalCompleter(Completer):
             options = (
                 ("all", "every namespace in the cluster"),
                 ("clear", "remove the namespace selection"),
+                ("add", "add namespaces to the current list"),
+                ("remove", "remove namespaces from the current list"),
                 ("--cluster", "apply to one of several selected clusters"),
             )
         elif command == "/github-token":
@@ -1025,7 +1027,10 @@ class InteractiveShell:
                 self.console.print("[dim]Namespaces: {}[/dim]".format(escape(", ".join(known))))
 
     def _cmd_namespace(self, args: List[str]) -> None:
-        usage = "[yellow]Usage:[/yellow] /namespace <name> [name ...] | all | clear [--cluster <name>]"
+        usage = (
+            "[yellow]Usage:[/yellow] /namespace <name> [name ...] | add <name> ... | remove <name> ... "
+            "| all | clear [--cluster <name>]"
+        )
         try:
             target, args = self._split_cluster_option(args)
         except ValueError:
@@ -1045,8 +1050,10 @@ class InteractiveShell:
             return
         if target is not None:
             cluster_ids = [self._resolve_selected_cluster(target, cluster_ids)]
-        keywords = {token.lower() for token in tokens} & {"all", "clear"}
-        if keywords and len(tokens) > 1:
+        mode = tokens[0].lower() if tokens[0].lower() in ("add", "remove") else None
+        names = tokens[1:] if mode else tokens
+        keywords = {name.lower() for name in names} & {"all", "clear"}
+        if (mode and (not names or keywords)) or (keywords and len(names) > 1):
             self.console.print(usage)
             return
         if not keywords and len(cluster_ids) > 1:
@@ -1056,7 +1063,12 @@ class InteractiveShell:
                 "[bold]/namespace <name> --cluster <cluster>[/bold][/yellow]"
             )
             return
-        chosen = self._chosen_namespaces(tokens, keywords, cluster_ids)
+        chosen = self._chosen_namespaces(names, keywords, cluster_ids)
+        if mode:
+            edited = self._edit_namespace_list(mode, chosen, cluster_ids[0])
+            if edited is None:
+                return
+            chosen = edited
         updated = {
             server_id: namespaces
             for server_id, namespaces in self.selected_namespaces.items()
@@ -1119,6 +1131,22 @@ class InteractiveShell:
                     )
                 )
         return chosen
+
+    def _edit_namespace_list(self, mode: str, names: List[str], server_id: int) -> Optional[List[str]]:
+        """Add names to, or remove them from, one cluster's current namespace list."""
+        current = [
+            namespace for namespace in self.selected_namespaces.get(server_id, []) if namespace != ALL_NAMESPACES
+        ]
+        if mode == "add":
+            # As in the web Scope pill, picking a specific namespace leaves cluster-wide scope.
+            return list(dict.fromkeys(current + names))
+        if not current:
+            self.console.print(
+                "[yellow]{} has no namespace list to remove from. Set one with "
+                "[bold]/namespace <name> [name ...][/bold].[/yellow]".format(escape(self._server_name(server_id)))
+            )
+            return None
+        return [namespace for namespace in current if namespace not in names]
 
     def _apply_namespace_scope(self, updated: Dict[int, List[str]]) -> None:
         if self.chat_id is not None:
@@ -1211,6 +1239,21 @@ class InteractiveShell:
 
     def _send_prompt(self, message: str) -> None:
         self._require_api_connection()
+        # The server refuses every command on a cluster with no namespace chosen, so
+        # sending would only spend an agent turn to reach that refusal.
+        missing = [
+            self._server_name(server_id)
+            for server_id in self.selected_server_ids
+            if server_id in self.kubernetes_namespaces and server_id not in self.selected_namespaces
+        ]
+        if missing:
+            self.console.print(
+                "[yellow]No namespace selected for {}. Choose one with [bold]/namespace all[/bold] or "
+                "[bold]/namespace <name>[/bold], or leave it with [bold]/server auto[/bold].[/yellow]".format(
+                    escape(", ".join(missing))
+                )
+            )
+            return
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
         # server-side, not just stop the shell from listening.
         namespaces = self._namespace_payload(self.selected_namespaces)
