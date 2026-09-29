@@ -71,7 +71,7 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.2 \
+  --version 0.3.3 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
@@ -82,7 +82,7 @@ creates the Secret:
 ```bash
 read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.2 \
+  --version 0.3.3 \
   --set-string token.value="$AGT"
 unset AGT
 ```

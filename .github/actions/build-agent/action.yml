@@ -2,7 +2,7 @@ name: Build and smoke test agent
 description: Build a pinned SDK release and verify the image under the Helm security context
 inputs:
   version:
-    description: SDK release version without the leading v
+    description: skyportalai release on PyPI, without a leading v
     required: true
 runs:
   using: composite
@@ -15,7 +15,7 @@ runs:
         DOCKER_BUILD_RECORD_UPLOAD: "false"
       with:
         context: deploy/agent
-        build-args: SKYPORTALAI_REF=v${{ inputs.version }}
+        build-args: SKYPORTALAI_VERSION=${{ inputs.version }}
         push: false
         load: true
         tags: skyportalai-agent:ci
