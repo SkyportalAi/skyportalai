@@ -29,8 +29,9 @@ Actions artifacts or caches.
 
 The package names and existing releases stay unchanged. Chart `0.2.1` updates
 the source links to this repository; chart `0.2.0` must not be overwritten.
-The default agent image at migration was `0.2.2`, installing `skyportalai==0.2.2`
-from PyPI, rather than whatever source happens to be on `main`.
+The default agent image at migration was `0.2.2`, built from SDK tag `v0.2.2`
+rather than whatever source happens to be on `main`. Current images
+install the pinned `skyportalai[agent]` release from PyPI instead.
 
 Use this order for the handover:
 
