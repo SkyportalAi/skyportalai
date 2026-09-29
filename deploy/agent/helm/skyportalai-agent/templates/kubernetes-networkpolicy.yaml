@@ -36,5 +36,11 @@ spec:
           port: {{ . }}
         {{- end }}
     {{- end }}
+    {{- if and (eq $component "node") $.Values.kubernetes.node.kubelet.enabled }}
+    {{- /* The node's own kubelet, on the node IP. No `to:`: a pod selector cannot name a node. */}}
+    - ports:
+        - protocol: TCP
+          port: {{ $.Values.kubernetes.node.kubelet.port }}
+    {{- end }}
 {{- end }}
 {{- end }}

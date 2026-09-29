@@ -101,6 +101,18 @@ is not a plain version (a digest-style or custom tag) is trusted as-is.
 {{- end }}
 
 {{/*
+The kubelet read ships in agent 0.4.0. An older agent ignores SKYPORTALAI_AGENT_HOST_IP,
+so the node pods would hold a nodes/stats token and send no pod usage. Refuse it at
+install time, like requireKubernetesImage. A tag that is not a plain version is trusted.
+*/}}
+{{- define "skyportalai-agent.requireKubeletImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) (semverCompare "<0.4.0" $tag) -}}
+{{- fail (printf "kubernetes.node.kubelet.enabled needs skyportalai-agent 0.4.0 or newer; image tag %s predates it. Set image.tag." $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 True when the chart creates the token Secret itself: token.value is set and no
 existingSecret overrides it (existingSecret wins, as in the Datadog chart).
 */}}

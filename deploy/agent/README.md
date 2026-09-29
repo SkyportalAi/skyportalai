@@ -399,6 +399,10 @@ Every setting maps onto an environment variable the agent reads at startup
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `config.queueMaxBatches` | `1000` | cap on spooled batches while the API is unreachable |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BYTES` | `extraEnv` | `536870912` (512 MiB) | Kubernetes roles only: cap on the spool's size on disk; the oldest uploads are dropped first. Keep it below the spool volume's size |
 | `SKYPORTALAI_AGENT_HEALTHZ_PORT` | `config.healthzPort` | `8080` | liveness port |
+| `SKYPORTALAI_AGENT_HOST_IP` | `kubernetes.node.kubelet.enabled` (from `status.hostIP`) | unset | node role only: the node IP whose kubelet `/stats/summary` is read for per-pod CPU and memory without metrics-server. Unset turns the kubelet read off. Needs agent 0.4.0 |
+| `SKYPORTALAI_AGENT_KUBELET_PORT` | `kubernetes.node.kubelet.port` | `10250` | the kubelet's secure port |
+| `SKYPORTALAI_AGENT_KUBELET_INSECURE_SKIP_VERIFY` | `kubernetes.node.kubelet.insecureSkipVerify` | `false` | skip TLS verification of a self-signed kubelet certificate; exposes the node pods' `nodes/stats` token to interception |
+| `SKYPORTALAI_AGENT_KUBELET_CA_FILE` | `kubernetes.node.kubelet.caSecret.name` / `.key` (mounts the Secret at `/etc/skyportalai/kubelet-ca`) | the service account `ca.crt` | CA bundle for the kubelet's serving certificate; use it instead of `insecureSkipVerify` for kubelets not signed by the cluster CA. `kubelet.enabled` needs agent 0.4.0+; the chart refuses an older `image.tag` |
 
 The state directory keeps its pre-rename path on purpose: it is the agent's own
 default, and changing it on an existing install would orphan the spool queue.
