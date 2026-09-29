@@ -3,7 +3,24 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.1
+
+### Added
+
+- **An agent token created in chat is handed to `kubectl`, not shown.** When SARA
+  mints an agent token for a private cluster (after you approve it), the terminal
+  collects it once and keeps it in memory only. It shows the current kubectl
+  context and asks before creating the `skyportalai-agent-token` Secret in the
+  `skyportal` namespace, feeding the token to `kubectl` on stdin, then offers the
+  Helm install. If you decline, or `kubectl` is missing or fails, it prints the
+  token once with the manual commands. The token is never written to disk, the
+  prompt history or the transcript.
+
+### Changed
+
+- **Higher minimum dependency versions:** `click>=8.5.0`,
+  `prompt-toolkit>=3.0.53`, `pydantic>=2.13.5`, and `wandb>=0.30.0` for the
+  `agent` extra. Upgrading `skyportalai` may upgrade these too.
 
 ### Fixed
 

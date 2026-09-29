@@ -1,6 +1,6 @@
 [project]
 name = "skyportalai"
-version = "0.3.0"
+version = "0.3.1"
 description = "Official Python SDK and command-line client for the Skyportal API"
 authors = [{ name = "Skyportal", email = "tech@skyportal.ai" }]
 readme = "README.md"
