@@ -7,6 +7,8 @@ at the moment the prompt appears.
 
 from __future__ import annotations
 
+import json
+
 import yaml
 from typer.testing import CliRunner
 
@@ -20,6 +22,7 @@ class FakeClient:
 
     def __init__(self):
         self.saved: list[str] = []
+        self.base_urls: list[str] = []
 
     def set_access_token(self, token):
         self.saved.append(token)
@@ -40,7 +43,12 @@ def _isolated(monkeypatch, tmp_path, base_url=None):
     if base_url is not None:
         config_path.write_text(yaml.safe_dump({"portal": {"base_url": base_url, "request_timeout": 30}}))
     client = FakeClient()
-    monkeypatch.setattr("skyportalai.cli.shell_commands._portal_client", lambda: client)
+
+    def factory(settings):
+        client.base_urls.append(settings.base_url)
+        return client
+
+    monkeypatch.setattr("skyportalai.cli.shell_commands._portal_client", factory)
     return config_path, client
 
 
@@ -94,3 +102,71 @@ def test_github_token_set_names_the_target_before_prompting(monkeypatch, tmp_pat
     assert "Connecting to http://127.0.0.1:8000" in result.output
     assert str(config_path) in result.output
     assert client.saved == ["ghp_test"]
+
+
+def test_login_sends_the_credential_to_the_base_url_flag(monkeypatch, tmp_path):
+    _, client = _isolated(monkeypatch, tmp_path, base_url="http://localhost:8000")
+
+    result = runner.invoke(app, ["--base-url", "https://staging.example", "login", "--token"], input="sk-test\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Connecting to https://staging.example" in result.output
+    assert "Warning" not in result.output
+    assert client.base_urls == ["https://staging.example"]
+
+
+def test_login_sends_the_credential_to_the_base_url_variable(monkeypatch, tmp_path):
+    _, client = _isolated(monkeypatch, tmp_path, base_url="http://localhost:8000")
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "https://staging.example")
+
+    result = runner.invoke(app, ["login", "--token"], input="sk-test\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Connecting to https://staging.example" in result.output
+    assert client.base_urls == ["https://staging.example"]
+
+
+def test_a_loopback_flag_is_blamed_on_the_flag_not_the_config_file(monkeypatch, tmp_path):
+    config_path, _ = _isolated(monkeypatch, tmp_path, base_url="https://portal.example")
+
+    result = runner.invoke(app, ["--base-url", "http://localhost:8000", "login", "--token"], input="sk-test\n")
+
+    assert result.exit_code == 0, result.output
+    assert "base_url is a local address (http://localhost:8000) from --base-url" in result.output
+    assert "drop --base-url" in result.output
+    assert str(config_path) not in result.output
+    assert "skyportalai configure" not in result.output
+
+
+def test_a_loopback_variable_names_the_variable_to_unset(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    monkeypatch.setenv("SKYPORTALAI_BASE_URL", "http://127.0.0.1:8000")
+
+    result = runner.invoke(app, ["login", "--token"], input="sk-test\n")
+
+    assert result.exit_code == 0, result.output
+    assert "from SKYPORTALAI_BASE_URL" in result.output
+    assert "unset SKYPORTALAI_BASE_URL" in result.output
+
+
+def test_a_loopback_url_from_stored_credentials_names_the_credentials_file(monkeypatch, tmp_path):
+    config_path, client = _isolated(monkeypatch, tmp_path)
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text(json.dumps({"access_token": "sk-old", "base_url": "http://localhost:8000"}))
+
+    result = runner.invoke(app, ["login", "--token"], input="sk-test\n")
+
+    assert result.exit_code == 0, result.output
+    assert f"from {credentials_path}" in result.output
+    assert str(config_path) not in result.output
+    assert client.base_urls == ["http://localhost:8000"]
+
+
+def test_github_token_set_honours_the_base_url_flag(monkeypatch, tmp_path):
+    _, client = _isolated(monkeypatch, tmp_path)
+
+    result = runner.invoke(app, ["--base-url", "https://staging.example", "github-token", "set"], input="ghp_test\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Connecting to https://staging.example" in result.output
+    assert client.base_urls == ["https://staging.example"]
