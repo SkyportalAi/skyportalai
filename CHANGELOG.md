@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This project follows
 
 ## 0.3.1
 
+### Changed
+
+- **`/upload` no longer holds the prompt while a file is stored.** The server now
+  accepts the bytes and processes them on a worker, so the shell reports
+  "Uploading", then "Ready" when the file is actually readable — or "Failed" with
+  the reason. It stops waiting after a short while rather than blocking on a
+  worker it cannot see; the server retries on its own. Requires a deployment with
+  `GET /api/v1/agent/chat/<id>/uploads/`.
+
 ### Added
 
 - **An agent token created in chat is handed to `kubectl`, not shown.** When SARA
