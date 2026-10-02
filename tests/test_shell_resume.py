@@ -255,3 +255,68 @@ def test_resume_registered_as_command_and_handler():
     assert "[chat_id]" in COMMANDS["/resume"].usage
     shell, _ = _shell(FakeClient())
     assert "/resume" in shell._handlers
+
+
+_INSTRUCTION = "You are continuing this conversation on your own, because you started watching these hosts earlier."
+
+
+def _follow_up_turn():
+    return [
+        {"role": "user", "sequence": 2, "origin": "scheduled_follow_up",
+         "content": [{"type": "text", "text": _INSTRUCTION}]},
+        {"role": "assistant", "sequence": 3, "origin": "scheduled_follow_up",
+         "content": [{"type": "text", "text": "CPU is still at 92%."}]},
+    ]
+
+
+def test_resume_shows_a_scheduled_turn_as_the_agents_not_yours():
+    """A turn the agent started itself (website #3505) must not replay as 'you'."""
+    client = FakeClient(messages=_follow_up_turn())
+    shell, console = _shell(client)
+
+    shell._cmd_resume(["42", "--verbose"])
+
+    out = console.file.getvalue()
+    assert "Scheduled check" in out
+    assert "CPU is still at 92%." in out
+    assert "continuing this conversation" not in out, "the agent's instruction replayed as the user's message"
+    assert "you  " not in out
+
+
+def test_resume_still_shows_a_typed_message_as_yours():
+    msgs = [{"role": "user", "sequence": 2, "origin": "user_turn",
+             "content": [{"type": "text", "text": "list files"}]}]
+    client = FakeClient(messages=msgs)
+    shell, console = _shell(client)
+
+    shell._cmd_resume(["42", "--verbose"])
+
+    out = console.file.getvalue()
+    assert "you  list files" in out
+    assert "Scheduled check" not in out
+
+
+def test_a_scheduled_turn_arriving_live_is_announced_once():
+    client = FakeClient()
+    shell, console = _shell(client)
+    state = shell._new_render_state()
+
+    shell._render_incremental_messages(_follow_up_turn(), state)
+    shell._render_incremental_messages(_follow_up_turn(), state)
+
+    out = console.file.getvalue()
+    assert out.count("Scheduled check") == 1
+    assert "continuing this conversation" not in out
+    assert "CPU is still at 92%." in out
+
+
+def test_a_typed_message_arriving_live_is_not_echoed():
+    client = FakeClient()
+    shell, console = _shell(client)
+
+    shell._render_incremental_messages(
+        [{"role": "user", "sequence": 5, "content": [{"type": "text", "text": "list files"}]}],
+        shell._new_render_state(),
+    )
+
+    assert "list files" not in console.file.getvalue()
