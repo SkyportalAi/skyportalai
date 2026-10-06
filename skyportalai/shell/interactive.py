@@ -1392,6 +1392,7 @@ class InteractiveShell:
         decision: str,
         *,
         autoapproved: bool = False,
+        rejection_reason: Optional[str] = None,
     ) -> bool:
         """Submit a decision; recover when an older synchronous server times out.
 
@@ -1408,6 +1409,10 @@ class InteractiveShell:
                     approval,
                     decision,
                     autoapproved=True,
+                )
+            elif rejection_reason:
+                self.client.submit_chat_approval(
+                    chat_id, approval, decision, rejection_reason=rejection_reason,
                 )
             else:
                 self.client.submit_chat_approval(chat_id, approval, decision)
@@ -1547,10 +1552,14 @@ class InteractiveShell:
             )
             self._print_section("Approval requested", style="yellow")
             self.console.print(Text(self._clean_terminal_text(description)))
+            reasons = self._approval_reasons(approval)
+            if reasons is not None:
+                self.console.print(reasons)
             autoapprove = (
                 approval_type in _AUTOAPPROVE_TYPES
                 and self._permission_mode_for_approval() == "autoapprove"
             )
+            rejection_reason: Optional[str] = None
             if autoapprove:
                 decision = "approved"
                 self.console.print(
@@ -1561,11 +1570,7 @@ class InteractiveShell:
                     self.console.print(
                         "[dim]This approval type requires an explicit decision.[/dim]"
                     )
-                try:
-                    answer = self.session.prompt("Approve this action? [y/N]: ").strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    answer = ""
-                decision = "approved" if answer in ("y", "yes") else "rejected"
+                decision, rejection_reason = self._ask_decision()
             try:
                 while True:
                     try:
@@ -1579,6 +1584,7 @@ class InteractiveShell:
                                 approval,
                                 decision,
                                 autoapproved=autoapprove,
+                                rejection_reason=None if autoapprove else rejection_reason,
                             )
                             handled_approvals.add(approval_id)
                             approval_settlement_deadline = (
@@ -1608,16 +1614,76 @@ class InteractiveShell:
                             "[yellow]Autoapprove was disabled before this action was "
                             "submitted; an explicit decision is required.[/yellow]"
                         )
-                        try:
-                            answer = self.session.prompt(
-                                "Approve this action? [y/N]: "
-                            ).strip().lower()
-                        except (KeyboardInterrupt, EOFError):
-                            answer = ""
-                        decision = "approved" if answer in ("y", "yes") else "rejected"
+                        decision, rejection_reason = self._ask_decision()
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
+
+    def _ask_decision(self) -> "tuple[str, Optional[str]]":
+        """y approves; r rejects with a reason the agent is told; anything else rejects."""
+        try:
+            answer = self.session.prompt("Approve this action? [y/N/r=reject with reason]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            answer = ""
+        if answer in ("y", "yes"):
+            return "approved", None
+        if answer == "r":
+            try:
+                reason = self.session.prompt("Reason: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                reason = ""
+            return "rejected", self._bounded_one_line(reason, 500) or None
+        return "rejected", None
+
+    @staticmethod
+    def _server_wording(text: Any, style: str = "") -> Text:
+        """Server-written approval wording (skyportal-website#3632): `code` spans in bold, as-is otherwise."""
+        line = Text()
+        for index, part in enumerate(InteractiveShell._bounded_one_line(str(text or ""), 400).split("`")):
+            line.append(part, style=(style + " bold").strip() if index % 2 else style)
+        return line
+
+    @classmethod
+    def _approval_reasons(cls, approval: Dict[str, Any]) -> Optional[Text]:
+        """The host and the why lines the server attached to this approval; None from an older server."""
+        context = approval.get("approval_context")
+        if not isinstance(context, dict):
+            return None
+        why = [line for line in context.get("why") or [] if isinstance(line, str) and line.strip()]
+        if not why:
+            return None
+        text = Text()
+        host = context.get("host")
+        if isinstance(host, str) and host:
+            text.append("on ", style="dim")
+            text.append(cls._bounded_one_line(host, 120), style="bold")
+            text.append("\n")
+        if context.get("title"):
+            text.append_text(cls._server_wording(context["title"], "yellow"))
+            text.append("\n")
+        for index, line in enumerate(why):
+            text.append("  • ", style="dim")
+            text.append_text(cls._server_wording(line))
+            if index < len(why) - 1:
+                text.append("\n")
+        return text
+
+    @staticmethod
+    def _verdict_line(metadata: Dict[str, Any]) -> Optional[Text]:
+        """Why a command ran without asking, or was blocked (skyportal-website#3632)."""
+        explanation = metadata.get("approval_explanation")
+        if not isinstance(explanation, dict) or not explanation.get("title"):
+            return None
+        verdict = explanation.get("verdict")
+        if verdict == "ran":
+            return InteractiveShell._server_wording(explanation["title"], "dim")
+        if verdict != "blocked":
+            return None
+        line = Text("✗ blocked: ", style="red")
+        line.append_text(InteractiveShell._server_wording(explanation["title"], "red"))
+        owner = "ask a team admin" if explanation.get("can_change") == "team_admin" else "you can change this in Settings"
+        line.append(" ({})".format(owner), style="dim")
+        return line
 
     @classmethod
     def _approval_description(
@@ -1892,6 +1958,10 @@ class InteractiveShell:
                 for output_line in output.splitlines():
                     line.append("\n  ")
                     line.append(output_line, style="dim")
+            verdict = InteractiveShell._verdict_line(metadata)
+            if verdict is not None:
+                line.append("\n  ")
+                line.append_text(verdict)
             return line
 
         tool_name = metadata.get("tool_name")
