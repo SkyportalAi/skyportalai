@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import sys
 import threading
 
 from .._client import Skyportal, _validate_base_url
@@ -96,7 +97,18 @@ def _install_signal_handlers(runner) -> None:
     signal.signal(signal.SIGINT, handle)
 
 
+USAGE = """usage: skyportalai-agent
+
+Runs the SkyPortal observability agent until stopped. Configured from the
+environment, not flags: SKYPORTALAI_AGENT_TOKEN is required, and
+SKYPORTALAI_AGENT_ROLE picks experiments, cluster or node.
+See https://github.com/SkyportalAi/skyportalai/blob/main/docs/agent.md"""
+
+
 def main() -> None:
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        print(USAGE)
+        return
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

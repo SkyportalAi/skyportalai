@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Deprecated
+
+- **Install the CLI with `pip install "skyportalai[cli]"`.** The next release
+  removes the CLI's packages (`typer`, `rich`, `click`, `prompt-toolkit`,
+  `pydantic`, `pyyaml`) from a plain `pip install skyportalai`, so the base
+  package is the SDK alone and `skyportalai[agent]` is the agent alone. The new
+  `cli` extra works today, so switch now and nothing breaks then. Without it the
+  `skyportalai` command prints the install hint instead of a traceback.
+
+### Added
+
+- `skyportalai-agent --help` prints how the agent is configured and exits.
+- CI runs the agent's tests in an environment with none of the CLI's packages.
+
 ## 0.3.1
 
 ### Added

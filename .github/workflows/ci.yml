@@ -34,3 +34,47 @@ jobs:
         run: poetry run pytest -v
       - name: Build distributions
         run: poetry build
+
+  agent-only:
+    # The agent must run with none of the CLI's packages (#3657). The package goes in
+    # --no-deps because the base still lists them for one release.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install the agent without the CLI
+        run: |
+          python -m venv /tmp/agent
+          /tmp/agent/bin/pip install --disable-pip-version-check --no-deps .
+          python scripts/agent_requirements.py > /tmp/agent-requirements.txt
+          /tmp/agent/bin/pip install --disable-pip-version-check -r /tmp/agent-requirements.txt pytest requests-mock
+      - name: No CLI packages installed
+        run: |
+          if /tmp/agent/bin/pip list --format=freeze | grep -iE '^(typer|rich|prompt[-_]toolkit)=='; then
+            echo "CLI packages are installed in the agent-only environment" >&2
+            exit 1
+          fi
+      - name: Agent starts, the CLI explains itself
+        run: |
+          /tmp/agent/bin/skyportalai-agent --help
+          set +e
+          /tmp/agent/bin/skyportalai 2> /tmp/cli.err
+          status=$?
+          set -e
+          cat /tmp/cli.err
+          test "$status" -eq 1
+          grep -q 'pip install "skyportalai\[cli\]"' /tmp/cli.err
+          ! grep -q Traceback /tmp/cli.err
+      - name: Agent tests
+        # Run from outside the checkout so the installed package is the one under test.
+        working-directory: /tmp
+        run: >-
+          /tmp/agent/bin/python -m pytest -v -p no:cacheprovider
+          -c "$GITHUB_WORKSPACE/pyproject.toml" --rootdir "$GITHUB_WORKSPACE"
+          $(ls "$GITHUB_WORKSPACE"/tests/test_agent_*.py | grep -v test_agent_setup)

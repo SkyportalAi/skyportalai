@@ -73,7 +73,7 @@ the project is created on the first successful upload.
    python3 -m venv /tmp/skyportal-check
    /tmp/skyportal-check/bin/pip install \
      --index-url https://test.pypi.org/simple/ \
-     --extra-index-url https://pypi.org/simple/ skyportalai
+     --extra-index-url https://pypi.org/simple/ "skyportalai[cli]"
    /tmp/skyportal-check/bin/skyportalai --help
    ```
 
