@@ -163,6 +163,19 @@ skyportalai chat send --chat-id 123 --wait "Compare all selected hosts"
 
 Use `--clear-scope` to remove every selected server explicitly.
 
+Check which account a key belongs to, and what it may do, before automating
+with it:
+
+```bash
+skyportalai whoami
+skyportalai --json whoami
+```
+
+`whoami` shows the account, the approval mode, read-only mode, the policy your
+own hosts get per environment, and for each team your role and that role's
+ceiling per environment (`denied` where it has no grant). It only reports: the
+server still decides every command.
+
 Run `skyportalai --help` for the complete command reference.
 
 ## Kubernetes clusters

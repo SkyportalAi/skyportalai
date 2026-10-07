@@ -127,10 +127,12 @@ from .ansible import ansible_app  # noqa: E402
 from .chat import chat_app  # noqa: E402
 from .kubernetes import kubernetes_app  # noqa: E402
 from .shell_commands import register as _register_shell_commands  # noqa: E402
+from .whoami import whoami  # noqa: E402
 
 app.add_typer(chat_app, name="chat")
 app.add_typer(ansible_app, name="ansible")
 app.add_typer(kubernetes_app, name="kubernetes")
+app.command("whoami")(whoami)
 _register_shell_commands(app)
 
 
