@@ -15,11 +15,13 @@ from .types import (
     AnsiblePlaybook,
     ApprovalResult,
     ChatStatus,
+    EffectivePermissions,
     KubernetesCluster,
     Message,
     MessagesPage,
     PendingApproval,
     PermissionMode,
+    TeamPermissions,
     User,
 )
 
@@ -33,6 +35,8 @@ __all__ = [
     "KubernetesCluster",
     "PendingApproval",
     "PermissionMode",
+    "EffectivePermissions",
+    "TeamPermissions",
     "ApprovalResult",
     "Message",
     "MessagesPage",
