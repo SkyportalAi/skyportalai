@@ -1,7 +1,7 @@
 {{- if and .Values.kubernetes.enabled .Values.networkPolicy.enabled }}
 # Same containment as the experiment agent's policy: nothing inbound, DNS and
 # outbound HTTPS out. The cluster role also needs the API server.
-{{- range $component := list "cluster" "node" }}
+{{- range $component := concat (list "cluster") (include "skyportalai-agent.nodeComponents" $ | fromYamlArray) }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

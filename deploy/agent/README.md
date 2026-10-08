@@ -234,7 +234,17 @@ Set `kubernetes.enabled=true` and the chart adds two workloads from the same ima
 | Workload | Runs | Reads | Access |
 |---|---|---|---|
 | `<release>-cluster` Deployment | 1 pod | pods, events, nodes, namespaces, deployments/statefulsets, crash logs of failing pods, `kubectl top` | a read-only ClusterRole: `get`/`list`/`watch`, no secrets, no writes |
-| `<release>-node` DaemonSet | 1 pod on every node | the node's CPU, memory, disk, load (host `/proc`, read only) and GPUs (NVML) | no Kubernetes API token at all |
+| `<release>-node` DaemonSet | 1 pod on every node; with `kubernetes.node.gpu.runtimeClassName` set, on every node without the GPU label | the node's CPU, memory, disk, load (host `/proc`, read only) | no Kubernetes API token at all |
+| `<release>-node-gpu` DaemonSet | only with `kubernetes.node.gpu.runtimeClassName` set: 1 pod on every node with the GPU label | the same, plus GPUs (NVML) through that RuntimeClass | no Kubernetes API token at all |
+
+The GPU label is `kubernetes.node.gpu.nodeLabel`, by default
+`nvidia.com/gpu.present=true`, which the NVIDIA GPU operator's feature discovery
+sets. There are two DaemonSets because a node whose container runtime lacks the
+RuntimeClass's handler can't start a pod that names it, so one DaemonSet with the
+RuntimeClass would lose the CPU-only nodes. A mixed CPU and GPU cluster reports
+both. Each DaemonSet has its own host spool (`kubernetes.node.spoolHostPath`, with
+`-gpu` appended for `-node-gpu`), so uploads a node buffered before moving from
+one to the other stay in the old spool.
 
 GPU utilisation comes from the node agent (NVML), so no DCGM exporter is needed.
 vLLM serving metrics are not collected through the agent yet.
@@ -251,6 +261,8 @@ The agent refuses any other command itself, whatever the server sends.
 kubectl get endpoints kubernetes -n default
 # GPU clusters: the RuntimeClass that exposes the NVIDIA driver, usually "nvidia".
 kubectl get runtimeclass
+# GPU clusters: which nodes carry the GPU label.
+kubectl get nodes -L nvidia.com/gpu.present
 ```
 
 - **Egress:** outbound TCP 443 to your SkyPortal host (`app.skyportal.ai`), plus
@@ -306,16 +318,23 @@ older agent would run and send nothing.
 ### Verify
 
 ```bash
-kubectl -n skyportal get pods -o wide   # one -node- pod per node, one -cluster- pod
+kubectl -n skyportal get pods -o wide   # one -node- or -node-gpu- pod per node, one -cluster- pod
 kubectl -n skyportal logs deploy/skyportalai-agent-cluster | head   # "role=cluster"
+# GPU clusters: the nodes labelled true run the -node-gpu- pods.
+kubectl get nodes -L nvidia.com/gpu.present
 ```
 
 Within a minute the cluster shows as Connected in SkyPortal, with its pods and
 per-node metrics.
 
-The node DaemonSet tolerates every taint so that it reaches every node, GPU and
+A GPU node without the label is monitored as CPU only: it runs a `-node` pod,
+without the RuntimeClass, and reports no GPUs. Fix the label, or set
+`kubernetes.node.gpu.nodeLabel` to a label your GPU nodes carry.
+
+The node DaemonSets tolerate every taint so that they reach every node, GPU and
 control-plane nodes included. To monitor a subset, set
-`kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`.
+`kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`; both DaemonSets
+use them.
 
 ## Registry access
 
