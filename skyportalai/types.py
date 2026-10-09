@@ -162,12 +162,13 @@ class PendingApproval:
     command: str = ""
     plan_id: str = ""
     reason: str = ""
+    raw: dict = field(default_factory=dict)
     # Why it asks, worded by the server (skyportal-website#3632); empty from older servers.
+    # After raw, so positional constructor calls keep binding raw where they always did.
     rule: str = ""
     why: tuple = ()
     can_change: str = ""
     host: str = ""
-    raw: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PendingApproval":

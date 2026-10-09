@@ -56,13 +56,16 @@ def _turn(status, approvals=()):
     )
 
 
-def _shell(client, tmp_path, monkeypatch, answers=()):
+def _shell(client, tmp_path, monkeypatch, answers=(), confirm_answers=()):
     monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
     console = Console(file=StringIO(), force_terminal=False, width=160)
     session = _Session(answers)
+    confirm = _Session(confirm_answers)
     shell = InteractiveShell(
         console=console, client_factory=lambda: client, session=session, token_prompt=lambda _p: "",
+        confirm_prompt=confirm.prompt,
     )
+    shell.confirm = confirm
     return shell, console, session
 
 
@@ -96,12 +99,27 @@ def test_an_older_server_gets_todays_prompt(tmp_path, monkeypatch):
 
 def test_r_rejects_with_the_reason(tmp_path, monkeypatch):
     client = _Client()
-    shell, _console, session = _shell(client, tmp_path, monkeypatch, answers=["r", "use a dry run first"])
+    shell, _console, session = _shell(
+        client, tmp_path, monkeypatch, answers=["r"], confirm_answers=["use a dry run first"],
+    )
 
     shell._process_turn(_turn("awaiting_approval", [_approval(approval_context=CONTEXT)]))
 
     assert client.submit_calls == [("a1", "rejected", "use a dry run first")]
-    assert session.prompts[1] == "Reason: "
+    # Asked outside the saved-history session, so the reason never lands in ~/.skyportalai/history.
+    assert shell.confirm.prompts == ["Reason: "]
+    assert len(session.prompts) == 1
+
+
+def test_the_host_shows_even_without_reasons(tmp_path, monkeypatch):
+    client = _Client()
+    shell, console, _session = _shell(client, tmp_path, monkeypatch, answers=["y"])
+
+    shell._process_turn(_turn("awaiting_approval", [_approval(approval_context={"host": "prod-db-1", "why": []})]))
+
+    output = console.file.getvalue()
+    assert "on prod-db-1" in output
+    assert "•" not in output
 
 
 def test_the_reason_reaches_the_approve_endpoint():
@@ -144,6 +162,18 @@ def test_a_blocked_command_says_blocked_and_who_can_change_it():
         "can_change": "team_admin",
     }, success=False))
     assert line.plain.splitlines()[-1].strip() == "✗ blocked: Blocked by your team role (ask a team admin)"
+
+
+def test_a_blocked_command_without_an_owner_does_not_point_to_settings():
+    line = InteractiveShell._tool_result_line(_result({
+        "verdict": "blocked", "rule": "access", "title": "Blocked by policy",
+    }, success=False))
+    assert line.plain.splitlines()[-1].strip() == "✗ blocked: Blocked by policy"
+
+
+def test_a_positional_raw_stays_raw():
+    approval = PendingApproval("a1", "bash_command", "ls", "", "", {"k": "v"})
+    assert (approval.raw, approval.rule) == ({"k": "v"}, "")
 
 
 def test_a_result_without_an_explanation_is_unchanged():

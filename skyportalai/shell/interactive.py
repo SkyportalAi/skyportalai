@@ -1629,7 +1629,8 @@ class InteractiveShell:
             return "approved", None
         if answer == "r":
             try:
-                reason = self.session.prompt("Reason: ").strip()
+                # Not self.session: that saves every answer to ~/.skyportalai/history.
+                reason = self._confirm_prompt("Reason: ").strip()
             except (KeyboardInterrupt, EOFError):
                 reason = ""
             return "rejected", self._bounded_one_line(reason, 500) or None
@@ -1650,22 +1651,25 @@ class InteractiveShell:
         if not isinstance(context, dict):
             return None
         why = [line for line in context.get("why") or [] if isinstance(line, str) and line.strip()]
-        if not why:
+        host = context.get("host")
+        host = host if isinstance(host, str) and host else ""
+        if not why and not host:
             return None
         text = Text()
-        host = context.get("host")
-        if isinstance(host, str) and host:
+        if host:
             text.append("on ", style="dim")
             text.append(cls._bounded_one_line(host, 120), style="bold")
-            text.append("\n")
-        if context.get("title"):
-            text.append_text(cls._server_wording(context["title"], "yellow"))
-            text.append("\n")
-        for index, line in enumerate(why):
-            text.append("  • ", style="dim")
-            text.append_text(cls._server_wording(line))
-            if index < len(why) - 1:
+        if why:
+            if host:
                 text.append("\n")
+            if context.get("title"):
+                text.append_text(cls._server_wording(context["title"], "yellow"))
+                text.append("\n")
+            for index, line in enumerate(why):
+                text.append("  • ", style="dim")
+                text.append_text(cls._server_wording(line))
+                if index < len(why) - 1:
+                    text.append("\n")
         return text
 
     @staticmethod
@@ -1681,8 +1685,10 @@ class InteractiveShell:
             return None
         line = Text("✗ blocked: ", style="red")
         line.append_text(InteractiveShell._server_wording(explanation["title"], "red"))
-        owner = "ask a team admin" if explanation.get("can_change") == "team_admin" else "you can change this in Settings"
-        line.append(" ({})".format(owner), style="dim")
+        # Only point somewhere the server said the rule can be changed; say nothing otherwise.
+        owner = {"you": "you can change this in Settings", "team_admin": "ask a team admin"}.get(explanation.get("can_change"))
+        if owner:
+            line.append(" ({})".format(owner), style="dim")
         return line
 
     @classmethod
