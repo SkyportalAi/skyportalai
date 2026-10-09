@@ -20,7 +20,7 @@ from .resources.ansible import AnsibleResource
 from .resources.chat import ChatResource
 from .resources.kubernetes import KubernetesResource
 from .resources.me import fetch_me
-from .types import PermissionMode, User
+from .types import EffectivePermissions, PermissionMode, User
 
 DEFAULT_BASE_URL = "https://app.skyportal.ai"
 
@@ -291,6 +291,27 @@ class Skyportal:
             json={"permission_mode": mode},
         )
         return self._parse_permission_mode(data)
+
+    def get_effective_permissions(self) -> EffectivePermissions:
+        """Return the account, approval mode, and per-environment policies.
+
+        For display only: the server enforces every policy on each command, so
+        nothing here should be used to allow or refuse an action locally.
+        """
+        try:
+            data = self._request("GET", "/api/v1/agent/permission/effective/")
+        except APIError as exc:
+            if exc.status_code != 404:
+                raise
+            raise APIError(
+                "This Skyportal deployment does not report effective permissions yet; "
+                "it needs a server update before 'whoami' can work.",
+                status_code=404,
+                body=exc.body,
+            ) from None
+        if not isinstance(data, dict):
+            raise APIError("API returned an invalid permissions payload.", body=data)
+        return EffectivePermissions.from_dict(data)
 
     @staticmethod
     def _parse_permission_mode(data: object) -> PermissionMode:

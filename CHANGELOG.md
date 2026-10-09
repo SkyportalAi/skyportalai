@@ -18,6 +18,17 @@ All notable changes to this project are documented here. This project follows
 
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
+### Added
+
+- **`skyportalai whoami` shows what your account may do.** It prints the account,
+  the approval mode, read-only mode, the policy your own hosts get per
+  environment, and for each team your role and that role's ceiling per
+  environment (`denied` where the role has no grant). `skyportalai --json whoami`
+  prints the server's payload. It only reports: the server still decides every
+  command. It needs a SkyPortal server with
+  `GET /api/v1/agent/permission/effective/`; against an older one it says so
+  instead of failing. From the SDK, `Skyportal.get_effective_permissions()`
+  returns the same data as `EffectivePermissions`.
 
 ## 0.3.1
 
