@@ -537,6 +537,7 @@ class SkyportalClient:
         decision: str,
         *,
         autoapproved: bool = False,
+        rejection_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Approve or reject one pending headless-agent action."""
         approval_id = quote(str(approval.get("approval_id", "")), safe="")
@@ -548,6 +549,8 @@ class SkyportalClient:
             body["command"] = approval["command"]
         if autoapproved:
             body["autoapproved"] = True
+        if rejection_reason and decision == "rejected":
+            body["rejection_reason"] = rejection_reason
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/approve/{}/".format(chat_id, approval_id),

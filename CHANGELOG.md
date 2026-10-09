@@ -7,6 +7,14 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **Approvals say why.** With a server that sends it (skyportal-website#3632), the
+  approval prompt names the host and lists each reason the command asks ("Deletes
+  or changes data (rm)", "Not on any allow list"). A command that ran without
+  asking gets a dim line saying why ("Auto-approved · host allow list (kubectl
+  get)"), and a refused one says `✗ blocked:` with the rule and who can change it.
+  The CLI shows the server's wording as given; an older server gets today's output.
+- **Reject with a reason.** Answer `r` at the approval prompt to tell the agent why.
+- `PendingApproval` gains `rule`, `why`, `can_change` and `host`.
 - **`skyportalai whoami` shows what your account may do.** It prints the account,
   the approval mode, read-only mode, the policy your own hosts get per
   environment, and for each team your role and that role's ceiling per
