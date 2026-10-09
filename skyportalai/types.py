@@ -24,6 +24,56 @@ class User:
 
 
 @dataclass(frozen=True)
+class TeamPermissions:
+    """The account's role in one team and that role's ceiling per environment; ``None`` is denied."""
+
+    name: str
+    role: str
+    environments: dict[str, str | None] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TeamPermissions":
+        environments = data.get("environments")
+        return cls(
+            name=str(data.get("name") or ""),
+            role=str(data.get("role") or ""),
+            environments={
+                str(env): None if policy is None else str(policy)
+                for env, policy in (environments.items() if isinstance(environments, dict) else [])
+            },
+        )
+
+
+@dataclass(frozen=True)
+class EffectivePermissions:
+    """What the account may do, for display only: the server enforces every policy itself."""
+
+    username: str
+    email: str
+    permission_mode: str
+    read_only_mode: bool
+    own_environments: dict[str, str] = field(default_factory=dict)
+    teams: list[TeamPermissions] = field(default_factory=list)
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EffectivePermissions":
+        account = data.get("account") if isinstance(data.get("account"), dict) else {}
+        own = data.get("own_environments")
+        teams = data.get("teams")
+        return cls(
+            username=str(account.get("username") or ""),
+            email=str(account.get("email") or ""),
+            permission_mode=str(data.get("permission_mode") or ""),
+            read_only_mode=bool(data.get("read_only_mode")),
+            own_environments={str(env): str(policy) for env, policy in own.items()} if isinstance(own, dict) else {},
+            teams=[TeamPermissions.from_dict(team) for team in teams if isinstance(team, dict)]
+            if isinstance(teams, list) else [],
+            raw=dict(data),
+        )
+
+
+@dataclass(frozen=True)
 class KubernetesCluster:
     """A Kubernetes cluster connected to the authenticated Skyportal account."""
 
