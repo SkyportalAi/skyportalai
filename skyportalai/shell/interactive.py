@@ -43,6 +43,13 @@ _APPROVAL_SETTLEMENT_POLL_INTERVAL = 0.25
 # website/chat/environment/kube_namespace.py.
 ALL_NAMESPACES = "__all__"
 
+# Message.origin values for turns nobody typed (skyportal-website #3505). Their
+# opening "user" message is the agent's own instruction, never the person's.
+_AGENT_STARTED_LABELS = {
+    "scheduled_follow_up": "Scheduled check",
+    "background_task": "Background task",
+}
+
 
 class _AutoapprovalPolicyConflict(RuntimeError):
     """The shared mode changed between its GET and marked approval POST."""
@@ -1751,24 +1758,22 @@ class InteractiveShell:
             role = message.get("role")
             if role == "assistant":
                 line = self._assistant_message_line(message)
-                if line is None:
-                    continue
-                if not rendered:
-                    self.console.print()
-                    if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
-                self.console.print(line)
-                rendered = True
             elif role == "tool":
                 line = self._tool_result_line(message)
-                if line is None:
-                    continue
-                if not rendered:
-                    self.console.print()
-                    if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
-                self.console.print(line)
-                rendered = True
+            elif role == "user":
+                # The person's own messages are already on screen; only a turn
+                # the agent started itself needs announcing.
+                line = self._agent_started_line(message)
+            else:
+                continue
+            if line is None:
+                continue
+            if not rendered:
+                self.console.print()
+                if show_section:
+                    self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+            self.console.print(line)
+            rendered = True
         if rendered:
             self.console.print()
         return rendered
@@ -1917,6 +1922,10 @@ class InteractiveShell:
         for m in ordered:
             role = m.get("role")
             if role == "user":
+                started = self._agent_started_line(m)
+                if started is not None:
+                    printable.append(("agent_started", started, None))
+                    continue
                 text = self._message_text(m)
                 if text:
                     printable.append(("user", text, None))
@@ -1940,7 +1949,9 @@ class InteractiveShell:
             return
         self._print_section("earlier conversation", style="#6b7280")
         for role, text, msg_type in printable:
-            if role == "user":
+            if role == "agent_started":
+                self.console.print(text)
+            elif role == "user":
                 line = Text()
                 line.append("you  ", style="bold #f0b429")
                 line.append(self._clean_terminal_text(text))
@@ -1959,6 +1970,18 @@ class InteractiveShell:
                 self.console.print("[bold #3b82f6]agent[/bold #3b82f6]")
                 self.console.print(Markdown(self._clean_terminal_text(text)))
         self.console.print()
+
+    @staticmethod
+    def _agent_started_line(message: Dict[str, Any]) -> Optional[Text]:
+        """A marker for a turn the agent started itself, or None for the person's own."""
+        origin = message.get("origin")
+        if not origin or origin == "user_turn":
+            return None
+        label = _AGENT_STARTED_LABELS.get(origin, "Started by the agent")
+        line = Text("↻ ", style="dim")
+        line.append(label, style="bold dim")
+        line.append(" · the agent picked this chat back up on its own", style="dim")
+        return line
 
     @staticmethod
     def _message_text(message: Dict[str, Any]) -> str:
