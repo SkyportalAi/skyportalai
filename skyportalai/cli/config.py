@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -15,6 +15,25 @@ from skyportalai._client import DEFAULT_BASE_URL, normalize_base_url
 from skyportalai._exceptions import SkyportalError
 
 _FLAG_ORIGIN = "--base-url"
+
+
+@dataclass(frozen=True)
+class BaseUrlOrigin:
+    """Which setting chose the base URL: a flag, a variable, a file, or nothing."""
+
+    kind: Literal["flag", "env", "config", "credentials", "default"]
+    name: str = ""
+
+    def change_advice(self) -> str:
+        """How to point the CLI somewhere else, given what chose the URL."""
+        if self.kind == "flag":
+            return f"drop {self.name}"
+        if self.kind == "env":
+            return f"unset {self.name}"
+        return "run skyportalai configure to change it"
+
+
+_DEFAULT_ORIGIN = BaseUrlOrigin("default")
 
 
 @dataclass(frozen=True)
@@ -29,6 +48,7 @@ class CLISettings:
     credentials_path: Path
     #: Why a stored credential could not be used, if there was one.
     credential_conflict: str | None = None
+    base_url_origin: BaseUrlOrigin = _DEFAULT_ORIGIN
 
 
 def get_config_path() -> Path:
@@ -57,6 +77,8 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
         flag=base_url,
         configured=portal.get("base_url"),
         stored=stored_url,
+        config_path=config_path,
+        credentials_path=credentials_path,
     )
 
     timeout_value = portal.get("request_timeout", 30.0)
@@ -97,36 +119,39 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
         config_path=config_path,
         credentials_path=credentials_path,
         credential_conflict=credential_conflict,
+        base_url_origin=url_origin,
     )
 
 
-def _select_base_url(*, flag: str | None, configured: Any, stored: Any) -> tuple[str, str | None]:
-    """The effective base URL, and the flag or variable that selected it.
+def _select_base_url(
+    *, flag: str | None, configured: Any, stored: Any, config_path: Path, credentials_path: Path
+) -> tuple[str, BaseUrlOrigin]:
+    """The effective base URL, and the flag, variable or file that selected it.
 
     The origin is not decoration: ``--base-url`` and the environment both
     outrank ``config.yaml``, so advice to run ``config set --base-url`` is a
     dead end when one of them is what chose the URL.
     """
     if flag:
-        return normalize_base_url(flag), _FLAG_ORIGIN
+        return normalize_base_url(flag), BaseUrlOrigin("flag", _FLAG_ORIGIN)
     env_url, env_name = _env.lookup("SKYPORTALAI_BASE_URL")
     if not env_url:
         env_url, env_name = _env.lookup("SKYPORTALAI_URL")
     if env_url:
-        return normalize_base_url(env_url), env_name
+        return normalize_base_url(env_url), BaseUrlOrigin("env", str(env_name))
     if configured:
-        return normalize_base_url(str(configured)), None
+        return normalize_base_url(str(configured)), BaseUrlOrigin("config", str(config_path))
     if stored:
-        return normalize_base_url(str(stored)), None
-    return DEFAULT_BASE_URL, None
+        return normalize_base_url(str(stored)), BaseUrlOrigin("credentials", str(credentials_path))
+    return DEFAULT_BASE_URL, _DEFAULT_ORIGIN
 
 
-def _keep_credentials_advice(url_origin: str | None, stored_url: str) -> str:
+def _keep_credentials_advice(url_origin: BaseUrlOrigin, stored_url: str) -> str:
     """How to make the selected URL match the stored credential."""
-    if url_origin == _FLAG_ORIGIN:
-        return f"dropping {_FLAG_ORIGIN}"
-    if url_origin:
-        return f"unsetting {url_origin}"
+    if url_origin.kind == "flag":
+        return f"dropping {url_origin.name}"
+    if url_origin.kind == "env":
+        return f"unsetting {url_origin.name}"
     return f"running 'skyportalai config set --base-url {stored_url}'"
 
 
