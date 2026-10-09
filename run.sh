@@ -59,4 +59,4 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 cd "$ROOT_DIR"
-exec uv run --no-dev skyportalai start
+exec uv run --no-dev --extra cli skyportalai start

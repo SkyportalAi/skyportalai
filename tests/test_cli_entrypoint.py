@@ -169,3 +169,29 @@ def test_declared_console_scripts_are_the_skyportalai_pair() -> None:
     """The standalone `skyportal` script is gone as of 0.2.0."""
     scripts = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["scripts"]
     assert set(scripts) == {"skyportalai", "skyportalai-agent"}
+
+
+def test_without_the_cli_extra_the_console_script_prints_the_install_hint(monkeypatch, capsys) -> None:
+    """An SDK-only or agent-only install still has the `skyportalai` script (#3657)."""
+    import importlib.util
+
+    import skyportalai.cli as cli
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        cli.importlib.util, "find_spec", lambda name, *a: None if name == "typer" else real_find_spec(name, *a)
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        cli.require_cli_packages()
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert 'pip install "skyportalai[cli]"' in err
+    assert "missing: typer" in err
+
+
+def test_the_cli_extra_names_every_package_the_cli_needs() -> None:
+    import skyportalai.cli as cli
+
+    pyproject = tomllib.loads((pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    extra = {req.split(">")[0].split("[")[0].strip().replace("-", "_") for req in pyproject["project"]["optional-dependencies"]["cli"]}
+    assert {"yaml" if name == "pyyaml" else name for name in extra} == set(cli.CLI_PACKAGES)
