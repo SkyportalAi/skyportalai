@@ -71,7 +71,7 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.3 \
+  --version 0.4.0 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
@@ -82,7 +82,7 @@ creates the Secret:
 ```bash
 read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.3 \
+  --version 0.4.0 \
   --set-string token.value="$AGT"
 unset AGT
 ```
@@ -330,6 +330,11 @@ per-node metrics.
 A GPU node without the label is monitored as CPU only: it runs a `-node` pod,
 without the RuntimeClass, and reports no GPUs. Fix the label, or set
 `kubernetes.node.gpu.nodeLabel` to a label your GPU nodes carry.
+
+If you are upgrading from a chart older than 0.4.0 with `runtimeClassName`
+already set, check the labels first. Older charts gave every node the
+RuntimeClass, so a GPU node without the label reported its GPUs before the
+upgrade and reports CPU only after it.
 
 The node DaemonSets tolerate every taint so that they reach every node, GPU and
 control-plane nodes included. To monitor a subset, set
