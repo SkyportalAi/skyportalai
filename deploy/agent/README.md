@@ -229,7 +229,8 @@ read the package; see the next section.
 
 ## Kubernetes monitoring
 
-Set `kubernetes.enabled=true` and the chart adds two workloads from the same image:
+Set `kubernetes.enabled=true` and the chart adds two workloads from the same image,
+or three with `kubernetes.node.gpu.runtimeClassName` set:
 
 | Workload | Runs | Reads | Access |
 |---|---|---|---|
