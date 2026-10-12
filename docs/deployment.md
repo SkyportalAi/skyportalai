@@ -13,12 +13,12 @@ The launcher installs [uv](https://docs.astral.sh/uv/) if it is missing, provisi
 Set `SKYPORTAL_VENV` to place the environment somewhere other than `.venv`.
 Contributors who also run `poetry install` should do so: both default to
 `.venv`, and the launcher installs runtime dependencies only, so running it
-afterwards prunes `pytest`, `ruff` and the `agent` extra from that environment.
+afterwards prunes `pytest`, `ruff` and the `agent` extra (it keeps `cli`) from that environment.
 
 ## Manual installation
 
 ```bash
-uv sync --no-dev
+uv sync --no-dev --extra cli
 uv run skyportalai
 ```
 
@@ -31,7 +31,7 @@ builds with `poetry-core` rather than setuptools:
 python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e .
+python -m pip install -e ".[cli]"
 skyportalai
 ```
 

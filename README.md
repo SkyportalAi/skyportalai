@@ -48,9 +48,13 @@ the most likely change, and report its confidence.
 Requires Python 3.11 or newer.
 
 ```bash
-pip install skyportalai
+pip install "skyportalai[cli]"
 skyportalai
 ```
+
+`[cli]` installs the command-line client. For the Python SDK alone,
+`pip install skyportalai` is enough from the next release on; today it still
+installs the CLI's packages too.
 
 Or run from a checkout:
 
@@ -232,8 +236,9 @@ The Python SDK exposes the same lifecycle as `client.ansible.create(...)`,
 
 ## Observability agent
 
-Install the collector dependencies and review the deployment guide before
-running the agent on experiment volumes:
+Install the agent and review the deployment guide before running it on
+experiment volumes. `[agent]` does not need `[cli]`, and the agent never loads
+the CLI:
 
 ```bash
 pip install "skyportalai[agent]"

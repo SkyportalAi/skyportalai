@@ -29,8 +29,19 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
 ]
 
+# The CLI's packages are still in the base for one release (#3657). The next release
+# drops them, so `pip install skyportalai` becomes the SDK alone and the CLI needs
+# `skyportalai[cli]`; installing `[cli]` today keeps working after that.
 [project.optional-dependencies]
-agent = ["wandb>=0.30.0,<1.0"]
+cli = [
+    "click>=8.5.0,<9.0",
+    "prompt-toolkit>=3.0.53,<4.0",
+    "pydantic>=2.13.5,<3.0",
+    "rich>=13.0,<16.0",
+    "typer>=0.27.2,<1.0",
+    "pyyaml>=6.0,<7.0",
+]
+agent = ["wandb>=0.30.0,<1.0", "pyyaml>=6.0,<7.0"]
 
 [project.scripts]
 skyportalai = "skyportalai.cli:main"

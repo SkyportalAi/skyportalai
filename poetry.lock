@@ -1192,9 +1192,10 @@ files = [
 ]
 
 [extras]
-agent = ["wandb"]
+agent = ["pyyaml", "wandb"]
+cli = ["click", "prompt-toolkit", "pydantic", "pyyaml", "rich", "typer"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "a811e42336891917824d8cb2b5ab5154adb75da4dccbe1b028d5411aeab22e68"
+content-hash = "b8f33bd2eabc28779e2c373bcd0bcb898a8372e6745434be10063f99dbf1a9a7"
