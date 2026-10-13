@@ -1686,7 +1686,15 @@ class InteractiveShell:
         line = Text("✗ blocked: ", style="red")
         line.append_text(InteractiveShell._server_wording(explanation["title"], "red"))
         # Only point somewhere the server said the rule can be changed; say nothing otherwise.
-        owner = {"you": "you can change this in Settings", "team_admin": "ask a team admin"}.get(explanation.get("can_change"))
+        # Settings is named only when the server sent a settings_url, as the web card does:
+        # a read-only environment's policy lives in the chat scope menu, not in Settings.
+        can_change = explanation.get("can_change")
+        if can_change == "you":
+            owner = "you can change this in Settings" if explanation.get("settings_url") else "you can change this"
+        elif can_change == "team_admin":
+            owner = "ask a team admin"
+        else:
+            owner = None
         if owner:
             line.append(" ({})".format(owner), style="dim")
         return line

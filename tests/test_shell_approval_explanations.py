@@ -171,6 +171,25 @@ def test_a_blocked_command_without_an_owner_does_not_point_to_settings():
     assert line.plain.splitlines()[-1].strip() == "✗ blocked: Blocked by policy"
 
 
+def test_a_blocked_command_points_to_settings_only_with_a_settings_url():
+    line = InteractiveShell._tool_result_line(_result({
+        "verdict": "blocked", "rule": "destructive", "title": "Blocked: changes data",
+        "can_change": "you", "settings_url": "/agent/settings/",
+    }, success=False))
+    assert line.plain.splitlines()[-1].strip() == (
+        "✗ blocked: Blocked: changes data (you can change this in Settings)"
+    )
+
+
+def test_a_read_only_host_block_does_not_point_to_settings():
+    # The read-only policy lives in the chat scope menu, so the server sends no settings_url.
+    line = InteractiveShell._tool_result_line(_result({
+        "verdict": "blocked", "rule": "read_only_environment", "title": "Blocked: read-only host",
+        "can_change": "you", "settings_url": "",
+    }, success=False))
+    assert line.plain.splitlines()[-1].strip() == "✗ blocked: Blocked: read-only host (you can change this)"
+
+
 def test_a_positional_raw_stays_raw():
     approval = PendingApproval("a1", "bash_command", "ls", "", "", {"k": "v"})
     assert (approval.raw, approval.rule) == ({"k": "v"}, "")
