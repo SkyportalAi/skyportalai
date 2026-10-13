@@ -30,6 +30,17 @@ All notable changes to this project are documented here. This project follows
   instead of failing. From the SDK, `Skyportal.get_effective_permissions()`
   returns the same data as `EffectivePermissions`.
 
+### Fixed
+
+- **A `kubectl` command from chat is no longer stopped after 30 seconds.** The
+  cluster agent now runs it for as long as SkyPortal allows: SkyPortal sends the
+  limit with each command, up to 30 minutes. This needs a SkyPortal server that
+  sends the limit; against an older one the agent keeps the 30 seconds.
+- **A chat command's result is no longer lost when SkyPortal is briefly
+  unavailable.** The agent used to post it once and drop it if a deploy or a
+  network blip got in the way. It now keeps trying for over a minute before
+  giving up.
+
 ## 0.3.1
 
 ### Added
