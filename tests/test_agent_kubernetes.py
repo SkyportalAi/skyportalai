@@ -62,6 +62,7 @@ class FakeResponse:
 class FakeSession:
     responses: list = field(default_factory=list)
     calls: list = field(default_factory=list)
+    closed: int = 0
 
     def post(self, url, data=None, json=None, headers=None, timeout=None, allow_redirects=True):
         self.calls.append({"url": url, "data": data, "json": json, "headers": headers})
@@ -69,6 +70,15 @@ class FakeSession:
         if isinstance(reply, Exception):
             raise reply
         return reply
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
 
 class RecordingStop(threading.Event):
@@ -145,6 +155,12 @@ class FakeCommandServer:
     def wait_for_results(self, count: int) -> bool:
         with self._changed:
             return self._changed.wait_for(lambda: len(self.results) >= count, timeout=5)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        pass
 
 
 def _report_by(seconds_from_now: float) -> str:
@@ -425,7 +441,11 @@ class NodeRoleStub:
 
 class TestCommandPoller:
     def _poller(self, session, run, stop_event=None):
-        return CommandPoller(BASE_URL, TOKEN, session=session, run=run, stop_event=stop_event or threading.Event())
+        """A poller whose leases and result posts all go to `session`, in order."""
+        return CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session, run=run,
+            stop_event=stop_event or threading.Event(),
+        )
 
     def _handle(self, poller) -> bool:
         """poll_once, then wait for the command it started; True if it started one."""
@@ -454,6 +474,49 @@ class TestCommandPoller:
         assert result_call["url"] == BASE_URL + "/agent/api/kubernetes/commands/7/result/"
         assert result_call["json"] == {"exit_code": 0, "stdout": "trainer-0", "stderr": ""}
         assert result_call["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+    @pytest.mark.parametrize(
+        "reply", [FakeResponse(200, {"recorded": True}), requests.TooManyRedirects("loop")], ids=["posted", "raised"]
+    )
+    def test_each_command_posts_its_result_on_a_session_of_its_own(self, reply):
+        lease_session = FakeSession([FakeResponse(200, {"id": n, "argv": GET_PODS}) for n in (7, 8)])
+        worker_sessions = []
+
+        def new_session():
+            worker_sessions.append(FakeSession([reply]))
+            return worker_sessions[-1]
+
+        def run(argv, timeout):
+            return {"argv": argv, "exit_code": 0, "stdout": "", "stderr": ""}
+
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=lease_session, session_factory=new_session, run=run, stop_event=threading.Event()
+        )
+        assert self._handle(poller) is True and self._handle(poller) is True
+        assert [call["url"] for call in lease_session.calls] == [BASE_URL + commands.LEASE_PATH] * 2
+        assert lease_session.closed == 0
+        assert len({id(lease_session), *map(id, worker_sessions)}) == 3
+        for command_id, session in zip((7, 8), worker_sessions, strict=True):
+            (call,) = session.calls
+            assert call["url"] == BASE_URL + f"/agent/api/kubernetes/commands/{command_id}/result/"
+            assert call["headers"]["Authorization"] == f"Bearer {TOKEN}"
+            assert session.closed == 1
+
+    def test_a_result_is_posted_with_no_more_output_than_the_server_keeps(self):
+        # The server stores the first MiB of each stream; 2 MiB of stdout goes out as that first MiB.
+        head = commands.MAX_COMMAND_OUTPUT_CHARS
+        assert head == 1024 * 1024
+
+        def run(argv, timeout):
+            return {"argv": argv, "exit_code": 3, "stdout": "a" * head + "b" * head, "stderr": "e" * (head + 1)}
+
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS}), FakeResponse(200, {})])
+        assert self._handle(self._poller(session, run)) is True
+        posted = session.calls[1]["json"]
+        assert posted.keys() == {"exit_code", "stdout", "stderr"} and posted["exit_code"] == 3
+        # Compared by length and letters so a failure doesn't print a MiB.
+        assert (len(posted["stdout"]), set(posted["stdout"])) == (head, {"a"})
+        assert (len(posted["stderr"]), set(posted["stderr"])) == (head, {"e"})
 
     def test_a_mutating_command_from_the_server_is_refused_by_the_agent(self, monkeypatch):
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("process started"))
@@ -526,7 +589,10 @@ class TestCommandPoller:
             stop.now += runs_for
             return {"argv": argv, "exit_code": 0, "stdout": "secret-stdout", "stderr": ""}
 
-        poller = CommandPoller(BASE_URL, TOKEN, session=session, run=run, stop_event=stop, clock=stop.clock)
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session, run=run, stop_event=stop,
+            clock=stop.clock,
+        )
         return poller, session, stop
 
     @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])

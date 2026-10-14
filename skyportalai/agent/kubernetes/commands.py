@@ -39,6 +39,10 @@ COMMAND_SLOTS = 4
 # server sends none, and these alone (about 77 s in all) ride out a web restart.
 RESULT_RETRY_DELAYS = (2, 5, 10, 20, 40)
 RESULT_RETRY_MAX_DELAY = 60
+# Matches MAX_COMMAND_OUTPUT_CHARS in skyportal-website's website/api/k8s_agent_api.py. The
+# server keeps only this head of stdout and of stderr, so a worker holds no more than that
+# while it posts and retries.
+MAX_COMMAND_OUTPUT_CHARS = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -59,12 +63,17 @@ class CommandPoller:
         token: str,
         *,
         session: requests.Session | None = None,
+        session_factory: Callable[[], requests.Session] = requests.Session,
         run: Callable[[list[str], float], dict] = run_kubectl,
         stop_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.base_url = base_url.rstrip("/")
+        # requests doesn't promise a Session is safe to share across threads. Leases use this
+        # one, on the polling thread only; each command's thread posts its result on a session
+        # of its own from session_factory.
         self.session = session or requests.Session()
+        self._session_factory = session_factory
         self.headers = {"Authorization": f"Bearer {token}", "User-Agent": f"skyportalai-agent/{__version__}"}
         self._run = run
         self._stop = stop_event or threading.Event()
@@ -126,20 +135,21 @@ class CommandPoller:
         try:
             # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
             # one still gets a result back and chat fails fast instead of waiting it out.
-            result = self._run(command.argv, command.timeout)
-            self._post_result(command, {key: result[key] for key in ("exit_code", "stdout", "stderr")})
+            payload = _result_payload(self._run(command.argv, command.timeout))
+            with self._session_factory() as session:
+                self._post_result(session, command, payload)
         except Exception:
             logger.exception("Command %s failed", command.id)
         finally:
             self._slots.release()
 
-    def _post_result(self, command: _LeasedCommand, payload: dict) -> None:
+    def _post_result(self, session: requests.Session, command: _LeasedCommand, payload: dict) -> None:
         """Post a command's result, retrying what a brief SkyPortal outage would explain."""
         url = self.base_url + RESULT_PATH.format(id=command.id)
         waits = self._retry_waits(command.report_deadline)
         while True:
             try:
-                resp = self.session.post(url, json=payload, headers=self.headers, timeout=_HTTP_TIMEOUT)
+                resp = session.post(url, json=payload, headers=self.headers, timeout=_HTTP_TIMEOUT)
             except (requests.ConnectionError, requests.Timeout) as exc:
                 failure = type(exc).__name__
             else:
@@ -165,6 +175,15 @@ class CommandPoller:
             yield min(delay, left)
             if delay >= left:
                 return  # that wait ran to the deadline, so the post after it was the last
+
+
+def _result_payload(result: dict) -> dict:
+    """The result fields the server takes, each stream cut to the head it keeps."""
+    return {
+        "exit_code": result["exit_code"],
+        "stdout": result["stdout"][:MAX_COMMAND_OUTPUT_CHARS],
+        "stderr": result["stderr"][:MAX_COMMAND_OUTPUT_CHARS],
+    }
 
 
 def _command_id(command) -> int | None:
