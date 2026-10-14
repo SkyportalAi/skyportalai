@@ -163,15 +163,27 @@ class PendingApproval:
     plan_id: str = ""
     reason: str = ""
     raw: dict = field(default_factory=dict)
+    # Why it asks, worded by the server (skyportal-website#3632); empty from older servers.
+    # After raw, so positional constructor calls keep binding raw where they always did.
+    rule: str = ""
+    why: tuple = ()
+    can_change: str = ""
+    host: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "PendingApproval":
+        context = data.get("approval_context")
+        context = context if isinstance(context, dict) else {}
         return cls(
             approval_id=str(data.get("approval_id", "") or ""),
             type=data.get("type", "") or "",
             command=data.get("command", "") or "",
             plan_id=str(data.get("plan_id", "") or ""),
             reason=data.get("reason", "") or "",
+            rule=str(context.get("rule") or ""),
+            why=tuple(line for line in context.get("why") or () if isinstance(line, str)),
+            can_change=str(context.get("can_change") or ""),
+            host=str(context.get("host") or ""),
             raw=dict(data),
         )
 
