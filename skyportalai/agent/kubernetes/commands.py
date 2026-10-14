@@ -43,6 +43,9 @@ RESULT_RETRY_MAX_DELAY = 60
 # server keeps only this head of stdout and of stderr, so a worker holds no more than that
 # while it posts and retries.
 MAX_COMMAND_OUTPUT_CHARS = 1024 * 1024
+# Tells the server this agent runs a command for the lease's timeout_seconds and retries its
+# result until report_by. An agent that doesn't send it gets 30 s leases (skyportal-website#3709).
+AGENT_CAPABILITIES = "command-timeouts"
 
 
 @dataclass(frozen=True)
@@ -74,7 +77,11 @@ class CommandPoller:
         # of its own from session_factory.
         self.session = session or requests.Session()
         self._session_factory = session_factory
-        self.headers = {"Authorization": f"Bearer {token}", "User-Agent": f"skyportalai-agent/{__version__}"}
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"skyportalai-agent/{__version__}",
+            "X-Agent-Capabilities": AGENT_CAPABILITIES,
+        }
         self._run = run
         self._stop = stop_event or threading.Event()
         self._clock = clock

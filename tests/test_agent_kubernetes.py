@@ -460,6 +460,15 @@ class TestCommandPoller:
         session = FakeSession([FakeResponse(204)])
         assert self._poller(session, run=lambda argv, timeout: pytest.fail("ran")).poll_once() is None
 
+    def test_every_lease_and_result_says_the_agent_honors_lease_timeouts(self):
+        # The server gives a 30 s lease to an agent that doesn't say so (skyportal-website#3709).
+        def run(argv, timeout):
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS}), FakeResponse(200, {"recorded": True})])
+        assert self._handle(self._poller(session, run)) is True
+        assert [call["headers"]["X-Agent-Capabilities"] for call in session.calls] == ["command-timeouts"] * 2
+
     def test_runs_a_leased_command_on_its_own_thread_and_posts_its_result(self):
         ran_on = []
 
