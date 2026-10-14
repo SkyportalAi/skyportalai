@@ -41,13 +41,20 @@ All notable changes to this project are documented here. This project follows
 ### Fixed
 
 - **A `kubectl` command from chat is no longer stopped after 30 seconds.** The
-  cluster agent now runs it for as long as SkyPortal allows: SkyPortal sends the
-  limit with each command, up to 30 minutes. This needs a SkyPortal server that
-  sends the limit; against an older one the agent keeps the 30 seconds.
+  cluster agent runs each chat command for the timeout SkyPortal sends with it.
+  A server that sends none gets the old 30 seconds. SkyPortal
+  (skyportal-website#3709) treats an agent at 0.3.1 or older as one that stops
+  every command at 30 seconds, so upgrade to the release after 0.3.1 to run
+  longer ones.
+- **A long chat command no longer holds up the others.** The cluster agent runs
+  up to 4 chat commands at once. It takes the next command from SkyPortal only
+  when one of those 4 is free, so no command waits inside the agent behind
+  another.
 - **A chat command's result is no longer lost when SkyPortal is briefly
   unavailable.** The agent used to post it once and drop it if a deploy or a
-  network blip got in the way. It now keeps trying for over a minute before
-  giving up.
+  network blip got in the way. It now keeps trying until the `report_by`
+  deadline SkyPortal sends with the command. An older server sends no deadline,
+  and against it the agent keeps trying for about 77 seconds.
 
 ## 0.3.1
 

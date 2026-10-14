@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -71,18 +72,83 @@ class FakeSession:
 
 
 class RecordingStop(threading.Event):
-    """A stop event whose wait() records the delay instead of sleeping, and sets itself on wait number `stop_on`."""
+    """A stop event whose wait() records the delay and adds it to `now` instead of sleeping.
+
+    It sets itself on wait number `stop_on`. Hand `clock` to the poller as its clock.
+    """
 
     def __init__(self, stop_on: int | None = None):
         super().__init__()
         self.waits: list[float] = []
+        self.now = 1000.0
         self._stop_on = stop_on
+
+    def clock(self) -> float:
+        return self.now
 
     def wait(self, timeout=None):
         self.waits.append(timeout)
+        self.now += timeout or 0
         if len(self.waits) == self._stop_on:
             self.set()
         return self.is_set()
+
+
+class CountingStop(threading.Event):
+    """A stop event that counts how often it is looked at, so a test can wait for the poller's loop to go round."""
+
+    def __init__(self):
+        super().__init__()
+        self.checks = 0
+        self._checked = threading.Condition()
+
+    def is_set(self) -> bool:
+        with self._checked:
+            self.checks += 1
+            self._checked.notify_all()
+        return super().is_set()
+
+    def wait_for_checks(self, count: int) -> bool:
+        with self._checked:
+            return self._checked.wait_for(lambda: self.checks >= count, timeout=5)
+
+
+class FakeCommandServer:
+    """SkyPortal's command endpoints for several threads: `leases` in order, then 204; every result is taken.
+
+    busy_at_lease holds, for each lease request, how many leased commands had no result yet.
+    """
+
+    def __init__(self, leases=()):
+        self.leases = list(leases)
+        self.busy_at_lease: list[int] = []
+        self.results: dict[int, dict] = {}
+        self._leased = 0
+        self._changed = threading.Condition()
+
+    @property
+    def lease_calls(self) -> int:
+        return len(self.busy_at_lease)
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        with self._changed:
+            if url == BASE_URL + commands.LEASE_PATH:
+                self.busy_at_lease.append(self._leased - len(self.results))
+                if not self.leases:
+                    return FakeResponse(204)
+                self._leased += 1
+                return FakeResponse(200, self.leases.pop(0))
+            self.results[int(url.split("/")[-3])] = json
+            self._changed.notify_all()
+            return FakeResponse(200, {"recorded": True})
+
+    def wait_for_results(self, count: int) -> bool:
+        with self._changed:
+            return self._changed.wait_for(lambda: len(self.results) >= count, timeout=5)
+
+
+def _report_by(seconds_from_now: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)).isoformat()
 
 
 def _sent_body(call: dict) -> dict:
@@ -361,14 +427,29 @@ class TestCommandPoller:
     def _poller(self, session, run, stop_event=None):
         return CommandPoller(BASE_URL, TOKEN, session=session, run=run, stop_event=stop_event or threading.Event())
 
+    def _handle(self, poller) -> bool:
+        """poll_once, then wait for the command it started; True if it started one."""
+        worker = poller.poll_once()
+        if worker is None:
+            return False
+        worker.join(5)
+        assert not worker.is_alive()
+        return True
+
     def test_nothing_queued(self):
         session = FakeSession([FakeResponse(204)])
-        assert self._poller(session, run=lambda argv, timeout: pytest.fail("ran")).poll_once() is False
+        assert self._poller(session, run=lambda argv, timeout: pytest.fail("ran")).poll_once() is None
 
-    def test_runs_a_leased_command_and_posts_its_result(self):
+    def test_runs_a_leased_command_on_its_own_thread_and_posts_its_result(self):
+        ran_on = []
+
+        def run(argv, timeout):
+            ran_on.append(threading.current_thread().name)
+            return {"argv": argv, "exit_code": 0, "stdout": "trainer-0", "stderr": ""}
+
         session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS}), FakeResponse(200, {"recorded": True})])
-        run = lambda argv, timeout: {"argv": argv, "exit_code": 0, "stdout": "trainer-0", "stderr": ""}  # noqa: E731
-        assert self._poller(session, run).poll_once() is True
+        assert self._handle(self._poller(session, run)) is True
+        assert ran_on == ["kube-command-7"]
         result_call = session.calls[1]
         assert result_call["url"] == BASE_URL + "/agent/api/kubernetes/commands/7/result/"
         assert result_call["json"] == {"exit_code": 0, "stdout": "trainer-0", "stderr": ""}
@@ -378,20 +459,20 @@ class TestCommandPoller:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("process started"))
         session = FakeSession([FakeResponse(200, {"id": 8, "argv": ["kubectl", "delete", "ns", "prod"]}),
                                FakeResponse(200, {})])
-        self._poller(session, run=kubectl.run_kubectl).poll_once()
+        assert self._handle(self._poller(session, run=kubectl.run_kubectl)) is True
         assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
 
     def test_a_lease_without_argv_is_answered_refused(self, monkeypatch):
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("process started"))
         session = FakeSession([FakeResponse(200, {"id": 9}), FakeResponse(200, {})])
-        assert self._poller(session, run=kubectl.run_kubectl).poll_once() is True
+        assert self._handle(self._poller(session, run=kubectl.run_kubectl)) is True
         assert session.calls[1]["url"] == BASE_URL + "/agent/api/kubernetes/commands/9/result/"
         assert session.calls[1]["json"]["exit_code"] == kubectl.EXIT_REFUSED
 
     @pytest.mark.parametrize("body", [{"argv": GET_PODS}, {"id": "x", "argv": GET_PODS}, {}])
     def test_a_lease_without_a_usable_id_is_ignored(self, body):
         session = FakeSession([FakeResponse(200, body)])
-        assert self._poller(session, run=lambda argv, timeout: pytest.fail("ran")).poll_once() is False
+        assert self._poller(session, run=lambda argv, timeout: pytest.fail("ran")).poll_once() is None
         assert len(session.calls) == 1
 
     def _timeout_used(self, **lease):
@@ -402,17 +483,14 @@ class TestCommandPoller:
             return {"argv": argv, "exit_code": 0, "stdout": "", "stderr": ""}
 
         session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, **lease}), FakeResponse(200, {})])
-        assert self._poller(session, run).poll_once() is True
+        assert self._handle(self._poller(session, run)) is True
         (timeout,) = seen
         return timeout
 
-    @pytest.mark.parametrize(
-        ("sent", "used"),
-        [(600, 600), (90.5, 90.5), (1800, 1800), (1801, 1800), (10**9, 1800), (10**400, 1800)],
-        ids=["int", "float", "at the cap", "over the cap", "far over the cap", "huge int"],
-    )
-    def test_the_leases_timeout_is_what_the_command_runs_under(self, sent, used):
-        assert self._timeout_used(timeout_seconds=sent) == used
+    @pytest.mark.parametrize("sent", [600, 90.5, 1800, 3600, 86400], ids=["int", "float", "30 min", "1 h", "1 day"])
+    def test_the_leases_timeout_is_what_the_command_runs_under(self, sent):
+        # The server owns the limit, so the agent doesn't cut it down.
+        assert self._timeout_used(timeout_seconds=sent) == sent
 
     def test_a_lease_without_a_timeout_keeps_the_default(self):
         # An older server sends none: the command keeps the 30 s it always had.
@@ -422,7 +500,9 @@ class TestCommandPoller:
     def test_an_unusable_timeout_keeps_the_default(self, sent):
         assert self._timeout_used(timeout_seconds=sent) == kubectl.DEFAULT_TIMEOUT_SECONDS
 
-    @pytest.mark.parametrize(("lease", "expected"), [({"timeout_seconds": 600}, 600), ({}, 30)])
+    @pytest.mark.parametrize(
+        ("lease", "expected"), [({"timeout_seconds": 600}, 600), ({"timeout_seconds": 3600}, 3600), ({}, 30)]
+    )
     def test_the_kubectl_process_gets_the_leases_timeout(self, monkeypatch, lease, expected):
         # The bug: run_kubectl killed every chat command at its own 30 s default.
         seen = {}
@@ -433,24 +513,26 @@ class TestCommandPoller:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, **lease}), FakeResponse(200, {})])
-        assert self._poller(session, run=kubectl.run_kubectl).poll_once() is True
+        assert self._handle(self._poller(session, run=kubectl.run_kubectl)) is True
         assert seen["timeout"] == expected
         assert session.calls[1]["json"]["stdout"] == "trainer-0"
 
-    def _posting(self, *replies, stop=None):
-        """A poller that leases command 7 and meets `replies` when it posts the result."""
-        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS}), *replies])
+    def _posting(self, *replies, stop=None, runs_for=0, **lease):
+        """A poller on a fake clock that leases command 7 (plus `lease`) and meets `replies` posting its result."""
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, **lease}), *replies])
+        stop = stop or RecordingStop()
 
         def run(argv, timeout):
+            stop.now += runs_for
             return {"argv": argv, "exit_code": 0, "stdout": "secret-stdout", "stderr": ""}
 
-        stop = stop or RecordingStop()
-        return self._poller(session, run, stop), session, stop
+        poller = CommandPoller(BASE_URL, TOKEN, session=session, run=run, stop_event=stop, clock=stop.clock)
+        return poller, session, stop
 
     @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
     def test_a_result_rejected_for_now_is_sent_again(self, status):
         poller, session, stop = self._posting(FakeResponse(status), FakeResponse(200, {"recorded": True}))
-        assert poller.poll_once() is True
+        assert self._handle(poller) is True
         _lease, first, second = session.calls
         assert first["url"] == second["url"] == BASE_URL + "/agent/api/kubernetes/commands/7/result/"
         assert first["json"] == second["json"] == {"exit_code": 0, "stdout": "secret-stdout", "stderr": ""}
@@ -461,15 +543,17 @@ class TestCommandPoller:
     )
     def test_a_result_that_could_not_reach_skyportal_is_sent_again(self, error):
         poller, session, stop = self._posting(error, FakeResponse(200, {"recorded": True}))
-        assert poller.poll_once() is True
+        assert self._handle(poller) is True
         assert len(session.calls) == 3
         assert stop.waits == [commands.RESULT_RETRY_DELAYS[0]]
 
+    @pytest.mark.parametrize("with_report_by", [False, True], ids=["no report_by", "time left"])
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 413])
-    def test_a_result_the_server_refuses_is_not_sent_again(self, caplog, status):
-        poller, session, stop = self._posting(FakeResponse(status), FakeResponse(200, {}))
+    def test_a_result_the_server_refuses_is_not_sent_again(self, caplog, status, with_report_by):
+        lease = {"report_by": _report_by(600)} if with_report_by else {}
+        poller, session, stop = self._posting(FakeResponse(status), FakeResponse(200, {}), **lease)
         with caplog.at_level(logging.WARNING, logger=commands.logger.name):
-            assert poller.poll_once() is True
+            assert self._handle(poller) is True
         assert len(session.calls) == 2
         assert stop.waits == []
         (message,) = [record.getMessage() for record in caplog.records]
@@ -482,25 +566,163 @@ class TestCommandPoller:
         ids=["status", "connection"],
     )
     def test_a_result_that_never_gets_through_is_given_up_on(self, caplog, last, reason):
+        # A lease without report_by, as an older server sends it: the fixed schedule, about 77 s.
         attempts = len(commands.RESULT_RETRY_DELAYS) + 1
         failures = [FakeResponse(503)] * (attempts - 1) + [last]
         poller, session, stop = self._posting(*failures, FakeResponse(200, {}))
         with caplog.at_level(logging.WARNING, logger=commands.logger.name):
-            assert poller.poll_once() is True
+            assert self._handle(poller) is True
         assert len(session.calls) == 1 + attempts
         assert stop.waits == list(commands.RESULT_RETRY_DELAYS)
         (message,) = [record.getMessage() for record in caplog.records]
         assert "command 7" in message and reason in message
         assert "secret-stdout" not in message and "pods" not in message
 
-    def test_a_shutdown_during_a_retry_wait_stops_the_retries(self, caplog):
-        failures = [FakeResponse(503)] * 5
-        poller, session, stop = self._posting(*failures, stop=RecordingStop(stop_on=2))
+    @pytest.mark.parametrize(
+        "report_by", [None, "", "soon", "2026-10-14T18:05:00", 1760465100],
+        ids=["null", "empty", "garbled", "no utc offset", "a number"],
+    )
+    def test_an_unusable_report_by_keeps_the_fixed_schedule(self, report_by):
+        attempts = len(commands.RESULT_RETRY_DELAYS) + 1
+        poller, session, stop = self._posting(*[FakeResponse(503)] * (attempts + 3), report_by=report_by)
+        assert self._handle(poller) is True
+        assert len(session.calls) == 1 + attempts
+        assert stop.waits == list(commands.RESULT_RETRY_DELAYS)
+
+    def test_a_result_is_sent_again_until_the_report_by_deadline(self, caplog):
+        # Past the fixed 77 s: a minute apart once the listed waits run out, and the last wait ends on the deadline.
+        poller, session, stop = self._posting(*[FakeResponse(503)] * 20, report_by=_report_by(230))
         with caplog.at_level(logging.WARNING, logger=commands.logger.name):
-            assert poller.poll_once() is True
+            assert self._handle(poller) is True
+        assert stop.waits[:7] == [2, 5, 10, 20, 40, 60, 60]
+        assert len(stop.waits) == 8
+        assert sum(stop.waits) == pytest.approx(230, abs=1)
+        assert len(session.calls) == 1 + 1 + len(stop.waits)
+        (message,) = [record.getMessage() for record in caplog.records]
+        assert "command 7" in message and "HTTP 503" in message
+        assert "secret-stdout" not in message and "pods" not in message
+
+    @pytest.mark.parametrize(
+        ("report_in", "runs_for"), [(-5, 0), (60, 100)], ids=["already past", "passed while the command ran"]
+    )
+    def test_a_result_past_its_report_by_is_posted_once(self, caplog, report_in, runs_for):
+        poller, session, stop = self._posting(
+            FakeResponse(503), FakeResponse(200, {}), runs_for=runs_for, report_by=_report_by(report_in)
+        )
+        with caplog.at_level(logging.WARNING, logger=commands.logger.name):
+            assert self._handle(poller) is True
+        assert len(session.calls) == 2
+        assert stop.waits == []
+        (message,) = [record.getMessage() for record in caplog.records]
+        assert "command 7" in message and "HTTP 503" in message
+
+    @pytest.mark.parametrize("with_report_by", [False, True], ids=["no report_by", "time left"])
+    def test_a_shutdown_during_a_retry_wait_stops_the_retries(self, caplog, with_report_by):
+        lease = {"report_by": _report_by(600)} if with_report_by else {}
+        failures = [FakeResponse(503)] * 5
+        poller, session, stop = self._posting(*failures, stop=RecordingStop(stop_on=2), **lease)
+        with caplog.at_level(logging.WARNING, logger=commands.logger.name):
+            assert self._handle(poller) is True
         assert len(session.calls) == 1 + 2
         assert stop.waits == list(commands.RESULT_RETRY_DELAYS[:2])
         assert any("command 7" in record.getMessage() for record in caplog.records)
+
+    def test_poll_once_asks_for_nothing_while_every_slot_is_busy(self):
+        release = threading.Event()
+
+        def run(argv, timeout):
+            release.wait(5)
+            return {"argv": argv, "exit_code": 0, "stdout": "", "stderr": ""}
+
+        slots = commands.COMMAND_SLOTS
+        server = FakeCommandServer([{"id": n, "argv": GET_PODS} for n in range(1, slots + 2)])
+        poller = self._poller(server, run)
+        try:
+            busy = [poller.poll_once() for _ in range(slots)]
+            assert poller.poll_once() is None
+            assert server.lease_calls == slots
+        finally:
+            release.set()
+        for worker in busy:
+            worker.join(5)
+        assert self._handle(poller) is True
+        assert sorted(server.results) == list(range(1, slots + 2))
+
+    def test_four_commands_run_at_once_and_the_next_waits_for_a_slot(self, monkeypatch):
+        monkeypatch.setattr(commands, "POLL_SECONDS", 0.01)
+        slots = commands.COMMAND_SLOTS
+        # This test is the extra party, so the barrier only opens with a command running in every slot.
+        all_running, release = threading.Barrier(slots + 1, timeout=5), threading.Event()
+
+        def run(argv, timeout):
+            if argv == GET_PODS:
+                all_running.wait()
+                release.wait(5)
+            return {"argv": argv, "exit_code": 0, "stdout": "ok", "stderr": ""}
+
+        server = FakeCommandServer(
+            [{"id": n, "argv": GET_PODS} for n in range(1, slots + 1)] + [{"id": 99, "argv": ["kubectl", "version"]}]
+        )
+        stop = CountingStop()
+        loop = threading.Thread(target=self._poller(server, run, stop).run_forever, daemon=True)
+        loop.start()
+        try:
+            all_running.wait()
+            # The loop keeps going round (so it would see a shutdown) but asks for no fifth command.
+            assert stop.wait_for_checks(stop.checks + 3)
+            assert server.lease_calls == slots
+            release.set()
+            assert server.wait_for_results(slots + 1)
+        finally:
+            release.set()
+            stop.set()
+            loop.join(5)
+        assert sorted(server.results) == [*range(1, slots + 1), 99]
+        # Nor at any other point while every slot held a command with no result yet.
+        assert max(server.busy_at_lease) < slots
+
+    def test_a_command_that_raises_frees_its_slot(self, caplog):
+        def boom(argv, timeout):
+            raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+        slots = commands.COMMAND_SLOTS
+        server = FakeCommandServer([{"id": n, "argv": GET_PODS} for n in range(1, slots + 2)])
+        poller = self._poller(server, boom)
+        with caplog.at_level(logging.ERROR, logger=commands.logger.name):
+            for _ in range(slots + 1):
+                assert self._handle(poller) is True
+        assert server.lease_calls == slots + 1 and server.results == {}
+        logged = [record.getMessage() for record in caplog.records if record.name == commands.logger.name]
+        assert logged == [f"Command {n} failed" for n in range(1, slots + 2)]
+
+    def test_a_shutdown_stops_leasing_without_waiting_for_running_commands(self, monkeypatch):
+        monkeypatch.setattr(commands, "POLL_SECONDS", 0.01)
+        workers, started, release = [], threading.Event(), threading.Event()
+
+        def run(argv, timeout):
+            workers.append(threading.current_thread())
+            started.set()
+            release.wait(5)
+            return {"argv": argv, "exit_code": 0, "stdout": "done", "stderr": ""}
+
+        server = FakeCommandServer([{"id": 7, "argv": GET_PODS}])
+        stop = threading.Event()
+        poller = self._poller(server, run, stop)
+        loop = threading.Thread(target=poller.run_forever, daemon=True)
+        loop.start()
+        try:
+            assert started.wait(5)
+            stop.set()
+            loop.join(5)
+            assert not loop.is_alive()
+            (worker,) = workers
+            assert worker.is_alive() and worker.daemon
+            leased = server.lease_calls
+            assert poller.poll_once() is None and server.lease_calls == leased
+        finally:
+            release.set()
+        worker.join(5)
+        assert server.results == {7: {"exit_code": 0, "stdout": "done", "stderr": ""}}
 
     def test_the_poller_survives_a_command_that_raises(self):
         # /healthz can't see this thread; if it died, chat's kubectl would time out for good.
