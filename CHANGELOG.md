@@ -38,6 +38,24 @@ All notable changes to this project are documented here. This project follows
   instead of failing. From the SDK, `Skyportal.get_effective_permissions()`
   returns the same data as `EffectivePermissions`.
 
+### Fixed
+
+- **A `kubectl` command from chat is no longer stopped after 30 seconds.** The
+  cluster agent runs each chat command for the timeout SkyPortal sends with it.
+  A server that sends none gets the old 30 seconds. The agent tells SkyPortal it
+  does this with an `X-Agent-Capabilities: command-timeouts` header, and an agent
+  without it, such as 0.3.1 or older, gets 30 seconds per command
+  (skyportal-website#3709).
+- **A long chat command no longer holds up the others.** The cluster agent runs
+  up to 4 chat commands at once. It takes the next command from SkyPortal only
+  when one of those 4 is free, so no command waits inside the agent behind
+  another.
+- **A chat command's result is no longer lost when SkyPortal is briefly
+  unavailable.** The agent used to post it once and drop it if a deploy or a
+  network blip got in the way. It now keeps trying until the `report_by`
+  deadline SkyPortal sends with the command. An older server sends no deadline,
+  and against it the agent keeps trying for about 77 seconds.
+
 ## 0.3.1
 
 ### Added
