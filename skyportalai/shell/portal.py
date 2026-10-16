@@ -538,8 +538,13 @@ class SkyportalClient:
         *,
         autoapproved: bool = False,
         rejection_reason: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Approve or reject one pending headless-agent action."""
+        """Approve or reject one pending headless-agent action.
+
+        ``namespace`` is the pick for a scope approval that asks for one
+        (skyportal-website#3724).
+        """
         approval_id = quote(str(approval.get("approval_id", "")), safe="")
         body: Dict[str, Any] = {
             "decision": decision,
@@ -551,6 +556,8 @@ class SkyportalClient:
             body["autoapproved"] = True
         if rejection_reason and decision == "rejected":
             body["rejection_reason"] = rejection_reason
+        if namespace and decision == "approved":
+            body["namespace"] = namespace
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/approve/{}/".format(chat_id, approval_id),

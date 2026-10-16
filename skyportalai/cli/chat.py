@@ -217,11 +217,15 @@ def approve(
     approval_id: Annotated[str, typer.Argument(help="Pending approval identifier.")],
     approval_type: Annotated[
         str,
-        typer.Option("--type", help="Approval type, usually bash_command or plan."),
+        typer.Option("--type", help="Approval type: bash_command, plan or scope."),
     ] = "bash_command",
     command: Annotated[
         str | None,
         typer.Option("--command", help="Approved command when required by the server."),
+    ] = None,
+    namespace: Annotated[
+        str | None,
+        typer.Option("--namespace", help="For a scope approval that asks for one: the namespace to add."),
     ] = None,
 ) -> None:
     """Approve one pending agent action."""
@@ -232,6 +236,7 @@ def approve(
             approval_id,
             approval_type=approval_type,
             command=command,
+            namespace=namespace,
         ),
     )
     _state(context).output.success(result, human=f"Approval {approval_id}: {result.decision or 'approved'}")
@@ -244,7 +249,7 @@ def reject(
     approval_id: Annotated[str, typer.Argument(help="Pending approval identifier.")],
     approval_type: Annotated[
         str,
-        typer.Option("--type", help="Approval type, usually bash_command or plan."),
+        typer.Option("--type", help="Approval type: bash_command, plan or scope."),
     ] = "bash_command",
     reason: Annotated[str | None, typer.Option("--reason", help="Reason for rejection.")] = None,
 ) -> None:

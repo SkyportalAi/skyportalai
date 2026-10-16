@@ -169,11 +169,16 @@ class PendingApproval:
     why: tuple = ()
     can_change: str = ""
     host: str = ""
+    # For type "scope" (skyportal-website#3724): what approving adds to the chat's
+    # scope — kind, server_id, hostname, namespace (None: pick one of
+    # namespace_choices), combined, label. Empty for every other type.
+    scope: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PendingApproval":
         context = data.get("approval_context")
         context = context if isinstance(context, dict) else {}
+        scope = data.get("scope")
         return cls(
             approval_id=str(data.get("approval_id", "") or ""),
             type=data.get("type", "") or "",
@@ -184,6 +189,7 @@ class PendingApproval:
             why=tuple(line for line in context.get("why") or () if isinstance(line, str)),
             can_change=str(context.get("can_change") or ""),
             host=str(context.get("host") or ""),
+            scope=dict(scope) if isinstance(scope, dict) else {},
             raw=dict(data),
         )
 
