@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 #: ``wait()`` keeps polling while the workflow is in one of these states.
 BUSY_STATUSES = frozenset({"processing", "uninitialized"})
 
+# What the account's autoapprove setting may answer in wait(); an empty type is an
+# older deployment's bash approval.
+_AUTOAPPROVE_TYPES = ("", "bash_command", "plan")
+# What only an explicit on_approval callback answers: a scope approval widens the
+# chat's scope (skyportal-website#3724).
+_CALLBACK_ONLY_TYPES = ("scope",)
+
+
+def _asks_for_namespace(approval) -> bool:
+    """A scope approval whose namespace the user picks; a yes alone can't answer it."""
+    return approval.type == "scope" and approval.scope.get("kind") == "namespace" and not approval.scope.get("namespace")
+
 
 class ChatResource:
     """``client.chat`` — drive the Skyportal ops agent over REST.
@@ -105,8 +117,13 @@ class ChatResource:
                         approval_type: str = "bash_command",
                         command: str | None = None,
                         reason: str | None = None,
-                        autoapproved: bool = False) -> ApprovalResult:
-        """Submit an approval decision (``approved`` or ``rejected``)."""
+                        autoapproved: bool = False,
+                        namespace: str | None = None) -> ApprovalResult:
+        """Submit an approval decision (``approved`` or ``rejected``).
+
+        ``namespace`` answers a ``scope`` approval whose ``scope["namespace"]`` is
+        None: one of its ``scope["namespace_choices"]``.
+        """
         body: dict = {"decision": decision, "type": approval_type}
         if command is not None:
             body["command"] = command
@@ -114,6 +131,8 @@ class ChatResource:
             body["rejection_reason"] = reason
         if autoapproved:
             body["autoapproved"] = True
+        if namespace is not None:
+            body["namespace"] = namespace
         data = self._client._request(
             "POST", self._approval_path(chat_id, approval_id), json=body,
         )
@@ -121,11 +140,12 @@ class ChatResource:
 
     def approve(self, chat_id: int, approval_id: str, *,
                 approval_type: str = "bash_command",
-                command: str | None = None) -> ApprovalResult:
-        """Approve a pending bash command or plan."""
+                command: str | None = None,
+                namespace: str | None = None) -> ApprovalResult:
+        """Approve a pending bash command, plan or scope change."""
         return self.submit_approval(
             chat_id, approval_id, decision="approved",
-            approval_type=approval_type, command=command,
+            approval_type=approval_type, command=command, namespace=namespace,
         )
 
     def reject(self, chat_id: int, approval_id: str, *,
@@ -192,6 +212,12 @@ class ChatResource:
         is preserved. An explicit ``on_approval`` callback takes precedence:
         True approves, False rejects, and None leaves an approval pending.
 
+        A ``scope`` approval (skyportal-website#3724) widens the chat's scope,
+        so it is never autoapproved: only the callback answers it, and
+        ``approval.scope`` says what it adds. One that asks for a namespace
+        (``approval.scope["namespace"]`` is None) is returned to the caller,
+        who answers it with ``submit_approval(..., namespace=...)``.
+
         If the permission setting cannot be read, this fails closed by
         returning the awaiting-approval status. Approval ids already submitted
         during this wait are never submitted twice, even if a status response
@@ -232,7 +258,11 @@ class ChatResource:
                 # Unknown non-empty types must never be silently coerced into
                 # bash requests by the server's compatibility path. Callers
                 # can still opt in explicitly through submit_approval().
-                if approval.type not in ("", "bash_command", "plan"):
+                if approval.type not in _AUTOAPPROVE_TYPES + _CALLBACK_ONLY_TYPES:
+                    return current
+                if approval.type in _CALLBACK_ONLY_TYPES and (
+                    on_approval is None or _asks_for_namespace(approval)
+                ):
                     return current
                 decision = None
                 persisted_autoapproval = False
