@@ -20,7 +20,9 @@ All notable changes to this project are documented here. This project follows
   the chat's scope, a server with skyportal-website#3724 asks to add it and run the
   command, instead of ending the turn. The CLI shows the card's wording, asks y/N,
   and when the cluster has no namespace picked, asks which one to add. Approving
-  adds the target to the chat and the same command runs; declining tells the agent.
+  adds the target to the chat and the same command runs; the shell's own scope
+  follows, so `/status` shows it and the next `/namespace` edit keeps it. Declining
+  tells the agent.
   A scope approval is never autoapproved, in the CLI or in `wait()`; an explicit
   `on_approval` callback answers it, and `PendingApproval.scope` says what it adds.
   `chat.approve(..., namespace=...)` and `skyportalai chat approve --type scope

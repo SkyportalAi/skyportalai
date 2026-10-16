@@ -1596,6 +1596,8 @@ class InteractiveShell:
                                 namespace=namespace,
                             )
                             handled_approvals.add(approval_id)
+                            if decision == "approved" and approval_type == "scope":
+                                self._note_scope_added(approval, namespace)
                             approval_settlement_deadline = (
                                 time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
                             )
@@ -1655,6 +1657,31 @@ class InteractiveShell:
             self.console.print("[yellow]{} is not one of: {}[/yellow]".format(
                 escape(self._bounded_one_line(answer, 80)), escape(", ".join(choices)),
             ))
+
+    def _note_scope_added(self, approval: Dict[str, Any], namespace: Optional[str]) -> None:
+        """Keep the shell's scope in step with an approved scope card.
+
+        The server added the target. Without this, /status shows the old scope and the next
+        /namespace edit, which replaces the whole selection, drops the target again.
+        """
+        scope = approval.get("scope") if isinstance(approval.get("scope"), dict) else {}
+        try:
+            server_id = int(scope.get("server_id"))
+        except (TypeError, ValueError):
+            return
+        if server_id not in self.selected_server_ids:
+            servers = self._items(self.client.servers())
+            self.selected_server_ids = [*self.selected_server_ids, server_id]
+            self.selected_server_names = [*self.selected_server_names, str(scope.get("hostname") or server_id)]
+            self.selected_server_id = self.selected_server_id or server_id
+            self.kubernetes_namespaces = self._kubernetes_namespaces_for(self.selected_server_ids, servers)
+        current = self.selected_namespaces.get(server_id, [])
+        if scope.get("kind") == "all_namespaces":
+            self.selected_namespaces[server_id] = [ALL_NAMESPACES]
+        elif scope.get("kind") == "namespace" and ALL_NAMESPACES not in current:
+            added = namespace or scope.get("namespace")
+            if added and added not in current:
+                self.selected_namespaces[server_id] = [*current, str(added)]
 
     def _ask_decision(self) -> "tuple[str, Optional[str]]":
         """y approves; r rejects with a reason the agent is told; anything else rejects."""

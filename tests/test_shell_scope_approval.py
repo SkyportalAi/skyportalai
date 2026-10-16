@@ -33,6 +33,9 @@ class _Client:
     def get_permission_mode(self):
         return self.mode
 
+    def servers(self):
+        return [{"id": 12, "hostname": "kind-smoke", "target_kind": "kubernetes", "namespaces": ["e2e", "kube-system"]}]
+
     def submit_chat_approval(self, chat_id, approval, decision, *, autoapproved=False, rejection_reason=None,
                              namespace=None):
         self.submit_calls.append((approval["type"], decision, autoapproved, namespace))
@@ -88,6 +91,33 @@ def test_autoapprove_still_asks(tmp_path, monkeypatch):
 
     assert "requires an explicit decision" in console.file.getvalue()
     assert client.submit_calls == [("scope", "rejected", False, None)]
+    assert shell.selected_namespaces == {}
+
+
+def test_an_approved_namespace_joins_the_shell_scope(tmp_path, monkeypatch):
+    client = _Client()
+    shell, _, _ = _shell(client, tmp_path, monkeypatch, answers=["y"])
+    shell.selected_server_ids, shell.selected_server_id = [12], 12
+    shell.selected_namespaces = {12: ["kube-system"]}
+
+    shell._process_turn(_turn("awaiting_approval", [_scope_approval()]))
+
+    assert shell.selected_namespaces == {12: ["kube-system", "e2e"]}
+
+
+def test_an_approved_host_joins_the_shell_scope(tmp_path, monkeypatch):
+    client = _Client()
+    client.servers = lambda: [{"id": 7, "hostname": "gpu-box", "target_kind": "ssh"}]
+    shell, _, _ = _shell(client, tmp_path, monkeypatch, answers=["y"])
+    shell.selected_server_ids, shell.selected_server_names, shell.selected_server_id = [12], ["kind-smoke"], 12
+
+    shell._process_turn(_turn("awaiting_approval", [
+        _scope_approval(kind="server", server_id=7, hostname="gpu-box", namespace=None),
+    ]))
+
+    assert shell.selected_server_ids == [12, 7]
+    assert shell._server_name(7) == "gpu-box"
+    assert shell.selected_server_id == 12
 
 
 def test_a_cluster_with_no_namespace_picked_asks_which(tmp_path, monkeypatch):
@@ -104,6 +134,7 @@ def test_a_cluster_with_no_namespace_picked_asks_which(tmp_path, monkeypatch):
     assert len(confirm.prompts) == 2
     assert "kind-smoke" in confirm.prompts[0]
     assert client.submit_calls == [("scope", "approved", False, "kube-system")]
+    assert shell.selected_namespaces == {12: ["kube-system"]}
 
 
 def test_no_namespace_picked_declines(tmp_path, monkeypatch):
