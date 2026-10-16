@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -819,12 +820,37 @@ class TestCommandPoller:
             loop.join(5)
         assert {headers["X-Agent-Instance"] for headers in server.heartbeats} == {poller.instance}
 
-    def test_a_failed_heartbeat_is_not_an_error(self, caplog):
-        session = FakeSession([requests.ConnectionError("reset")])
+    @pytest.mark.parametrize(
+        ("reply", "logged"),
+        [
+            (requests.ConnectionError("reset"), ["Heartbeat failed: ConnectionError"]),
+            (FakeResponse(503), ["Heartbeat failed: HTTP 503"]),
+            (FakeResponse(404), []),
+            (FakeResponse(204), []),
+        ],
+        ids=["connection-error", "server-error", "older-server", "accepted"],
+    )
+    def test_a_failed_heartbeat_is_a_debug_line_and_an_older_servers_404_is_nothing(self, caplog, reply, logged):
+        session = FakeSession([reply])
         with caplog.at_level(logging.DEBUG, logger=commands.logger.name):
             self._poller(session, run=lambda argv, timeout: pytest.fail("ran"))._heartbeat()
         assert session.calls[0]["url"] == BASE_URL + commands.HEARTBEAT_PATH
-        assert [record.levelno for record in caplog.records if record.name == commands.logger.name] == [logging.DEBUG]
+        records = [record for record in caplog.records if record.name == commands.logger.name]
+        assert [record.getMessage() for record in records] == logged
+        assert all(record.levelno == logging.DEBUG for record in records)
+
+    def test_a_shutdown_while_every_slot_is_busy_sends_no_heartbeat(self):
+        server = FakeCommandServer()
+        stop = threading.Event()
+        poller = self._poller(server, run=lambda argv, timeout: pytest.fail("ran"), stop_event=stop)
+
+        def every_slot_busy(timeout=None):
+            stop.set()  # the shutdown starts while the loop waits for a slot
+            return False
+
+        poller._slots = SimpleNamespace(acquire=every_slot_busy, release=lambda: None)
+        poller.run_forever()
+        assert server.heartbeats == [] and server.lease_calls == 0
 
     def test_a_command_that_raises_frees_its_slot(self, caplog):
         def boom(argv, timeout):

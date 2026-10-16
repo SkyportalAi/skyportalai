@@ -102,17 +102,25 @@ class CommandPoller:
         while not self._stop.is_set():
             if not self._slots.acquire(timeout=POLL_SECONDS):
                 # Every slot is busy, so no lease poll tells the server this process is still alive.
-                self._heartbeat()
+                # Not once shutdown has started: the request could hold up the exit for its timeout.
+                if not self._stop.is_set():
+                    self._heartbeat()
                 continue
             if self._start_next() is None:
                 self._stop.wait(POLL_SECONDS)
 
     def _heartbeat(self) -> None:
-        # Nothing reads the reply: an older server answers 404, and after a failed post the next one counts.
         try:
-            self.session.post(self.base_url + HEARTBEAT_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+            resp = self.session.post(self.base_url + HEARTBEAT_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
         except requests.RequestException as exc:
-            logger.debug("Heartbeat failed: %s", type(exc).__name__)
+            failure = type(exc).__name__
+        else:
+            # An older server has no heartbeat endpoint, so its 404 is expected.
+            if resp.status_code < 400 or resp.status_code == 404:
+                return
+            failure = f"HTTP {resp.status_code}"
+        # Debug, not a warning: with every slot busy this runs every couple of seconds, and the next one counts.
+        logger.debug("Heartbeat failed: %s", failure)
 
     def poll_once(self) -> threading.Thread | None:
         """Start the next queued command if a slot is free; returns the thread running it."""
