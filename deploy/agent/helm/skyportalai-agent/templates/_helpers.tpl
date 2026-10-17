@@ -81,6 +81,18 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end }}
 
 {{/*
+The node DaemonSets, as a YAML list for fromYamlArray (#3625). "node" always. With
+kubernetes.node.gpu.runtimeClassName set, also "node-gpu" for the nodes carrying
+kubernetes.node.gpu.nodeLabel; "node" then keeps every other node.
+*/}}
+{{- define "skyportalai-agent.nodeComponents" -}}
+- node
+{{- if .Values.kubernetes.node.gpu.runtimeClassName }}
+- node-gpu
+{{- end }}
+{{- end }}
+
+{{/*
 Image reference, shared by every workload in the chart.
 */}}
 {{- define "skyportalai-agent.image" -}}

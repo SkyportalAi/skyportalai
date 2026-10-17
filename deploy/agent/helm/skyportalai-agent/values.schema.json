@@ -116,8 +116,19 @@
             "gpu": {
               "type": "object",
               "additionalProperties": false,
+              "required": ["nodeLabel"],
               "properties": {
-                "runtimeClassName": {"type": "string"}
+                "runtimeClassName": {"type": "string"},
+                "nodeLabel": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["key", "value"],
+                  "description": "The node label that selects the node-gpu DaemonSet's nodes when runtimeClassName is set.",
+                  "properties": {
+                    "key": {"type": "string", "minLength": 1},
+                    "value": {"type": "string"}
+                  }
+                }
               }
             },
             "resources": {"$ref": "#/properties/resources"}
