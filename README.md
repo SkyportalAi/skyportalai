@@ -182,6 +182,21 @@ server still decides every command.
 
 Run `skyportalai --help` for the complete command reference.
 
+## Your own machine
+
+Open `skyportalai` in a project folder and the agent can work right there, the
+way Claude Code does: the model runs on Skyportal and the commands run in your
+terminal, in that folder. The first time, the CLI asks whether you trust the
+folder. Say yes and new chats run on this machine; `/local` shows it, `/local
+off` stops it, and `/server local` adds it to another chat's scope.
+
+Every command passes the same approval rules as on any host, and the approval
+prompt you already see is the only one. Nothing connects into your machine: the
+CLI fetches its commands over outbound HTTPS, and only while it is open. It
+sends the repository's remote (without credentials) and branch, never a full
+path. kubectl and helm don't run here, because your kubeconfig can point at any
+cluster; add the cluster itself instead.
+
 ## Kubernetes clusters
 
 Connect a cluster with its kubeconfig. The CLI sends the credential only to the

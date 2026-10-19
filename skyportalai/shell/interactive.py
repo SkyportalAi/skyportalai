@@ -26,6 +26,7 @@ from rich.text import Text
 from skyportalai import _env
 
 from . import agent_setup
+from .local_target import LocalTarget, TrustStore
 from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
@@ -79,6 +80,10 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Attach a log, CSV, JSON or image — or just drop the file on the terminal",
     ),
     "/servers": CommandInfo("/servers", "List your Skyportal servers"),
+    "/local": CommandInfo(
+        "/local [on|off]",
+        "Show, connect or disconnect this machine as a place the agent runs commands",
+    ),
     "/server": CommandInfo(
         "/server <name> [name ...] | auto",
         "Select one or more servers by name for agent execution",
@@ -117,7 +122,15 @@ class SkyportalCompleter(Completer):
         if command == "/login":
             options = (("--no-browser", "print the API-key URL"),)
         elif command == "/server":
-            options = (("auto", "let the agent choose a server"),)
+            options = (
+                ("auto", "let the agent choose a server"),
+                ("local", "this machine, in this folder"),
+            )
+        elif command == "/local":
+            options = (
+                ("on", "let the agent run approved commands here"),
+                ("off", "stop running commands on this machine"),
+            )
         elif command == "/namespace":
             options = (
                 ("all", "every namespace in the cluster"),
@@ -173,9 +186,19 @@ class InteractiveShell:
         session: Optional[Any] = None,
         token_prompt: Optional[Callable[[str], str]] = None,
         confirm_prompt: Optional[Callable[[str], str]] = None,
+        local_target_factory: Optional[Callable[[SkyportalClient, Path], LocalTarget]] = None,
+        trust_store: Optional[TrustStore] = None,
     ):
         self.console = console
         self.client = client_factory()
+        # This machine as a command target (skyportal-website#3665). Off unless the entry
+        # point wires a factory: run_shell does, so `skyportalai` in a trusted folder connects.
+        self._local_target_factory = local_target_factory
+        self._trust_store = trust_store or TrustStore()
+        self.local_target: Optional[LocalTarget] = None
+        self._local_offered = False
+        # Chats this process has bound to its session: only those run commands here.
+        self._bound_chats: set = set()
         self.running = True
         self.browser_login_started = False
         self.chat_id: Optional[int] = None
@@ -203,6 +226,7 @@ class InteractiveShell:
             "/resume": self._cmd_resume,
             "/upload": self._cmd_upload,
             "/servers": self._cmd_servers,
+            "/local": self._cmd_local,
             "/server": self._cmd_server,
             "/namespace": self._cmd_namespace,
             "/clear": self._cmd_clear,
@@ -276,6 +300,13 @@ class InteractiveShell:
     def run(self) -> None:
         """Run until `/exit` or Ctrl-D, preserving the prompt after errors."""
         self._show_onboarding()
+        try:
+            self._offer_local_target()
+            self._loop()
+        finally:
+            self._close_local_target()
+
+    def _loop(self) -> None:
         while self.running:
             try:
                 line = self.session.prompt(self._prompt_fragments())
@@ -323,6 +354,8 @@ class InteractiveShell:
             fragments.append(("class:context", " server#{}".format(labels[0])))
         elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
+        elif self._local_connected() is not None:
+            fragments.append(("class:context", " local#{}".format(self.local_target.hostname)))
         if self.selected_namespaces:
             fragments.append(("class:context", " ns#{}".format(self._namespace_label(all_label="all"))))
         fragments.append(("class:arrow", "  > "))
@@ -759,6 +792,12 @@ class InteractiveShell:
             "Servers",
             ", ".join(labels) if labels else "[dim]automatic[/dim]",
         )
+        if self._local_target_factory is not None:
+            local = self._local_connected()
+            rows.add_row(
+                "This machine",
+                escape(local.describe()) if local else "[dim]not connected (/local on)[/dim]",
+            )
         if len(labels) > 1:
             rows.add_row("Default", labels[0])
         if self.kubernetes_namespaces:
@@ -948,6 +987,10 @@ class InteractiveShell:
             return
         self._require_api_connection()
         tokens = [part.strip() for argument in args for part in argument.split(",") if part.strip()]
+        local = self._local_connected()
+        if local is not None:
+            # "local" names this machine, whatever it is called on the account.
+            tokens = [str(local.server_id) if token.lower() == "local" else token for token in tokens]
         with self.console.status("[cyan]Resolving servers…[/cyan]", spinner="dots"):
             servers = self._items(self.client.servers())
         resolved, unknown = self._resolve_server_tokens(tokens, servers)
@@ -1254,10 +1297,14 @@ class InteractiveShell:
                 )
             )
             return
+        self._offer_local_target()
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
         # server-side, not just stop the shell from listening.
         namespaces = self._namespace_payload(self.selected_namespaces)
-        if len(self.selected_server_ids) > 1 or namespaces:
+        local = self._local_connected()
+        if local is not None and (self.chat_id is None or self.chat_id not in self._bound_chats):
+            chat_id = self._begin_turn_here(message, local, namespaces)
+        elif len(self.selected_server_ids) > 1 or namespaces:
             # Namespaces only travel on the plural create, so a single
             # Kubernetes cluster with a namespace choice takes this path too.
             scope: Dict[str, Any] = {
@@ -1297,6 +1344,111 @@ class InteractiveShell:
                 # No turn reaches _process_turn, so hand over what the wait already recorded.
                 self._deliver_agent_tokens(render_state)
         self._process_turn(turn, render_state=render_state)
+
+    def _begin_turn_here(self, message: str, local: LocalTarget, namespaces: Optional[Dict[str, Any]]) -> int:
+        """Start or continue a chat bound to this CLI, so its commands on this machine run here."""
+        if self.chat_id is not None:
+            # A chat started elsewhere keeps its scope; binding only lets it reach this folder.
+            chat_id = self.client.begin_chat_turn(message, chat_id=self.chat_id, local_session=local.session)
+        else:
+            # Unless servers were chosen, a new chat's scope is this machine.
+            server_ids = list(self.selected_server_ids) or [self.selected_server_id or local.server_id]
+            scope: Dict[str, Any] = {
+                "server_ids": server_ids,
+                "active_server_id": self.selected_server_id or server_ids[0],
+                "local_session": local.session,
+            }
+            if namespaces:
+                scope["selected_namespaces"] = namespaces
+            chat_id = self.client.begin_chat_turn(message, **scope)
+        self._bound_chats.add(chat_id)
+        return chat_id
+
+    def _local_connected(self) -> Optional[LocalTarget]:
+        target = self.local_target
+        return target if target is not None and target.connected else None
+
+    def _offer_local_target(self) -> None:
+        """Once per shell: connect this machine if the user trusts this folder, asking the first time."""
+        if self._local_target_factory is None or self._local_offered or not self.client.is_authenticated():
+            return
+        self._local_offered = True
+        folder = Path.cwd()
+        if not self._trust_store.is_trusted(folder):
+            if not self._ask_to_trust(folder):
+                self.console.print(
+                    "[dim]Skyportal won't run commands on this machine. Change that with /local on.[/dim]\n"
+                )
+                return
+            self._trust_store.trust(folder)
+        self._connect_local_target(folder)
+
+    def _ask_to_trust(self, folder: Path) -> bool:
+        self._print_section("Do you trust the files in this folder?", style="yellow")
+        self.console.print(
+            "[bold]{}[/bold]\n\n"
+            "Skyportal can run the commands you approve here, on this machine, with your access: "
+            "your files, your git credentials, your cloud logins. Commands that change things or "
+            "touch secrets ask you first, as on any host, unless your approval mode is autoapprove. "
+            "Only trust a folder whose code you trust.\n".format(escape(str(folder)))
+        )
+        answer = self._confirm_prompt("Trust this folder and let Skyportal run commands here? [y/N] ")
+        return answer.strip().lower() in ("y", "yes")
+
+    def _connect_local_target(self, folder: Path) -> None:
+        target = self._local_target_factory(self.client, folder)
+        try:
+            with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
+                target.connect()
+        except PortalError as error:
+            self.console.print(
+                "[yellow]Could not connect this machine: {}[/yellow] "
+                "Commands won't run here; retry with /local on.\n".format(escape(str(error)))
+            )
+            return
+        self.local_target = target
+        self.console.print(
+            "[green]✓ This machine is connected:[/green] {}. Approved commands run in this folder.\n".format(
+                escape(target.describe())
+            )
+        )
+
+    def _close_local_target(self) -> None:
+        target, self.local_target = self.local_target, None
+        if target is not None:
+            target.close()
+
+    def _cmd_local(self, args: List[str]) -> None:
+        if self._local_target_factory is None:
+            self.console.print("[yellow]Running commands on this machine isn't available here.[/yellow]")
+            return
+        action = args[0].lower() if args else ""
+        if action == "off":
+            if self._local_connected() is None:
+                self.console.print("[dim]This machine isn't connected.[/dim]")
+                return
+            self._close_local_target()
+            self._bound_chats.clear()
+            self.console.print("[green]✓ Disconnected.[/green] Skyportal no longer runs commands on this machine.")
+            return
+        if action == "on":
+            self._require_api_connection()
+            if self._local_connected() is None:
+                self._local_offered = False
+                self._offer_local_target()
+                return
+        elif action:
+            self.console.print("[yellow]Usage:[/yellow] /local [on|off]")
+            return
+        local = self._local_connected()
+        if local is None:
+            self.console.print("[dim]This machine isn't connected. Connect it with /local on.[/dim]")
+        else:
+            self.console.print(
+                "[green]● Connected:[/green] {}. Select it in another chat with /server local.".format(
+                    escape(local.describe())
+                )
+            )
 
     def _cancel_active_turn(self, chat_id: int) -> None:
         """Stop the running agent turn after a Ctrl-C, then keep the prompt."""

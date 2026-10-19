@@ -16,6 +16,17 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **The agent works on your own machine, in the folder you opened.** Started in
+  a folder you trust (it asks once per folder, like Claude Code), the shell
+  registers this machine with Skyportal and runs the commands the agent's chat
+  queues for it, in that folder, after the approval prompt you already get.
+  Chats started in the shell use this machine unless you pick servers;
+  `/local [on|off]` shows or changes it and `/server local` selects it.
+  Commands are fetched over outbound HTTPS with the in-cluster agent's command
+  loop, which now takes its endpoints, headers and the lease field as options.
+  Closing the shell stops a running command and tells Skyportal. Needs a
+  Skyportal server with skyportal-website#3665.
+
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
 ### Added

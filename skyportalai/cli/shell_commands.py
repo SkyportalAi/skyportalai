@@ -27,6 +27,7 @@ from skyportalai.shell import (
     SkyportalConfig,
     show_startup_animation,
 )
+from skyportalai.shell.local_target import LocalTarget
 
 console = Console()
 # Errors go to stderr, as click.ClickException did before 0.2.0. Only visible to anyone
@@ -79,7 +80,7 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 def run_shell() -> None:
     """Launch the persistent Skyportal command center."""
     show_startup_animation(console)
-    InteractiveShell(console=console, client_factory=_portal_client).run()
+    InteractiveShell(console=console, client_factory=_portal_client, local_target_factory=LocalTarget).run()
 
 
 def _fail(error: PortalError) -> typer.Exit:

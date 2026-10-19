@@ -96,6 +96,8 @@ and the one-shot `skyportalai ask` command accepts repeated `--server` options.
 - Configuration: `~/.skyportalai/config.yaml`
 - Credentials: `~/.skyportalai/credentials.json` (mode `0600`)
 - Prompt history: `~/.skyportalai/history` (mode `0600`)
+- This machine's random id, sent when it connects as a command target: `~/.skyportalai/machine_id` (mode `0600`)
+- Folders you trust to run commands in: `~/.skyportalai/trusted_folders.json` (mode `0600`)
 
 A pre-0.2.0 `~/.skyportal` directory is renamed to `~/.skyportalai` the first
 time a path under it is resolved.

@@ -4,6 +4,10 @@ Chat on a cluster reached only through this agent queues its command on the
 server. This loop (cluster role only) picks each one up over outbound HTTPS and
 runs it on a thread of its own, up to COMMAND_SLOTS at a time. The command is
 checked against the read-only allowlist here as well as on the server.
+
+The skyportalai CLI reuses this loop to run the commands queued for the user's own
+machine (skyportal-website#3665), with its own endpoints, credential and runner; the
+lease, the slots and the result retries until report_by are the same.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -51,6 +55,7 @@ AGENT_CAPABILITIES = "command-timeouts"
 @dataclass(frozen=True)
 class _LeasedCommand:
     id: int
+    # What the runner is handed: kubectl's argv here, a shell line for the CLI's local machine.
     argv: object
     timeout: float
     # When the server stops taking the result, on the poller's clock; None if it didn't say.
@@ -70,8 +75,17 @@ class CommandPoller:
         run: Callable[[list[str], float], dict] = run_kubectl,
         stop_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
+        lease_path: str = LEASE_PATH,
+        result_path: str = RESULT_PATH,
+        extra_headers: Mapping[str, str] | None = None,
+        command_field: str = "argv",
+        thread_prefix: str = "kube-command",
     ):
         self.base_url = base_url.rstrip("/")
+        self._lease_path = lease_path
+        self._result_path = result_path
+        self._command_field = command_field
+        self._thread_prefix = thread_prefix
         # requests doesn't promise a Session is safe to share across threads. Leases use this
         # one, on the polling thread only; each command's thread posts its result on a session
         # of its own from session_factory.
@@ -81,6 +95,7 @@ class CommandPoller:
             "Authorization": f"Bearer {token}",
             "User-Agent": f"skyportalai-agent/{__version__}",
             "X-Agent-Capabilities": AGENT_CAPABILITIES,
+            **(extra_headers or {}),
         }
         self._run = run
         self._stop = stop_event or threading.Event()
@@ -106,7 +121,7 @@ class CommandPoller:
             command = None if self._stop.is_set() else self._lease()
             if command is not None:
                 worker = threading.Thread(
-                    target=self._work, args=(command,), name=f"kube-command-{command.id}", daemon=True
+                    target=self._work, args=(command,), name=f"{self._thread_prefix}-{command.id}", daemon=True
                 )
                 worker.start()
                 return worker
@@ -118,7 +133,7 @@ class CommandPoller:
         return None
 
     def _lease(self) -> _LeasedCommand | None:
-        resp = self.session.post(self.base_url + LEASE_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+        resp = self.session.post(self.base_url + self._lease_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         if resp.status_code == 204:
             return None
         resp.raise_for_status()
@@ -128,7 +143,7 @@ class CommandPoller:
             logger.warning("Ignored a leased command with no usable id")
             return None
         return _LeasedCommand(
-            command_id, command.get("argv"), _command_timeout(command), self._report_deadline(command)
+            command_id, command.get(self._command_field), _command_timeout(command), self._report_deadline(command)
         )
 
     def _report_deadline(self, command: dict) -> float | None:
@@ -152,7 +167,7 @@ class CommandPoller:
 
     def _post_result(self, session: requests.Session, command: _LeasedCommand, payload: dict) -> None:
         """Post a command's result, retrying what a brief SkyPortal outage would explain."""
-        url = self.base_url + RESULT_PATH.format(id=command.id)
+        url = self.base_url + self._result_path.format(id=command.id)
         waits = self._retry_waits(command.report_deadline)
         while True:
             try:

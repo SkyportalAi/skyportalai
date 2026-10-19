@@ -280,6 +280,46 @@ def test_create_chat_posts_atomic_multi_server_scope(credential_path):
     }
 
 
+def test_a_chat_is_bound_to_this_cli_session_on_create_and_on_a_message(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai")
+    session = {"server_id": 5, "instance": "session-1"}
+
+    with patch(
+        "skyportalai.shell.portal.urlopen", return_value=FakeResponse({"chat_id": 42, "status": "processing"}),
+    ) as call:
+        client.create_chat("Run the tests", server_ids=[5], local_session=session)
+        client.send_chat_message(42, "Again", local_session=session)
+        client.send_chat_message(42, "And again")
+
+    create, bind, plain = (json.loads(made.args[0].data) for made in call.call_args_list)
+    assert create["local_session"] == session and create["selected_server_ids"] == [5]
+    assert bind == {"message": "Again", "local_session": session}
+    assert plain == {"message": "And again"}
+    with pytest.raises(PortalError):
+        client.create_chat("x", local_session=session)
+
+
+def test_connecting_this_machine_names_the_session_in_its_header(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai")
+
+    with patch(
+        "skyportalai.shell.portal.urlopen", return_value=FakeResponse({"server_id": 5, "hostname": "laptop"}),
+    ) as call:
+        client.connect_local_machine(
+            "session-1", machine_id="m-1234567890", name="laptop", platform="Linux", shell="bash", repo=None,
+        )
+        client.disconnect_local_machine(5, "session-1")
+
+    connect, disconnect = (made.args[0] for made in call.call_args_list)
+    assert connect.full_url == "https://app.skyportal.ai/api/v1/agent/local/connect/"
+    assert connect.get_header("X-agent-instance") == "session-1"
+    assert json.loads(connect.data) == {"machine_id": "m-1234567890", "name": "laptop", "platform": "Linux", "shell": "bash"}
+    assert disconnect.full_url == "https://app.skyportal.ai/api/v1/agent/local/5/disconnect/"
+    assert client.bearer_token() == "sk_test"
+
+
 def test_create_chat_rejects_singular_and_plural_server_options(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 
@@ -759,7 +799,7 @@ def test_run_chat_turn_continues_existing_chat(credential_path):
         )
 
     assert result is completed
-    send.assert_called_once_with(42, "Continue")
+    send.assert_called_once_with(42, "Continue", local_session=None)
     wait.assert_called_once_with(
         42,
         after_sequence=8,
@@ -968,6 +1008,7 @@ def test_begin_chat_turn_creates_new_chat_with_multi_server_scope(credential_pat
         active_server_id=4,
         active_host_id=None,
         selected_namespaces={4: ["default"]},
+        local_session=None,
     )
 
 
@@ -976,7 +1017,7 @@ def test_begin_chat_turn_continues_existing_chat(credential_path):
     with patch.object(client, "send_chat_message") as send:
         chat_id = client.begin_chat_turn("more", chat_id=42)
     assert chat_id == 42
-    send.assert_called_once_with(42, "more")
+    send.assert_called_once_with(42, "more", local_session=None)
 
 
 def test_begin_chat_turn_rejects_missing_chat_id(credential_path):
