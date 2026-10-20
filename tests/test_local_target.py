@@ -147,6 +147,69 @@ def test_stopping_a_command_stops_everything_it_started(tmp_path):
     assert _running("sleep 43") == 0
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_ctrl_c_stops_the_running_command_and_says_so(tmp_path):
+    runner = ShellRunner(tmp_path, threading.Event())
+    threading.Timer(1.5, runner.stop_all, args=("interrupted",)).start()
+    result = runner("sleep 53", 60)
+
+    assert result["exit_code"] == local_target.STOPPED_EXIT_CODE
+    assert "Ctrl-C" in result["stderr"]
+    assert _running("sleep 53") == 0
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_closing_the_target_kills_the_running_command_before_it_returns(tmp_path, monkeypatch):
+    # The CLI exits right after close(): a worker thread polling every 0.5 s would never get to kill it.
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    client = _Client()
+    target = LocalTarget(client, tmp_path, poller_factory=_Poller)
+    target.connect()
+    results = []
+    worker = threading.Thread(target=lambda: results.append(target._runner("sleep 59", 60)))
+    worker.start()
+    deadline = time.monotonic() + 10
+    while _running("sleep 59") == 0 and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    target.close()
+
+    assert _running("sleep 59") == 0
+    worker.join(5)
+    assert results[0]["exit_code"] == local_target.STOPPED_EXIT_CODE
+    assert "closed" in results[0]["stderr"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a job object is Windows-only")
+def test_on_windows_a_running_command_dies_with_a_cli_that_is_killed(tmp_path):
+    script = tmp_path / "cli.py"
+    script.write_text(
+        "import os, sys, threading, time\n"
+        "from pathlib import Path\n"
+        "from skyportalai.shell.local_target import ShellRunner\n"
+        "threading.Thread(target=ShellRunner(Path(sys.argv[1]), threading.Event()), args=('sleep 61', 60)).start()\n"
+        "time.sleep(2)\n"
+        "os._exit(9)\n"
+    )
+    subprocess.run([sys.executable, str(script), str(tmp_path)], check=False, timeout=30)
+    time.sleep(1)
+
+    assert _running("sleep 61") == 0
+
+
+def test_a_finished_commands_background_work_outlives_it(tmp_path):
+    marker = tmp_path / "late"
+    python, target = Path(sys.executable).as_posix(), marker.as_posix()
+    command = f"'{python}' -c \"import time, pathlib; time.sleep(2); pathlib.Path('{target}').write_text('ok')\" &"
+    result = ShellRunner(tmp_path, threading.Event())(command, 30)
+
+    assert result["exit_code"] == 0
+    deadline = time.monotonic() + 15
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert marker.exists()
+
+
 @POSIX_ONLY
 def test_long_output_keeps_its_head_and_tail(tmp_path):
     command = f"{sys.executable} -c \"print('A' * 200000 + 'END')\""
@@ -156,7 +219,16 @@ def test_long_output_keeps_its_head_and_tail(tmp_path):
     assert len(out) < 200_000
     assert out.startswith("A")
     assert out.rstrip().endswith("END")
-    assert "characters omitted" in out
+    assert "bytes omitted" in out
+
+
+def test_output_is_read_head_and_tail_without_loading_the_whole_file(tmp_path):
+    big = tmp_path / "out"
+    big.write_bytes(b"H" * 1000 + b"x" * 5_000_000 + b"T" * 1000)
+    with big.open("rb") as file:
+        text = local_target._read_bounded(file)
+    assert len(text) < local_target.OUTPUT_HEAD_BYTES + local_target.OUTPUT_TAIL_BYTES + 100
+    assert text.startswith("H") and text.endswith("T")
 
 
 def test_no_command_is_not_run():

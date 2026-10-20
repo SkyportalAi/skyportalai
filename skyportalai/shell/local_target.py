@@ -49,17 +49,50 @@ RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
 # Skyportal takes a CLI silent for 40 s as closed and withdraws its commands, so this stays well inside it.
 HEARTBEAT_SECONDS = 15
 # Kept per stream: the head and the tail, where a failing build says why. The model reads less than this.
-OUTPUT_HEAD_CHARS = 30_000
-OUTPUT_TAIL_CHARS = 70_000
+OUTPUT_HEAD_BYTES = 30_000
+OUTPUT_TAIL_BYTES = 70_000
 TIMEOUT_EXIT_CODE = 124
 STOPPED_EXIT_CODE = 130
+_STOPPED_BECAUSE = {
+    "closed": "Stopped: the skyportalai CLI was closed.",
+    "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
+}
 _GIT_SECONDS = 5
 _CREATE_SUSPENDED = 0x00000004
 
 if os.name == "nt":
-    from ctypes import wintypes
+    import ctypes.wintypes
+
+    wintypes = ctypes.wintypes
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimits),
+            ("IoInfo", ctypes.c_uint64 * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+    _kernel32.SetInformationJobObject.restype = wintypes.BOOL
     _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
@@ -217,11 +250,26 @@ def platform_name() -> str:
     return {"Darwin": "macOS"}.get(system, system)
 
 
-def _cut(text: str) -> str:
-    if len(text) <= OUTPUT_HEAD_CHARS + OUTPUT_TAIL_CHARS:
-        return text
-    omitted = len(text) - OUTPUT_HEAD_CHARS - OUTPUT_TAIL_CHARS
-    return f"{text[:OUTPUT_HEAD_CHARS]}\n… [{omitted} characters omitted] …\n{text[-OUTPUT_TAIL_CHARS:]}"
+def _read_bounded(file: Any) -> str:
+    """A temp file's output, reading no more than its head and tail: a command can print gigabytes."""
+    size = file.seek(0, os.SEEK_END)
+    file.seek(0)
+    if size <= OUTPUT_HEAD_BYTES + OUTPUT_TAIL_BYTES:
+        return file.read().decode("utf-8", errors="replace")
+    head = file.read(OUTPUT_HEAD_BYTES).decode("utf-8", errors="replace")
+    file.seek(size - OUTPUT_TAIL_BYTES)
+    tail = file.read().decode("utf-8", errors="replace")
+    omitted = size - OUTPUT_HEAD_BYTES - OUTPUT_TAIL_BYTES
+    return f"{head}\n… [{omitted} bytes omitted] …\n{tail}"
+
+
+def _kill_on_close(job: int, enabled: bool) -> bool:
+    """Whether the job's processes die when its last handle closes, as it does when this CLI dies."""
+    limits = _ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE if enabled else 0
+    return bool(_kernel32.SetInformationJobObject(
+        job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits),
+    ))
 
 
 def _job_for(process: subprocess.Popen) -> Optional[int]:
@@ -230,6 +278,8 @@ def _job_for(process: subprocess.Popen) -> Optional[int]:
     job = _kernel32.CreateJobObjectW(None, None)
     try:
         if job and _kernel32.AssignProcessToJobObject(job, handle):
+            # While it runs, the command dies with this CLI, even one killed without a chance to stop it.
+            _kill_on_close(job, True)
             return job
         if job:
             _kernel32.CloseHandle(job)
@@ -247,6 +297,9 @@ class _ProcessTree:
     """
 
     def __init__(self, argv: List[str], **options: Any):
+        # kill() can come from another thread (the CLI closing, a Ctrl-C) while the runner closes the job.
+        self._lock = threading.Lock()
+        self.stopped_because: Optional[str] = None
         if os.name == "nt":
             self.process = subprocess.Popen(
                 argv, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED, **options,
@@ -256,22 +309,31 @@ class _ProcessTree:
             self.process = subprocess.Popen(argv, start_new_session=True, **options)
             self._job = None
 
-    def kill(self) -> None:
-        try:
-            if self._job is not None:
-                _kernel32.TerminateJobObject(self._job, 1)
-            elif os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.process.pid)], capture_output=True, check=False)
-            else:
-                os.killpg(self.process.pid, signal.SIGKILL)
-        except (OSError, subprocess.SubprocessError):
-            self.process.kill()
+    def kill(self, because: str) -> None:
+        with self._lock:
+            if self.stopped_because is not None or self.process.poll() is not None:
+                return
+            self.stopped_because = because
+            try:
+                if self._job is not None:
+                    _kernel32.TerminateJobObject(self._job, 1)
+                elif os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(self.process.pid)], capture_output=True, check=False,
+                    )
+                else:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+            except (OSError, subprocess.SubprocessError):
+                self.process.kill()
         self.process.wait()
 
     def close(self) -> None:
-        if self._job is not None:
-            _kernel32.CloseHandle(self._job)
-            self._job = None
+        with self._lock:
+            if self._job is not None:
+                # What it left running in the background outlives it, as it does on POSIX.
+                _kill_on_close(self._job, False)
+                _kernel32.CloseHandle(self._job)
+                self._job = None
 
 
 class ShellRunner:
@@ -281,6 +343,16 @@ class ShellRunner:
         self.folder = folder
         self._stop = stop
         self._shell = shell or _shell_argv()
+        self._running: set = set()
+        self._lock = threading.Lock()
+
+    def stop_all(self, because: str) -> int:
+        """Stop every command running now, on the caller's thread; how many there were."""
+        with self._lock:
+            running = list(self._running)
+        for tree in running:
+            tree.kill(because)
+        return len(running)
 
     def __call__(self, command: object, timeout: float) -> Dict[str, Any]:
         if not isinstance(command, str) or not command.strip():
@@ -294,32 +366,36 @@ class ShellRunner:
                 )
             except OSError as error:
                 return {"exit_code": 127, "stdout": "", "stderr": f"Could not start {self._shell[0]}: {error}"}
+            with self._lock:
+                self._running.add(tree)
             try:
-                exit_code = self._wait(tree, deadline)
+                self._wait(tree, deadline)
             finally:
+                with self._lock:
+                    self._running.discard(tree)
                 tree.close()
-            out.seek(0)
-            err.seek(0)
-            stdout = out.read().decode("utf-8", errors="replace")
-            stderr = err.read().decode("utf-8", errors="replace")
-        if exit_code == TIMEOUT_EXIT_CODE:
+            stdout = _read_bounded(out)
+            stderr = _read_bounded(err)
+        exit_code = tree.process.returncode
+        if tree.stopped_because == "timeout":
+            exit_code = TIMEOUT_EXIT_CODE
             stderr += f"\nStopped after its {int(timeout)}s timeout."
-        elif exit_code == STOPPED_EXIT_CODE:
-            stderr += "\nStopped: the skyportalai CLI was closed."
-        return {"exit_code": exit_code, "stdout": _cut(stdout), "stderr": _cut(stderr)}
+        elif tree.stopped_because in _STOPPED_BECAUSE:
+            exit_code = STOPPED_EXIT_CODE
+            stderr += "\n" + _STOPPED_BECAUSE[tree.stopped_because]
+        return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
 
-    def _wait(self, tree: _ProcessTree, deadline: float) -> int:
+    def _wait(self, tree: _ProcessTree, deadline: float) -> None:
         while True:
             try:
-                return tree.process.wait(timeout=0.5)
+                tree.process.wait(timeout=0.5)
+                return
             except subprocess.TimeoutExpired:
                 pass
             if self._stop.is_set():
-                tree.kill()
-                return STOPPED_EXIT_CODE
-            if time.monotonic() >= deadline:
-                tree.kill()
-                return TIMEOUT_EXIT_CODE
+                tree.kill("closed")
+            elif time.monotonic() >= deadline:
+                tree.kill("timeout")
 
 
 def _session_without_redirects() -> requests.Session:
@@ -342,6 +418,7 @@ class LocalTarget:
     poller_factory: Callable[..., Any] = CommandPoller
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
+    _runner: Optional[ShellRunner] = None
 
     @property
     def connected(self) -> bool:
@@ -361,11 +438,12 @@ class LocalTarget:
         self.repo = repo_context(self.folder)
         self._open()
         token = self.client.bearer_token()
+        self._runner = ShellRunner(self.folder, self._stop)
         poller = self.poller_factory(
             self.client.base_url, token,
             session=_session_without_redirects(),
             session_factory=_session_without_redirects,
-            run=ShellRunner(self.folder, self._stop),
+            run=self._runner,
             stop_event=self._stop,
             lease_path=LEASE_PATH.format(server_id=self.server_id),
             result_path=RESULT_PATH.format(server_id=self.server_id),
@@ -410,11 +488,18 @@ class LocalTarget:
         except PortalError as error:
             logger.warning("Could not reconnect this machine: %s", error)
 
+    def interrupt(self) -> int:
+        """Ctrl-C: stop what is running here now; how many commands that was."""
+        return self._runner.stop_all("interrupted") if self._runner is not None else 0
+
     def close(self) -> None:
         """Stop running commands here and tell Skyportal, which withdraws whatever this session still held."""
         if self._stop.is_set():
             return
         self._stop.set()
+        # Here, not on the workers' threads: the CLI may exit as soon as this returns, and they die with it.
+        if self._runner is not None:
+            self._runner.stop_all("closed")
         if self.server_id is None:
             return
         try:

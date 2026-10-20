@@ -1,9 +1,13 @@
 """The shell connects this machine in a trusted folder and binds its chats to it (skyportal-website#3665)."""
 
+import os
+import signal
+import time
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from rich.console import Console
 
 from skyportalai.cli import shell_commands
@@ -111,6 +115,33 @@ def test_trusting_the_folder_connects_this_machine_and_remembers_the_answer(tmp_
     assert shell.local_target.folder == Path.cwd()
 
 
+def test_ctrl_c_or_ctrl_d_at_the_trust_prompt_is_a_no(tmp_path, monkeypatch):
+    for pressed in (KeyboardInterrupt, EOFError):
+        shell, _, store, _ = _shell(tmp_path, monkeypatch)
+
+        def press(_message, pressed=pressed):
+            raise pressed
+
+        shell._confirm_prompt = press
+        shell._offer_local_target()
+
+        assert shell.local_target is None
+        assert not store.is_trusted(tmp_path)
+
+
+def test_ctrl_c_on_a_turn_also_stops_the_command_running_here(tmp_path, monkeypatch):
+    shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    calls = []
+    client.cancel_chat = lambda chat_id, reason=None: calls.append("cancel")
+    shell.local_target.interrupt = lambda: calls.append("interrupt") or 1
+
+    shell._cancel_active_turn(42)
+
+    # The turn is cancelled first, so the stopped command's result can't resume it.
+    assert calls == ["cancel", "interrupt"]
+
+
 def test_declining_connects_nothing(tmp_path, monkeypatch):
     _Target.made.clear()
     shell, _, store, _ = _shell(tmp_path, monkeypatch, answers=["n"])
@@ -210,6 +241,23 @@ def test_leaving_the_shell_disconnects_this_machine(tmp_path, monkeypatch):
     shell.run()
 
     assert _Target.made[-1].closed
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGHUP is POSIX")
+def test_closing_the_terminal_window_disconnects_this_machine(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+
+    class _HangUp:
+        def prompt(self, _message):
+            os.kill(os.getpid(), signal.SIGHUP)
+            time.sleep(1)
+
+    shell.session = _HangUp()
+    with pytest.raises(SystemExit):
+        shell.run()
+
+    assert _Target.made[-1].closed
+    assert signal.getsignal(signal.SIGHUP) is signal.SIG_DFL
 
 
 def test_the_real_entry_point_wires_this_machine():

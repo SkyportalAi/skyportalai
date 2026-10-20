@@ -1,12 +1,16 @@
 """Persistent conversational Skyportal terminal shell."""
 
 import json
+import os
 import re
 import shlex
+import signal
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
@@ -97,6 +101,29 @@ COMMANDS: Dict[str, CommandInfo] = {
     "/exit": CommandInfo("/exit", "Leave Skyportal"),
     "/quit": CommandInfo("/quit", "Leave Skyportal"),
 }
+
+
+@contextmanager
+def _ending_on_hangup() -> Iterator[None]:
+    """Closing the terminal window (SIGHUP) or a kill (SIGTERM) ends the shell the way /exit does.
+
+    Otherwise the process dies without its cleanup, and a command it was running on this machine
+    keeps going in a session of its own. Windows needs none of this: the job each command runs in
+    dies with the CLI.
+    """
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def end(signum: int, frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, end) for sig in (signal.SIGHUP, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 class SkyportalCompleter(Completer):
@@ -301,8 +328,9 @@ class InteractiveShell:
         """Run until `/exit` or Ctrl-D, preserving the prompt after errors."""
         self._show_onboarding()
         try:
-            self._offer_local_target()
-            self._loop()
+            with _ending_on_hangup():
+                self._offer_local_target()
+                self._loop()
         finally:
             self._close_local_target()
 
@@ -1392,8 +1420,8 @@ class InteractiveShell:
             "touch secrets ask you first, as on any host, unless your approval mode is autoapprove. "
             "Only trust a folder whose code you trust.\n".format(escape(str(folder)))
         )
-        answer = self._confirm_prompt("Trust this folder and let Skyportal run commands here? [y/N] ")
-        return answer.strip().lower() in ("y", "yes")
+        # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
+        return self._confirm("Trust this folder and let Skyportal run commands here? [y/N] ")
 
     def _connect_local_target(self, folder: Path) -> None:
         target = self._local_target_factory(self.client, folder)
@@ -1459,6 +1487,12 @@ class InteractiveShell:
         except PortalError:
             self.console.print("[dim]Nothing to stop; the turn had already finished.[/dim]")
             return
+        finally:
+            # After the cancel, so the stopped command's result doesn't resume the turn first. Skyportal
+            # only withdraws a command that hasn't started; one running in this terminal stops here.
+            local = self._local_connected()
+            if local is not None and local.interrupt():
+                self.console.print("[yellow]■ Stopped the command running on this machine.[/yellow]")
         self.console.print(
             "[yellow]■ Stopped.[/yellow] Chat #{} is still open; type to continue.".format(chat_id)
         )
