@@ -46,6 +46,21 @@ def test_a_remote_is_shown_as_host_and_path_without_credentials(remote, shown):
     assert display_remote(remote) == shown
 
 
+def test_windows_finds_git_bash_when_the_only_bash_on_path_is_wsl(tmp_path):
+    # In PowerShell and Windows Terminal, System32's bash (WSL) is on PATH and Git's isn't.
+    git = tmp_path / "Git" / "cmd" / "git.exe"
+    bash = tmp_path / "Git" / "bin" / "bash.exe"
+    for path in (git, bash):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    paths = {"bash": "C:\WINDOWS\system32\bash.EXE", "git": str(git)}
+
+    assert local_target._windows_bash(paths.get) == str(bash)
+    assert local_target._windows_bash({"bash": str(bash)}.get) == str(bash)
+    assert local_target._windows_bash({"bash": "C:\WINDOWS\system32\bash.EXE"}.get) is None
+    assert local_target._windows_bash({}.get) is None
+
+
 def test_the_machine_id_is_made_once_and_kept(tmp_path, monkeypatch):
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
     first = machine_id()

@@ -230,14 +230,29 @@ def repo_context(folder: Path) -> Optional[RepoContext]:
     return RepoContext(remote=remote, branch=branch, path="" if inside == "." else inside)
 
 
+def _windows_bash(which: Callable[[str], Optional[str]] = shutil.which) -> Optional[str]:
+    """Git for Windows' bash, which is not on PATH in PowerShell or Windows Terminal; None without Git."""
+    bash = which("bash")
+    # System32's bash is WSL: another filesystem, where this folder isn't.
+    if bash and "system32" not in bash.lower():
+        return bash
+    git = which("git")
+    if not git:
+        return None
+    # git.exe sits in <Git>\cmd or <Git>\mingw64\bin; <Git>\bin\bash.exe sets up the PATH its tools need.
+    for root in list(Path(git).parents)[:3]:
+        candidate = root / "bin" / "bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def _shell_argv() -> List[str]:
     """How a command is run here: bash where there is one, else the system's own shell."""
     if os.name == "nt":
-        bash = shutil.which("bash")
-        # System32's bash is WSL: another filesystem, where this folder isn't.
-        if bash and "system32" not in bash.lower():
-            return [bash, "-c"]
-        return ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+        bash = _windows_bash()
+        # Windows PowerShell 5.1 can't even parse `a && b`, so bash is worth finding.
+        return [bash, "-c"] if bash else ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
     return [shutil.which("bash") or "/bin/sh", "-c"]
 
 
