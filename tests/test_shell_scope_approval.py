@@ -5,7 +5,7 @@ from io import StringIO
 from rich.console import Console
 
 from skyportalai.shell.interactive import InteractiveShell
-from skyportalai.shell.portal import ChatTurnResult
+from skyportalai.shell.portal import ChatTurnResult, PortalError
 
 LABEL = "Add namespace e2e on kind-smoke to this chat and run `kubectl logs -f slow-logger -n e2e`"
 
@@ -118,6 +118,31 @@ def test_an_approved_host_joins_the_shell_scope(tmp_path, monkeypatch):
     assert shell.selected_server_ids == [12, 7]
     assert shell._server_name(7) == "gpu-box"
     assert shell.selected_server_id == 12
+
+
+def test_a_failed_scope_refresh_still_follows_the_approved_turn(tmp_path, monkeypatch):
+    client = _Client()
+    waits = []
+
+    def servers():
+        raise PortalError("Skyportal is unavailable")
+
+    def wait_for_chat(chat_id, **_kwargs):
+        waits.append(chat_id)
+        return _turn("idle")
+
+    client.servers, client.wait_for_chat = servers, wait_for_chat
+    shell, console, _ = _shell(client, tmp_path, monkeypatch, answers=["y"])
+    shell.selected_server_ids, shell.selected_server_names, shell.selected_server_id = [12], ["kind-smoke"], 12
+
+    shell._process_turn(_turn("awaiting_approval", [
+        _scope_approval(kind="server", server_id=7, hostname="gpu-box", namespace=None),
+    ]))
+
+    assert client.submit_calls == [("scope", "approved", False, None)]
+    assert waits == [42]
+    assert "the shell scope could not be refreshed" in console.file.getvalue()
+    assert shell.selected_server_ids == [12]
 
 
 def test_a_cluster_with_no_namespace_picked_asks_which(tmp_path, monkeypatch):

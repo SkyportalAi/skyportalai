@@ -1597,7 +1597,14 @@ class InteractiveShell:
                             )
                             handled_approvals.add(approval_id)
                             if decision == "approved" and approval_type == "scope":
-                                self._note_scope_added(approval, namespace)
+                                try:
+                                    self._note_scope_added(approval, namespace)
+                                except PortalError:
+                                    # The server already took the approval; keep following the turn.
+                                    self.console.print(
+                                        "[yellow]Approved, but the shell scope could not be "
+                                        "refreshed; check /status.[/yellow]"
+                                    )
                             approval_settlement_deadline = (
                                 time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
                             )
