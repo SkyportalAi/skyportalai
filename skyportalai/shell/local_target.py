@@ -58,6 +58,8 @@ _STOPPED_BECAUSE = {
     "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
 }
 _GIT_SECONDS = 5
+# How much of a command the terminal shows when it starts and ends: one line, never the whole script.
+_SHOWN_COMMAND_CHARS = 120
 _CREATE_SUSPENDED = 0x00000004
 
 if os.name == "nt":
@@ -375,13 +377,16 @@ class ShellRunner:
         deadline = time.monotonic() + timeout
         # Files, not pipes: a chatty command can't fill a pipe and hang, or fill this process's memory.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            try:
-                tree = _ProcessTree(
-                    [*self._shell, command], cwd=self.folder, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                )
-            except OSError as error:
-                return {"exit_code": 127, "stdout": "", "stderr": f"Could not start {self._shell[0]}: {error}"}
+            # One critical section with stop_all(): a command leased as the CLI closes is stopped by it, or never started.
             with self._lock:
+                if self._stop.is_set():
+                    return {"exit_code": STOPPED_EXIT_CODE, "stdout": "", "stderr": _STOPPED_BECAUSE["closed"]}
+                try:
+                    tree = _ProcessTree(
+                        [*self._shell, command], cwd=self.folder, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                    )
+                except OSError as error:
+                    return {"exit_code": 127, "stdout": "", "stderr": f"Could not start {self._shell[0]}: {error}"}
                 self._running.add(tree)
             try:
                 self._wait(tree, deadline)
@@ -413,6 +418,16 @@ class ShellRunner:
                 tree.kill("timeout")
 
 
+def _command_label(command: object, chat_id: object) -> str:
+    """One line naming a leased command and the chat it came from."""
+    text = " ".join(str(command or "").split())
+    if len(text) > _SHOWN_COMMAND_CHARS:
+        text = text[: _SHOWN_COMMAND_CHARS - 1] + "…"
+    if isinstance(chat_id, int) and not isinstance(chat_id, bool):
+        text += f"  (chat #{chat_id})"
+    return text
+
+
 def _session_without_redirects() -> requests.Session:
     # The shell's own client refuses redirects so the key is never sent on; this one does the same.
     session = requests.Session()
@@ -431,6 +446,9 @@ class LocalTarget:
     hostname: str = ""
     repo: Optional[RepoContext] = None
     poller_factory: Callable[..., Any] = CommandPoller
+    # Where each command this machine runs is shown, as it starts and as it ends: a chat this CLI started
+    # can be continued from the owner's browser, so nothing may run here without a trace in the terminal.
+    show: Callable[[str], None] = logger.info
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
@@ -458,18 +476,33 @@ class LocalTarget:
             self.client.base_url, token,
             session=_session_without_redirects(),
             session_factory=_session_without_redirects,
-            run=self._runner,
+            run=self._run_leased,
             stop_event=self._stop,
             lease_path=LEASE_PATH.format(server_id=self.server_id),
             result_path=RESULT_PATH.format(server_id=self.server_id),
             extra_headers={"User-Agent": f"skyportalai-cli/{__version__}", "X-Agent-Instance": self.instance},
-            command_field="command",
+            command_field=None,
             thread_prefix="local-command",
         )
         for name, target in (("local-command-poller", poller.run_forever), ("local-heartbeat", self._beat)):
             thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
             self._threads.append(thread)
+
+    def _run_leased(self, lease: object, timeout: float) -> Dict[str, Any]:
+        """Run one leased command in this folder, showing it as it starts and its exit code as it ends."""
+        lease = lease if isinstance(lease, dict) else {}
+        label = _command_label(lease.get("command"), lease.get("chat_id"))
+        self._tell(f"▸ running: {label}")
+        result = self._runner(lease.get("command"), timeout)
+        self._tell(f"▸ exit {result['exit_code']}: {label}")
+        return result
+
+    def _tell(self, line: str) -> None:
+        try:
+            self.show(line)
+        except Exception:  # noqa: BLE001 — a terminal that can't print must not cost the chat its result
+            logger.warning("Could not show: %s", line, exc_info=True)
 
     def _open(self) -> None:
         connected = self.client.connect_local_machine(

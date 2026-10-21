@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequ
 from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
@@ -1425,6 +1426,7 @@ class InteractiveShell:
 
     def _connect_local_target(self, folder: Path) -> None:
         target = self._local_target_factory(self.client, folder)
+        target.show = self._print_from_worker
         try:
             with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
                 target.connect()
@@ -1440,6 +1442,16 @@ class InteractiveShell:
                 escape(target.describe())
             )
         )
+
+    def _print_from_worker(self, line: str) -> None:
+        """Print a line from a background thread, above the prompt when the user is at it, so it can't garble it."""
+        text = Text(line, style="cyan")
+        app = getattr(self.session, "app", None)
+        loop = getattr(app, "loop", None) if app is not None and app.is_running else None
+        if loop is None:
+            self.console.print(text)
+            return
+        loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: self.console.print(text)))
 
     def _close_local_target(self) -> None:
         target, self.local_target = self.local_target, None

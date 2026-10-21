@@ -55,7 +55,7 @@ AGENT_CAPABILITIES = "command-timeouts"
 @dataclass(frozen=True)
 class _LeasedCommand:
     id: int
-    # What the runner is handed: kubectl's argv here, a shell line for the CLI's local machine.
+    # What the runner is handed: kubectl's argv here; the CLI's local machine takes the whole lease.
     argv: object
     timeout: float
     # When the server stops taking the result, on the poller's clock; None if it didn't say.
@@ -78,7 +78,8 @@ class CommandPoller:
         lease_path: str = LEASE_PATH,
         result_path: str = RESULT_PATH,
         extra_headers: Mapping[str, str] | None = None,
-        command_field: str = "argv",
+        # The lease field the runner is handed; None hands it the whole lease.
+        command_field: str | None = "argv",
         thread_prefix: str = "kube-command",
     ):
         self.base_url = base_url.rstrip("/")
@@ -142,9 +143,8 @@ class CommandPoller:
         if command_id is None:
             logger.warning("Ignored a leased command with no usable id")
             return None
-        return _LeasedCommand(
-            command_id, command.get(self._command_field), _command_timeout(command), self._report_deadline(command)
-        )
+        handed = command if self._command_field is None else command.get(self._command_field)
+        return _LeasedCommand(command_id, handed, _command_timeout(command), self._report_deadline(command))
 
     def _report_deadline(self, command: dict) -> float | None:
         try:

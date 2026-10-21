@@ -24,8 +24,11 @@ All notable changes to this project are documented here. This project follows
   `/local [on|off]` shows or changes it and `/server local` selects it.
   Commands are fetched over outbound HTTPS with the in-cluster agent's command
   loop, which now takes its endpoints, headers and the lease field as options.
-  Closing the shell stops a running command and tells Skyportal. Needs a
-  Skyportal server with skyportal-website#3665.
+  Closing the shell stops a running command and tells Skyportal. The terminal
+  prints every command it runs here, with its chat and exit code
+  (`▸ running: git log  (chat #123)`), including those from a chat this CLI
+  started and you continue in the browser. Needs a Skyportal server with
+  skyportal-website#3665.
 
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.

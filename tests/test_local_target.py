@@ -53,11 +53,11 @@ def test_windows_finds_git_bash_when_the_only_bash_on_path_is_wsl(tmp_path):
     for path in (git, bash):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("")
-    paths = {"bash": "C:\WINDOWS\system32\bash.EXE", "git": str(git)}
+    paths = {"bash": r"C:\WINDOWS\system32\bash.EXE", "git": str(git)}
 
     assert local_target._windows_bash(paths.get) == str(bash)
     assert local_target._windows_bash({"bash": str(bash)}.get) == str(bash)
-    assert local_target._windows_bash({"bash": "C:\WINDOWS\system32\bash.EXE"}.get) is None
+    assert local_target._windows_bash({"bash": r"C:\WINDOWS\system32\bash.EXE"}.get) is None
     assert local_target._windows_bash({}.get) is None
 
 
@@ -295,14 +295,16 @@ def test_the_agents_poller_runs_the_local_queue_with_the_cli_session():
         lease_path="/api/v1/agent/local/5/commands/lease/",
         result_path="/api/v1/agent/local/5/commands/{id}/result/",
         extra_headers={"X-Agent-Instance": "session-1"},
-        command_field="command",
+        command_field=None,
         thread_prefix="local-command",
     )
 
     worker = poller.poll_once()
     worker.join(5)
 
-    assert ran == [("npm test", 600)]
+    # The whole lease, so the CLI can show the chat a command came from.
+    [(handed, timeout)] = ran
+    assert (handed["command"], timeout) == ("npm test", 600)
     lease, result = server.calls
     assert lease["url"] == BASE_URL + "/api/v1/agent/local/5/commands/lease/"
     assert result["url"] == BASE_URL + "/api/v1/agent/local/5/commands/7/result/"
@@ -363,7 +365,8 @@ def test_connecting_registers_the_machine_and_leases_for_this_session_only(tmp_p
         options = _Poller.made[-1].options
         assert options["lease_path"] == "/api/v1/agent/local/5/commands/lease/"
         assert options["extra_headers"]["X-Agent-Instance"] == target.instance
-        assert options["command_field"] == "command"
+        assert options["command_field"] is None
+        assert options["run"] == target._run_leased
         assert target.session == {"server_id": 5, "instance": target.instance}
         assert target.connected
     finally:
@@ -388,3 +391,55 @@ def test_a_session_skyportal_lost_is_opened_again_by_the_heartbeat(tmp_path, mon
 
     assert len(client.connects) == 2
     assert {instance for instance, _ in client.connects} == {target.instance}
+
+
+def test_every_command_run_here_is_shown_with_its_chat_and_its_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    shown = []
+    target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, show=shown.append)
+    target.connect()
+    try:
+        run = _Poller.made[-1].options["run"]
+        result = run({"id": 7, "command": "echo hi", "chat_id": 123, "timeout_seconds": 5}, 5)
+    finally:
+        target.close()
+
+    assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+    assert shown == ["▸ running: echo hi  (chat #123)", "▸ exit 0: echo hi  (chat #123)"]
+
+
+def test_a_terminal_that_cannot_print_still_reports_the_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+
+    def broken(_line):
+        raise OSError("terminal gone")
+
+    target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, show=broken)
+    target.connect()
+    try:
+        result = _Poller.made[-1].options["run"]({"id": 7, "command": "echo hi", "chat_id": 123}, 5)
+    finally:
+        target.close()
+
+    assert result["exit_code"] == 0
+
+
+def test_a_command_is_shown_on_one_line_however_long_it_is():
+    script = "for host in a b c; do\n  echo $host\ndone\n" * 20
+
+    label = local_target._command_label(script, None)
+
+    assert "\n" not in label
+    assert len(label) == local_target._SHOWN_COMMAND_CHARS and label.endswith("…")
+    assert local_target._command_label("ls", True) == "ls"  # a chat id is a number, never a flag
+
+
+def test_a_command_leased_as_the_cli_closes_is_never_started(tmp_path):
+    closing = threading.Event()
+    closing.set()
+
+    result = ShellRunner(tmp_path, closing)("echo started > started.txt", 5)
+
+    assert result["exit_code"] == local_target.STOPPED_EXIT_CODE
+    assert "closed" in result["stderr"]
+    assert not (tmp_path / "started.txt").exists()

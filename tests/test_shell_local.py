@@ -5,6 +5,7 @@ import signal
 import time
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -268,3 +269,31 @@ def test_the_real_entry_point_wires_this_machine():
         shell_commands.run_shell()
 
     assert shell_class.call_args.kwargs["local_target_factory"] is LocalTarget
+
+
+def test_every_command_this_machine_runs_is_printed_in_the_terminal(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, answers=["y"])
+    shell._offer_local_target()
+
+    # A chat this CLI started may be continued from the browser: its commands still show here.
+    shell.local_target.show("▸ running: git log  (chat #123)")
+
+    assert "▸ running: git log  (chat #123)" in shell.console.file.getvalue()
+
+
+def test_a_line_from_a_worker_is_printed_above_the_prompt_the_user_is_at(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    scheduled = []
+    shell.session = SimpleNamespace(
+        app=SimpleNamespace(is_running=True, loop=SimpleNamespace(call_soon_threadsafe=scheduled.append)),
+    )
+
+    with patch("skyportalai.shell.interactive.run_in_terminal", side_effect=lambda func: func()) as above:
+        shell._print_from_worker("▸ exit 0: git log  (chat #123)")
+        # Not from the worker's thread, over the prompt: on the prompt's own loop, above it.
+        assert shell.console.file.getvalue() == ""
+        [callback] = scheduled
+        callback()
+
+    above.assert_called_once()
+    assert "▸ exit 0: git log  (chat #123)" in shell.console.file.getvalue()

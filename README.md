@@ -197,6 +197,11 @@ sends the repository's remote (without credentials) and branch, never a full
 path. kubectl and helm don't run here, because your kubeconfig can point at any
 cluster; add the cluster itself instead.
 
+The terminal prints every command it runs here, with the chat it came from and
+its exit code, for example `▸ running: git log  (chat #123)`. A chat this CLI
+started can also be continued from your browser while the CLI is open, and its
+commands still show up here.
+
 ## Kubernetes clusters
 
 Connect a cluster with its kubeconfig. The CLI sends the credential only to the
