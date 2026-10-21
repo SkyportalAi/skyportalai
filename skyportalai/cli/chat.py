@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import typer
 
-from skyportalai.types import ChatStatus, MessagesPage
+from skyportalai.types import ApprovalResult, ChatStatus, MessagesPage
 
 from .context import CLIContext, run_command
 from .context import get_state as _state
@@ -227,6 +227,14 @@ def approve(
         str | None,
         typer.Option("--namespace", help="For a scope approval that asks for one: the namespace to add."),
     ] = None,
+    always: Annotated[
+        bool,
+        typer.Option(
+            "--always",
+            help="Always allow the command on its host too (the approval's approval_context.always_allow). "
+            "Only for a bash_command or scope approval that offers it.",
+        ),
+    ] = False,
 ) -> None:
     """Approve one pending agent action."""
     result = run_command(
@@ -237,9 +245,10 @@ def approve(
             approval_type=approval_type,
             command=command,
             namespace=namespace,
+            always=always,
         ),
     )
-    _state(context).output.success(result, human=f"Approval {approval_id}: {result.decision or 'approved'}")
+    _state(context).output.success(result, human=_approval_text(approval_id, result))
 
 
 @chat_app.command("reject")
@@ -406,6 +415,16 @@ def wait_for_chat(
     )
     _state(context).output.success(current, human=f"Chat #{chat_id}: {current.status}")
     _exit_for_status(current)
+
+
+def _approval_text(approval_id: str, result: ApprovalResult) -> str:
+    text = f"Approval {approval_id}: {result.decision or 'approved'}"
+    if not result.raw.get("always"):
+        return text
+    added = result.raw.get("added_prefixes") or []
+    if not added:
+        return text + "; nothing new was added to the allow list"
+    return text + "; now always allowed: " + ", ".join(str(prefix) for prefix in added)
 
 
 def _messages_text(page: MessagesPage) -> str:

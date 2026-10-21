@@ -173,11 +173,16 @@ class PendingApproval:
     # scope — kind, server_id, hostname, namespace (None: pick one of
     # namespace_choices), combined, label. Empty for every other type.
     scope: dict = field(default_factory=dict)
+    # What "Always allow" would add to the permit list of ``host``: prefixes and label
+    # (skyportal-website#3632, on scope cards since #3750). Empty when it isn't offered;
+    # pass ``always=True`` to ``approve`` only when it is set.
+    always_allow: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PendingApproval":
         context = data.get("approval_context")
         context = context if isinstance(context, dict) else {}
+        always_allow = context.get("always_allow")
         scope = data.get("scope")
         return cls(
             approval_id=str(data.get("approval_id", "") or ""),
@@ -190,6 +195,7 @@ class PendingApproval:
             can_change=str(context.get("can_change") or ""),
             host=str(context.get("host") or ""),
             scope=dict(scope) if isinstance(scope, dict) else {},
+            always_allow=dict(always_allow) if isinstance(always_allow, dict) else {},
             raw=dict(data),
         )
 

@@ -27,6 +27,12 @@ All notable changes to this project are documented here. This project follows
   `on_approval` callback answers it, and `PendingApproval.scope` says what it adds.
   `chat.approve(..., namespace=...)` and `skyportalai chat approve --type scope
   --namespace NAME` answer one that asks for a namespace.
+- **Always allow.** Where a bash or scope approval offers it (a server with
+  skyportal-website#3750 sets `approval_context.always_allow`), the CLI prompt adds
+  `a`, shown with the server's label ("Always allow `kubectl logs` on kind-smoke"):
+  it approves the command and adds it to that host's allow list. It is never sent
+  automatically. `PendingApproval.always_allow` carries the offer,
+  `chat.approve(..., always=True)` and `skyportalai chat approve --always` send it.
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
 ### Added
