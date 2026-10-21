@@ -1,5 +1,6 @@
 """This machine as a command target: identity, trust, repo context, running a leased command (skyportal-website#3665)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -13,11 +14,14 @@ import pytest
 from skyportalai.agent.kubernetes.commands import CommandPoller
 from skyportalai.shell import local_target
 from skyportalai.shell.local_target import (
+    OUTPUT_LIMIT_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     LocalTarget,
     ShellRunner,
     TrustStore,
     display_remote,
+    is_filesystem_root,
+    is_home_folder,
     machine_id,
     repo_context,
 )
@@ -81,6 +85,29 @@ def test_trusting_a_folder_covers_what_is_below_it_and_nothing_beside_it(tmp_pat
     assert store.is_trusted(repo / "api")
     assert not store.is_trusted(tmp_path / "other")
     assert not store.is_trusted(tmp_path)
+
+
+def test_a_filesystem_root_is_recognised_and_a_folder_is_not(tmp_path):
+    root = Path(tmp_path.anchor)
+
+    assert is_filesystem_root(root)
+    assert not is_filesystem_root(tmp_path)
+
+
+def test_a_root_trusted_earlier_covers_nothing(tmp_path):
+    store = TrustStore(tmp_path / "trusted.json")
+    store.path.write_text(json.dumps({"folders": [tmp_path.anchor]}))
+
+    assert not store.is_trusted(tmp_path)
+
+
+def test_the_home_folder_is_recognised_and_a_folder_in_it_is_not(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / "work").mkdir()
+
+    assert is_home_folder(tmp_path)
+    assert not is_home_folder(tmp_path / "work")
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -251,6 +278,71 @@ def test_no_command_is_not_run():
     assert result["exit_code"] == 126
 
 
+def test_a_command_never_sees_the_clis_own_credentials_or_settings(tmp_path, monkeypatch):
+    for name in ("SKYPORTALAI_API_KEY", "SKYPORTALAI_ACCESS_TOKEN", "SKYPORTALAI_BASE_URL",
+                 "SKYPORTALAI_CREDENTIALS_PATH", "SKYPORTALAI_CONFIG_PATH", "SKYPORTALAI_AGENT_TOKEN"):
+        monkeypatch.setenv(name, "leaked-" + name)
+    monkeypatch.setenv("SKYPORTALAI_lowercase", "leaked-lowercase")
+    monkeypatch.setenv("UNRELATED_SETTING", "still-here")
+    python = Path(sys.executable).as_posix()
+
+    result = ShellRunner(tmp_path, threading.Event())(
+        f"'{python}' -c \"import os; print(chr(10).join(f'{{k}}={{v}}' for k, v in os.environ.items()))\"", 30,
+    )
+
+    assert result["exit_code"] == 0
+    seen = {line.partition("=")[0].upper() for line in result["stdout"].splitlines()}
+    assert not {name for name in seen if name.startswith("SKYPORTALAI_")}
+    assert "leaked-" not in result["stdout"]
+    assert "UNRELATED_SETTING=still-here" in result["stdout"].splitlines()
+
+
+def _recording_reads(monkeypatch):
+    """The size each stream's file had when it was read back, after the command ended or was stopped."""
+    sizes = []
+    read = local_target._read_bounded
+
+    def recording(file):
+        sizes.append(file.seek(0, os.SEEK_END))
+        return read(file)
+
+    monkeypatch.setattr(local_target, "_read_bounded", recording)
+    return sizes
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_a_command_that_floods_a_stream_is_stopped_before_the_disk_fills(tmp_path, monkeypatch, stream):
+    cap = 200_000
+    monkeypatch.setattr(local_target, "MAX_STREAM_BYTES", cap)
+    sizes = _recording_reads(monkeypatch)
+    script = tmp_path / "flood.py"
+    script.write_bytes(
+        b"import sys, time\nout = getattr(sys, sys.argv[1])\n"
+        b"while True:\n    out.write('y' * 10000)\n    out.flush()\n    time.sleep(0.01)\n"
+    )
+    started = time.monotonic()
+
+    command = f"'{Path(sys.executable).as_posix()}' '{script.as_posix()}' {stream}"
+
+    result = ShellRunner(tmp_path, threading.Event())(command, 120)
+
+    assert result["exit_code"] == OUTPUT_LIMIT_EXIT_CODE
+    assert "output passed" in result["stderr"] and "limit" in result["stderr"]
+    assert result[stream].startswith("y")
+    assert time.monotonic() - started < 60
+    assert cap < max(sizes) < cap + 2_000_000
+
+
+@POSIX_ONLY
+def test_a_flood_at_full_speed_is_stopped_with_the_output_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_target, "MAX_STREAM_BYTES", 1_000_000)
+
+    result = ShellRunner(tmp_path, threading.Event())("yes", 120)
+
+    assert result["exit_code"] == OUTPUT_LIMIT_EXIT_CODE
+    assert "limit" in result["stderr"]
+
+
 class _Response:
     def __init__(self, status, body=None):
         self.status_code = status
@@ -329,7 +421,7 @@ class _Client:
         self.connects.append((instance, payload))
         return {"server_id": 5, "hostname": "altaf-laptop"}
 
-    def local_machine_heartbeat(self, server_id, instance):
+    def local_machine_heartbeat(self, server_id, instance, timeout=None):
         if self.heartbeat_errors:
             raise self.heartbeat_errors.pop(0)
         return {}
@@ -391,6 +483,74 @@ def test_a_session_skyportal_lost_is_opened_again_by_the_heartbeat(tmp_path, mon
 
     assert len(client.connects) == 2
     assert {instance for instance, _ in client.connects} == {target.instance}
+
+
+def test_heartbeats_start_on_a_fixed_cadence_however_long_each_takes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    monkeypatch.setattr(local_target, "HEARTBEAT_SECONDS", 0.4)
+    beats = []
+
+    class _SlowClient(_Client):
+        def local_machine_heartbeat(self, server_id, instance, timeout=None):
+            beats.append((time.monotonic(), timeout))
+            time.sleep(0.3)
+            return {}
+
+    target = LocalTarget(_SlowClient(), tmp_path, poller_factory=_Poller)
+    target.connect()
+    deadline = time.monotonic() + 10
+    while len(beats) < 4 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    target.close()
+
+    starts = [started for started, _ in beats]
+    # 0.4 s apart; counting from the end of each 0.3 s call would be 0.7 s.
+    assert all(later - earlier < 0.55 for earlier, later in zip(starts, starts[1:], strict=False))
+    assert {timeout for _, timeout in beats} == {local_target.HEARTBEAT_TIMEOUT_SECONDS}
+
+
+def test_one_lost_heartbeat_still_lands_inside_skyportals_40_second_window():
+    # A hung beat is cut off before the next is due, so the gap between two that land is 2 x HEARTBEAT_SECONDS.
+    assert local_target.HEARTBEAT_TIMEOUT_SECONDS <= local_target.HEARTBEAT_SECONDS
+    assert 2 * local_target.HEARTBEAT_SECONDS < 40
+
+
+class _Gone:
+    """Skyportal's lease endpoint for a machine that was deleted: 404 every time."""
+
+    def __init__(self):
+        self.leases = 0
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.leases += 1
+        return _Response(404)
+
+
+def test_a_machine_removed_in_skyportal_stops_polling_and_says_how_to_reconnect(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    monkeypatch.setattr("skyportalai.agent.kubernetes.commands.POLL_SECONDS", 0.01)
+    server = _Gone()
+    shown = []
+
+    def poller(base_url, token, **options):
+        return CommandPoller(base_url, token, **{**options, "session": server})
+
+    client = _Client()
+    target = LocalTarget(client, tmp_path, poller_factory=poller, show=shown.append)
+    target.connect()
+    try:
+        [lease_thread] = [thread for thread in target._threads if thread.name == "local-command-poller"]
+        lease_thread.join(5)
+
+        assert not lease_thread.is_alive()
+        assert server.leases == 1
+        assert not target.connected
+        [line] = shown
+        assert "removed from Skyportal" in line and "/local on" in line
+    finally:
+        target.close()
+
+    assert client.disconnects == []
 
 
 def test_every_command_run_here_is_shown_with_its_chat_and_its_exit_code(tmp_path, monkeypatch):

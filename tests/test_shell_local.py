@@ -297,3 +297,86 @@ def test_a_line_from_a_worker_is_printed_above_the_prompt_the_user_is_at(tmp_pat
 
     above.assert_called_once()
     assert "▸ exit 0: git log  (chat #123)" in shell.console.file.getvalue()
+
+
+def _said(shell) -> str:
+    return " ".join(shell.console.file.getvalue().split())
+
+
+def test_the_trust_prompt_says_the_folder_is_where_commands_start_not_a_limit(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, answers=["n"])
+    shell._offer_local_target()
+
+    said = _said(shell)
+    assert "only where they start, not a limit" in said
+    assert "anything you can" in said
+    assert "runs what Skyportal sends it" in said
+    assert "home folder" not in said
+
+
+def test_the_trust_prompt_warns_when_the_folder_is_the_home_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    shell, _, _, asked = _shell(tmp_path, monkeypatch, answers=["n"])
+    shell._offer_local_target()
+
+    assert "This is your home folder" in _said(shell)
+    assert len(asked) == 1
+
+
+def test_a_filesystem_root_is_refused_without_a_trust_prompt_or_a_connection(tmp_path, monkeypatch):
+    _Target.made.clear()
+    shell, _, store, asked = _shell(tmp_path, monkeypatch, answers=["y"])
+    monkeypatch.chdir(tmp_path.anchor)
+    shell._offer_local_target()
+
+    assert asked == []
+    assert _Target.made == []
+    assert shell.local_target is None
+    assert not store.is_trusted(Path.cwd())
+    assert "root of a filesystem" in _said(shell)
+
+
+def test_a_machine_removed_in_skyportal_leaves_the_prompt_and_reconnects_with_local_on(tmp_path, monkeypatch):
+    class _Removable(_Target):
+        gone = False
+
+        @property
+        def connected(self):
+            return self.server_id is not None and not self.closed and not self.gone
+
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True, factory=_Removable)
+    shell._offer_local_target()
+    first = shell.local_target
+    shell._send_prompt("run the tests")
+    assert "local#altaf-laptop" in "".join(text for _, text in shell._prompt_fragments())
+    assert shell._bound_chats == {42}
+
+    first.gone = True
+    assert "local#" not in "".join(text for _, text in shell._prompt_fragments())
+
+    shell._cmd_local(["on"])
+
+    assert first.closed
+    assert shell.local_target is not first and shell.local_target.connected
+    assert shell._bound_chats == set()
+
+
+def test_the_idle_prompt_is_drawn_from_the_current_context_so_a_notice_redraws_it(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    seen = []
+
+    class _Idle:
+        def prompt(self, message):
+            seen.append(message)
+            raise EOFError
+
+    shell.session = _Idle()
+    shell._loop()
+
+    # A callable: prompt_toolkit calls it again on every redraw, such as after a worker's notice.
+    assert callable(seen[0])
+    assert "local#altaf-laptop" in "".join(text for _, text in seen[0]())
+    shell.local_target.closed = True
+    assert "local#" not in "".join(text for _, text in seen[0]())

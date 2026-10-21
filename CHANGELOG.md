@@ -19,15 +19,25 @@ All notable changes to this project are documented here. This project follows
 - **The agent works on your own machine, in the folder you opened.** Started in
   a folder you trust (it asks once per folder, like Claude Code), the shell
   registers this machine with Skyportal and runs the commands the agent's chat
-  queues for it, in that folder, after the approval prompt you already get.
+  queues for it. The folder is only where commands start, not a boundary: a
+  command can read or change anything you can, and the CLI won't connect from a
+  filesystem or drive root (the trust prompt warns when it is your home folder).
+  Skyportal decides what runs; the CLI asks nothing a second time and runs what
+  it is sent, so anyone holding your API key or web session, including a browser
+  turn on a chat this CLI started while it is open, can have commands run here.
   Chats started in the shell use this machine unless you pick servers;
   `/local [on|off]` shows or changes it and `/server local` selects it.
   Commands are fetched over outbound HTTPS with the in-cluster agent's command
-  loop, which now takes its endpoints, headers and the lease field as options.
-  Closing the shell stops a running command and tells Skyportal. The terminal
-  prints every command it runs here, with its chat and exit code
-  (`▸ running: git log  (chat #123)`), including those from a chat this CLI
-  started and you continue in the browser. Needs a Skyportal server with
+  loop, which now takes its endpoints, headers and the lease field as options,
+  and an optional hook for a lease answered 404. Commands run without any
+  `SKYPORTALAI_*` environment variable, so your key doesn't show in `printenv`.
+  A command that writes more than 64 MiB to stdout or stderr is stopped (exit
+  code 153). Closing the shell stops a running command and tells Skyportal;
+  Ctrl-C stops every command running here, including ones from a chat you
+  continued in the browser. The terminal prints every command it runs here,
+  with its chat and exit code (`▸ running: git log  (chat #123)`). If the
+  machine is removed in Skyportal the CLI says so once and stops polling;
+  `/local on` reconnects. Needs a Skyportal server with
   skyportal-website#3665.
 
 - `skyportalai-agent --help` prints how the agent is configured and exits.

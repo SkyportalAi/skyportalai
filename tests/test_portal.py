@@ -320,6 +320,17 @@ def test_connecting_this_machine_names_the_session_in_its_header(credential_path
     assert client.bearer_token() == "sk_test"
 
 
+def test_a_heartbeat_can_be_cut_off_sooner_than_the_clients_own_timeout(credential_path):
+    CredentialStore.save({"access_token": "sk_test", "base_url": "https://app.skyportal.ai"})
+    client = SkyportalClient("https://app.skyportal.ai", timeout=30)
+
+    with patch("skyportalai.shell.portal.urlopen", return_value=FakeResponse({})) as call:
+        client.local_machine_heartbeat(5, "session-1", timeout=10)
+        client.local_machine_heartbeat(5, "session-1")
+
+    assert [made.kwargs["timeout"] for made in call.call_args_list] == [10, 30]
+
+
 def test_create_chat_rejects_singular_and_plural_server_options(credential_path):
     client = SkyportalClient("https://app.skyportal.ai")
 

@@ -505,13 +505,14 @@ class SkyportalClient:
             "POST", "/api/v1/agent/local/connect/", json_body=body, extra_headers={"X-Agent-Instance": instance},
         )
 
-    def local_machine_heartbeat(self, server_id: int, instance: str) -> Dict[str, Any]:
-        """Tell Skyportal this session is alive, busy or not."""
+    def local_machine_heartbeat(self, server_id: int, instance: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Tell Skyportal this session is alive, busy or not; `timeout` bounds the call below the client's own."""
         return self._request(
             "POST",
             "/api/v1/agent/local/{}/heartbeat/".format(server_id),
             json_body={},
             extra_headers={"X-Agent-Instance": instance},
+            timeout=timeout,
         )
 
     def disconnect_local_machine(self, server_id: int, instance: str) -> Dict[str, Any]:
@@ -958,6 +959,7 @@ class SkyportalClient:
         body: Optional[bytes] = None,
         content_type: Optional[str] = None,
         extra_headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
@@ -983,7 +985,7 @@ class SkyportalClient:
             method=method,
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=timeout or self.timeout) as response:
                 status = response.status
                 content = response.read()
                 if status >= 300:

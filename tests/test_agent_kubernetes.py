@@ -814,6 +814,31 @@ class TestCommandPoller:
         thread.join(5)
         assert alive
 
+    def test_a_404_lease_is_a_failed_poll_the_in_cluster_agent_keeps_retrying(self):
+        session = FakeSession([FakeResponse(404)] * 3)
+        poller = self._poller(session, run=lambda argv, timeout: pytest.fail("ran"))
+
+        assert [poller.poll_once() for _ in range(3)] == [None, None, None]
+        assert len(session.calls) == 3
+
+    def test_a_404_lease_calls_the_hook_once_and_ends_polling(self, monkeypatch):
+        monkeypatch.setattr("skyportalai.agent.kubernetes.commands.POLL_SECONDS", 0.01)
+        gone = []
+        session = FakeSession([FakeResponse(404)] * 5)
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=threading.Event(),
+            on_not_found=lambda: gone.append(True),
+        )
+        thread = threading.Thread(target=poller.run_forever, daemon=True)
+        thread.start()
+        thread.join(5)
+
+        assert not thread.is_alive()
+        assert gone == [True]
+        assert len(session.calls) == 1
+        assert poller.poll_once() is None and len(session.calls) == 1
+
 
 class TestConfigAndEntrypoint:
     def test_role_defaults_to_the_experiment_scanners(self):

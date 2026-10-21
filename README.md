@@ -186,21 +186,39 @@ Run `skyportalai --help` for the complete command reference.
 
 Open `skyportalai` in a project folder and the agent can work right there, the
 way Claude Code does: the model runs on Skyportal and the commands run in your
-terminal, in that folder. The first time, the CLI asks whether you trust the
-folder. Say yes and new chats run on this machine; `/local` shows it, `/local
+terminal, starting in that folder. The first time, the CLI asks whether you trust
+the folder. Say yes and new chats run on this machine; `/local` shows it, `/local
 off` stops it, and `/server local` adds it to another chat's scope.
 
-Every command passes the same approval rules as on any host, and the approval
-prompt you already see is the only one. Nothing connects into your machine: the
-CLI fetches its commands over outbound HTTPS, and only while it is open. It
-sends the repository's remote (without credentials) and branch, never a full
-path. kubectl and helm don't run here, because your kubeconfig can point at any
-cluster; add the cluster itself instead.
+The trusted folder is only where commands start, not a boundary. A command can
+`cd` anywhere and read or change anything you can: your files, your git
+credentials, your cloud logins, the CLI's own saved sign-in. Only trust a folder
+whose code you trust. The CLI won't connect from a filesystem or drive root
+(`/`, `C:\`), and the trust prompt adds a warning when the folder is your home
+folder.
+
+Skyportal decides what runs: every command passes the same approval rules as on
+any host, and the CLI asks nothing a second time. The CLI runs what Skyportal
+sends it. While it is open, anyone holding your API key or your web session can
+have commands run here, including a browser turn on a chat this CLI started.
+Nothing connects into your machine: the CLI fetches its commands over outbound
+HTTPS, and only while it is open. It sends the repository's remote (without
+credentials) and branch, never a full path. kubectl and helm don't run here,
+because your kubeconfig can point at any cluster; add the cluster itself
+instead.
 
 The terminal prints every command it runs here, with the chat it came from and
 its exit code, for example `▸ running: git log  (chat #123)`. A chat this CLI
 started can also be continued from your browser while the CLI is open, and its
-commands still show up here.
+commands still show up here. Ctrl-C stops every command running here, including
+ones started from a chat you continued in the browser.
+
+Commands run without any `SKYPORTALAI_*` environment variable, so the key you
+signed in with doesn't show in `printenv`; a command can still read the files
+you can read, the CLI's saved sign-in included. A command that writes more than
+64 MiB to stdout or stderr is stopped (exit code 153) and the chat is told why.
+If the machine is removed in Skyportal, the CLI says so once, stops fetching
+commands and drops `local#` from the prompt; reconnect it with `/local on`.
 
 ## Kubernetes clusters
 

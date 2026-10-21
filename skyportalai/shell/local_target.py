@@ -6,8 +6,11 @@ process and leases the commands Skyportal queues for that session over outbound 
 same loop the in-cluster agent uses. Each one runs here, in this folder, and its output goes
 back to the chat.
 
-The CLI only executes. It decides nothing and asks nothing a second time: the approval card
-the shell already shows is the prompt, and Skyportal's gate decides what reaches the queue.
+Skyportal decides what runs: its gate decides what reaches the queue, and the CLI asks
+nothing a second time. The CLI runs what Skyportal sends it, so anyone holding the user's API
+key or web session, including a browser turn on a chat this CLI started while it is open, can
+have commands run here. Every command is printed in the terminal. The trusted folder is only
+where commands start, not a boundary: a command can read or change anything the user can.
 What leaves this machine about it: a random machine id, its name, its OS and shell, and the
 repository's remote and branch with the folder's path inside it. Never an absolute path.
 """
@@ -29,7 +32,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -46,18 +49,27 @@ logger = logging.getLogger(__name__)
 
 LEASE_PATH = "/api/v1/agent/local/{server_id}/commands/lease/"
 RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
-# Skyportal takes a CLI silent for 40 s as closed and withdraws its commands, so this stays well inside it.
+# Skyportal takes a CLI silent for 40 s as closed and withdraws its commands. A beat starts every
+# HEARTBEAT_SECONDS whatever the last one took, and one that hangs is cut off after
+# HEARTBEAT_TIMEOUT_SECONDS, so one lost beat still lands inside the window.
 HEARTBEAT_SECONDS = 15
+HEARTBEAT_TIMEOUT_SECONDS = 10
 # Kept per stream: the head and the tail, where a failing build says why. The model reads less than this.
 OUTPUT_HEAD_BYTES = 30_000
 OUTPUT_TAIL_BYTES = 70_000
+# Written to disk per stream, so a command that never stops printing can't fill it before its timeout.
+MAX_STREAM_BYTES = 64 * 1024 * 1024
 TIMEOUT_EXIT_CODE = 124
 STOPPED_EXIT_CODE = 130
+# 128 + SIGXFSZ, what a shell reports for a process that exceeded its file size limit.
+OUTPUT_LIMIT_EXIT_CODE = 153
 _STOPPED_BECAUSE = {
     "closed": "Stopped: the skyportalai CLI was closed.",
     "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
 }
 _GIT_SECONDS = 5
+# How often a running command is checked for its timeout, a stop and the size of its output.
+_POLL_SECONDS = 0.1
 # How much of a command the terminal shows when it starts and ends: one line, never the whole script.
 _SHOWN_COMMAND_CHARS = 120
 _CREATE_SUSPENDED = 0x00000004
@@ -132,6 +144,19 @@ def machine_name() -> str:
         return "my-machine"
 
 
+def is_filesystem_root(folder: Path) -> bool:
+    """`/`, a drive root like `C:\\`, or a network share's root: a folder with nothing above it."""
+    folder = folder.resolve()
+    return folder.parent == folder
+
+
+def is_home_folder(folder: Path) -> bool:
+    try:
+        return folder.resolve() == Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
 class TrustStore:
     """The folders the user said SARA may run commands in. A trusted folder covers everything below it."""
 
@@ -149,6 +174,9 @@ class TrustStore:
     def is_trusted(self, folder: Path) -> bool:
         folder = folder.resolve()
         for trusted in self._folders():
+            # A root trusted before roots were refused would cover every folder on the disk.
+            if is_filesystem_root(Path(trusted)):
+                continue
             try:
                 folder.relative_to(Path(trusted))
             except ValueError:
@@ -267,6 +295,16 @@ def platform_name() -> str:
     return {"Darwin": "macOS"}.get(system, system)
 
 
+def _child_env() -> Dict[str, str]:
+    """This process's environment without the CLI's own settings and credentials, which a command would print."""
+    # Upper-cased: Windows names are case-insensitive.
+    return {name: value for name, value in os.environ.items() if not name.upper().startswith(_env.PREFIX)}
+
+
+def _stream_bytes(file: Any) -> int:
+    return os.fstat(file.fileno()).st_size
+
+
 def _read_bounded(file: Any) -> str:
     """A temp file's output, reading no more than its head and tail: a command can print gigabytes."""
     size = file.seek(0, os.SEEK_END)
@@ -383,13 +421,14 @@ class ShellRunner:
                     return {"exit_code": STOPPED_EXIT_CODE, "stdout": "", "stderr": _STOPPED_BECAUSE["closed"]}
                 try:
                     tree = _ProcessTree(
-                        [*self._shell, command], cwd=self.folder, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                        [*self._shell, command], cwd=self.folder, env=_child_env(),
+                        stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                     )
                 except OSError as error:
                     return {"exit_code": 127, "stdout": "", "stderr": f"Could not start {self._shell[0]}: {error}"}
                 self._running.add(tree)
             try:
-                self._wait(tree, deadline)
+                self._wait(tree, deadline, (out, err))
             finally:
                 with self._lock:
                     self._running.discard(tree)
@@ -400,15 +439,18 @@ class ShellRunner:
         if tree.stopped_because == "timeout":
             exit_code = TIMEOUT_EXIT_CODE
             stderr += f"\nStopped after its {int(timeout)}s timeout."
+        elif tree.stopped_because == "output":
+            exit_code = OUTPUT_LIMIT_EXIT_CODE
+            stderr += f"\nStopped: its output passed the {MAX_STREAM_BYTES // (1024 * 1024)} MiB limit on one stream."
         elif tree.stopped_because in _STOPPED_BECAUSE:
             exit_code = STOPPED_EXIT_CODE
             stderr += "\n" + _STOPPED_BECAUSE[tree.stopped_because]
         return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
 
-    def _wait(self, tree: _ProcessTree, deadline: float) -> None:
+    def _wait(self, tree: _ProcessTree, deadline: float, streams: Tuple[Any, ...]) -> None:
         while True:
             try:
-                tree.process.wait(timeout=0.5)
+                tree.process.wait(timeout=_POLL_SECONDS)
                 return
             except subprocess.TimeoutExpired:
                 pass
@@ -416,6 +458,8 @@ class ShellRunner:
                 tree.kill("closed")
             elif time.monotonic() >= deadline:
                 tree.kill("timeout")
+            elif any(_stream_bytes(stream) > MAX_STREAM_BYTES for stream in streams):
+                tree.kill("output")
 
 
 def _command_label(command: object, chat_id: object) -> str:
@@ -452,10 +496,12 @@ class LocalTarget:
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
+    # Skyportal answered a lease with 404: the machine was removed there.
+    _gone: bool = False
 
     @property
     def connected(self) -> bool:
-        return self.server_id is not None and not self._stop.is_set()
+        return self.server_id is not None and not self._stop.is_set() and not self._gone
 
     @property
     def session(self) -> Dict[str, Any]:
@@ -483,6 +529,7 @@ class LocalTarget:
             extra_headers={"User-Agent": f"skyportalai-cli/{__version__}", "X-Agent-Instance": self.instance},
             command_field=None,
             thread_prefix="local-command",
+            on_not_found=self._machine_removed,
         )
         for name, target in (("local-command-poller", poller.run_forever), ("local-heartbeat", self._beat)):
             thread = threading.Thread(target=target, name=name, daemon=True)
@@ -519,11 +566,18 @@ class LocalTarget:
             raise PortalError("Skyportal did not return this machine's id") from error
         self.hostname = str(connected.get("hostname") or machine_name())
 
+    def _machine_removed(self) -> None:
+        """Skyportal no longer has this machine: stop polling, drop out of the prompt and say how to reconnect."""
+        self._gone = True
+        self._tell("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
+
     def _beat(self) -> None:
         """Tell Skyportal this CLI is alive while it runs a long command; open the session again if it was lost."""
-        while not self._stop.wait(HEARTBEAT_SECONDS):
+        next_at = time.monotonic() + HEARTBEAT_SECONDS
+        while not self._stop.wait(max(0.0, next_at - time.monotonic())) and not self._gone:
+            next_at = time.monotonic() + HEARTBEAT_SECONDS
             try:
-                self.client.local_machine_heartbeat(self.server_id, self.instance)
+                self.client.local_machine_heartbeat(self.server_id, self.instance, timeout=HEARTBEAT_TIMEOUT_SECONDS)
             except PortalError as error:
                 if error.code == "session_closed":
                     self._reopen()
@@ -548,7 +602,7 @@ class LocalTarget:
         # Here, not on the workers' threads: the CLI may exit as soon as this returns, and they die with it.
         if self._runner is not None:
             self._runner.stop_all("closed")
-        if self.server_id is None:
+        if self.server_id is None or self._gone:
             return
         try:
             self.client.disconnect_local_machine(self.server_id, self.instance)

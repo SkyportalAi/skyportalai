@@ -31,7 +31,7 @@ from rich.text import Text
 from skyportalai import _env
 
 from . import agent_setup
-from .local_target import LocalTarget, TrustStore
+from .local_target import LocalTarget, TrustStore, is_filesystem_root, is_home_folder
 from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
@@ -338,7 +338,8 @@ class InteractiveShell:
     def _loop(self) -> None:
         while self.running:
             try:
-                line = self.session.prompt(self._prompt_fragments())
+                # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
+                line = self.session.prompt(self._prompt_fragments)
             except KeyboardInterrupt:
                 self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
                 continue
@@ -1403,6 +1404,13 @@ class InteractiveShell:
             return
         self._local_offered = True
         folder = Path.cwd()
+        if is_filesystem_root(folder):
+            self.console.print(
+                "[yellow]Skyportal won't run commands from {}: it is the root of a filesystem, so trusting it "
+                "would mean trusting everything on it. Open skyportalai in a project folder to let "
+                "Skyportal run commands on this machine.[/yellow]\n".format(escape(str(folder)))
+            )
+            return
         if not self._trust_store.is_trusted(folder):
             if not self._ask_to_trust(folder):
                 self.console.print(
@@ -1414,17 +1422,27 @@ class InteractiveShell:
 
     def _ask_to_trust(self, folder: Path) -> bool:
         self._print_section("Do you trust the files in this folder?", style="yellow")
+        self.console.print("[bold]{}[/bold]\n".format(escape(str(folder))))
+        if is_home_folder(folder):
+            self.console.print(
+                "[yellow]This is your home folder. Trusting it covers every folder inside it, "
+                "your documents, SSH keys and cloud logins included.[/yellow]\n"
+            )
         self.console.print(
-            "[bold]{}[/bold]\n\n"
-            "Skyportal can run the commands you approve here, on this machine, with your access: "
-            "your files, your git credentials, your cloud logins. Commands that change things or "
-            "touch secrets ask you first, as on any host, unless your approval mode is autoapprove. "
-            "Only trust a folder whose code you trust.\n".format(escape(str(folder)))
+            "Skyportal can run commands on this machine, with your access: your files, your git "
+            "credentials, your cloud logins. This folder is only where they start, not a limit: a "
+            "command can read or change anything you can, anywhere on this machine. Commands that "
+            "change things or touch secrets ask you first, as on any host, unless your approval mode "
+            "is autoapprove. While the CLI is open it runs what Skyportal sends it, and prints every "
+            "command here. Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
         return self._confirm("Trust this folder and let Skyportal run commands here? [y/N] ")
 
     def _connect_local_target(self, folder: Path) -> None:
+        # A target Skyportal removed is still held here; chats bound to its session can't use the new one.
+        self._close_local_target()
+        self._bound_chats.clear()
         target = self._local_target_factory(self.client, folder)
         target.show = self._print_from_worker
         try:
@@ -1438,9 +1456,8 @@ class InteractiveShell:
             return
         self.local_target = target
         self.console.print(
-            "[green]✓ This machine is connected:[/green] {}. Approved commands run in this folder.\n".format(
-                escape(target.describe())
-            )
+            "[green]✓ This machine is connected:[/green] {}. "
+            "Commands start in this folder, but can reach anything you can.\n".format(escape(target.describe()))
         )
 
     def _print_from_worker(self, line: str) -> None:

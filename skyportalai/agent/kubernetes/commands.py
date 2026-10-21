@@ -81,12 +81,17 @@ class CommandPoller:
         # The lease field the runner is handed; None hands it the whole lease.
         command_field: str | None = "argv",
         thread_prefix: str = "kube-command",
+        # Called once, and polling ends, when a lease is answered 404: the target is gone. None keeps
+        # polling and logging each failure, as the in-cluster agent does.
+        on_not_found: Callable[[], None] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._lease_path = lease_path
         self._result_path = result_path
         self._command_field = command_field
         self._thread_prefix = thread_prefix
+        self._on_not_found = on_not_found
+        self._gone = False
         # requests doesn't promise a Session is safe to share across threads. Leases use this
         # one, on the polling thread only; each command's thread posts its result on a session
         # of its own from session_factory.
@@ -104,7 +109,7 @@ class CommandPoller:
         self._slots = threading.BoundedSemaphore(COMMAND_SLOTS)
 
     def run_forever(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop.is_set() and not self._gone:
             if not self._slots.acquire(timeout=POLL_SECONDS):
                 continue  # every slot is busy; look at the stop event again
             if self._start_next() is None:
@@ -119,7 +124,7 @@ class CommandPoller:
     def _start_next(self) -> threading.Thread | None:
         """Lease a command for the slot the caller holds and start it; the slot is freed here if none starts."""
         try:
-            command = None if self._stop.is_set() else self._lease()
+            command = None if self._stop.is_set() or self._gone else self._lease()
             if command is not None:
                 worker = threading.Thread(
                     target=self._work, args=(command,), name=f"{self._thread_prefix}-{command.id}", daemon=True
@@ -136,6 +141,10 @@ class CommandPoller:
     def _lease(self) -> _LeasedCommand | None:
         resp = self.session.post(self.base_url + self._lease_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         if resp.status_code == 204:
+            return None
+        if resp.status_code == 404 and self._on_not_found is not None:
+            self._gone = True
+            self._on_not_found()
             return None
         resp.raise_for_status()
         command = resp.json()
