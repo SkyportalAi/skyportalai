@@ -89,8 +89,11 @@ class Chat:
     def reasoning(self, *, limit: int = 100) -> dict:
         return self._client.chat.get_reasoning(self.chat_id, limit=limit)
 
-    def plan(self) -> dict:
+    def plan(self) -> dict | None:
         return self._client.chat.get_plan(self.chat_id)
+
+    def plans(self) -> dict:
+        return self._client.chat.get_plans(self.chat_id)
 
     def evaluations(self, *, evaluator_type: str | None = None) -> dict:
         return self._client.chat.get_evaluations(self.chat_id, evaluator_type=evaluator_type)
