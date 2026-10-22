@@ -5,9 +5,7 @@ server. This loop (cluster role only) picks each one up over outbound HTTPS and
 runs it on a thread of its own, up to COMMAND_SLOTS at a time. The command is
 checked against the read-only allowlist here as well as on the server.
 
-The skyportalai CLI reuses this loop to run the commands queued for the user's own
-machine (skyportal-website#3665), with its own endpoints, credential and runner; the
-lease, the slots and the result retries until report_by are the same.
+The skyportalai CLI reuses this loop for the user's own machine (skyportal-website#3665).
 """
 
 from __future__ import annotations
@@ -56,7 +54,7 @@ AGENT_CAPABILITIES = "command-timeouts"
 class _LeasedCommand:
     id: int
     # What the runner is handed: kubectl's argv here; the CLI's local machine takes the whole lease.
-    argv: object
+    payload: object
     timeout: float
     # When the server stops taking the result, on the poller's clock; None if it didn't say.
     report_deadline: float | None
@@ -81,17 +79,24 @@ class CommandPoller:
         # The lease field the runner is handed; None hands it the whole lease.
         command_field: str | None = "argv",
         thread_prefix: str = "kube-command",
-        # Called once, and polling ends, when a lease is answered 404: the target is gone. None keeps
-        # polling and logging each failure, as the in-cluster agent does.
-        on_not_found: Callable[[], None] | None = None,
+        # Each is called once, and polling ends, when a lease is answered 410 (the target is gone) or
+        # 401/403 (the credential is refused). None keeps polling and logging, as the in-cluster agent does.
+        on_gone: Callable[[], None] | None = None,
+        on_refused: Callable[[], None] | None = None,
+        # After repeated failures the wait grows from POLL_SECONDS up to this, and resets on a good poll.
+        # None keeps the fixed POLL_SECONDS wait.
+        max_backoff_seconds: float | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._lease_path = lease_path
         self._result_path = result_path
         self._command_field = command_field
         self._thread_prefix = thread_prefix
-        self._on_not_found = on_not_found
-        self._gone = False
+        self._on_gone = on_gone
+        self._on_refused = on_refused
+        self._max_backoff = max_backoff_seconds
+        self._ended = False
+        self._failures = 0
         # requests doesn't promise a Session is safe to share across threads. Leases use this
         # one, on the polling thread only; each command's thread posts its result on a session
         # of its own from session_factory.
@@ -109,11 +114,16 @@ class CommandPoller:
         self._slots = threading.BoundedSemaphore(COMMAND_SLOTS)
 
     def run_forever(self) -> None:
-        while not self._stop.is_set() and not self._gone:
+        while not self._stop.is_set() and not self._ended:
             if not self._slots.acquire(timeout=POLL_SECONDS):
                 continue  # every slot is busy; look at the stop event again
             if self._start_next() is None:
-                self._stop.wait(POLL_SECONDS)
+                self._stop.wait(self._idle_wait())
+
+    def _idle_wait(self) -> float:
+        if self._max_backoff is None or not self._failures:
+            return POLL_SECONDS
+        return min(POLL_SECONDS * 2 ** min(self._failures - 1, 16), self._max_backoff)
 
     def poll_once(self) -> threading.Thread | None:
         """Start the next queued command if a slot is free; returns the thread running it."""
@@ -124,7 +134,8 @@ class CommandPoller:
     def _start_next(self) -> threading.Thread | None:
         """Lease a command for the slot the caller holds and start it; the slot is freed here if none starts."""
         try:
-            command = None if self._stop.is_set() or self._gone else self._lease()
+            command = None if self._stop.is_set() or self._ended else self._lease()
+            self._failures = 0
             if command is not None:
                 worker = threading.Thread(
                     target=self._work, args=(command,), name=f"{self._thread_prefix}-{command.id}", daemon=True
@@ -132,8 +143,10 @@ class CommandPoller:
                 worker.start()
                 return worker
         except requests.RequestException as exc:
+            self._failures += 1
             logger.warning("Command poll failed: %s", type(exc).__name__)
         except Exception:  # noqa: BLE001 — /healthz can't see this thread, so it must not die
+            self._failures += 1
             logger.exception("Command poll failed")
         self._slots.release()
         return None
@@ -142,9 +155,10 @@ class CommandPoller:
         resp = self.session.post(self.base_url + self._lease_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         if resp.status_code == 204:
             return None
-        if resp.status_code == 404 and self._on_not_found is not None:
-            self._gone = True
-            self._on_not_found()
+        hook = self._ending_hook(resp.status_code)
+        if hook is not None:
+            self._ended = True
+            hook()
             return None
         resp.raise_for_status()
         command = resp.json()
@@ -154,6 +168,11 @@ class CommandPoller:
             return None
         handed = command if self._command_field is None else command.get(self._command_field)
         return _LeasedCommand(command_id, handed, _command_timeout(command), self._report_deadline(command))
+
+    def _ending_hook(self, status: int) -> Callable[[], None] | None:
+        if status == 410:
+            return self._on_gone
+        return self._on_refused if status in (401, 403) else None
 
     def _report_deadline(self, command: dict) -> float | None:
         try:
@@ -166,7 +185,7 @@ class CommandPoller:
         try:
             # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
             # one still gets a result back and chat fails fast instead of waiting it out.
-            payload = _result_payload(self._run(command.argv, command.timeout))
+            payload = _result_payload(self._run(command.payload, command.timeout))
             with self._session_factory() as session:
                 self._post_result(session, command, payload)
         except Exception:

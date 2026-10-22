@@ -16,29 +16,34 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
-- **The agent works on your own machine, in the folder you opened.** Started in
-  a folder you trust (it asks once per folder, like Claude Code), the shell
-  registers this machine with Skyportal and runs the commands the agent's chat
-  queues for it. The folder is only where commands start, not a boundary: a
-  command can read or change anything you can, and the CLI won't connect from a
-  filesystem or drive root (the trust prompt warns when it is your home folder).
-  Skyportal decides what runs; the CLI asks nothing a second time and runs what
-  it is sent, so anyone holding your API key or web session, including a browser
-  turn on a chat this CLI started while it is open, can have commands run here.
-  Chats started in the shell use this machine unless you pick servers;
-  `/local [on|off]` shows or changes it and `/server local` selects it.
-  Commands are fetched over outbound HTTPS with the in-cluster agent's command
-  loop, which now takes its endpoints, headers and the lease field as options,
-  and an optional hook for a lease answered 404. Commands run without any
-  `SKYPORTALAI_*` environment variable, so your key doesn't show in `printenv`.
-  A command that writes more than 64 MiB to stdout or stderr is stopped (exit
-  code 153). Closing the shell stops a running command and tells Skyportal;
-  Ctrl-C stops every command running here, including ones from a chat you
-  continued in the browser. The terminal prints every command it runs here,
-  with its chat and exit code (`▸ running: git log  (chat #123)`). If the
-  machine is removed in Skyportal the CLI says so once and stops polling;
-  `/local on` reconnects. Needs a Skyportal server with
-  skyportal-website#3665.
+- **The agent works on your own machine, starting in the folder you opened.**
+  Started in a folder you trust (it asks once per folder, like Claude Code, and
+  trust covers that folder and everything inside it), the shell registers this
+  machine with Skyportal and runs the commands the agent's chat queues for it.
+  The folder is only where commands start, not a boundary: a command can read or
+  change anything you can, and the CLI won't connect from a filesystem or drive
+  root (the trust prompt warns when it is your home folder). Skyportal decides
+  what runs; the CLI asks nothing a second time and runs what it is sent, so
+  anyone holding your API key or web session, including a browser turn on a chat
+  this CLI started while it is open, can have commands run here. Commands run in
+  bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
+  PowerShell 5.1. Chats started in the shell use this machine unless you pick
+  servers (`/server auto` doesn't change that); `/local [on|off]` shows or
+  changes it and `/server local` selects it. Commands are fetched over outbound
+  HTTPS with the in-cluster agent's command loop, which now takes its endpoints,
+  headers and the lease field as options, plus optional hooks for a lease
+  answered 410 (removed) or 401/403 (key refused) and an optional growing wait
+  after failed polls. Commands run without any `SKYPORTALAI_*` or legacy
+  `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
+  command that writes more than 64 MiB to stdout or stderr is stopped (exit code
+  153). Closing the shell stops a running command and tells Skyportal; Ctrl-C,
+  at the prompt or during a turn, stops every command running here, including
+  ones from a chat you continued in the browser. The terminal prints every
+  command it runs here, with its chat and exit code (`▸ running: git log  (chat
+  #123)`), up to 500 characters of it with the rest counted and control
+  characters written out. If the machine is removed in Skyportal or the key is
+  refused, the CLI says so once and stops polling; `/local on` reconnects. Needs
+  a Skyportal server with skyportal-website#3665.
 
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.

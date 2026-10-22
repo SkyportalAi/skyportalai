@@ -184,13 +184,14 @@ Run `skyportalai --help` for the complete command reference.
 
 ## Your own machine
 
-Open `skyportalai` in a project folder and the agent can work right there, the
-way Claude Code does: the model runs on Skyportal and the commands run in your
-terminal, starting in that folder. The first time, the CLI asks whether you trust
-the folder. Say yes and new chats run on this machine; `/local` shows it, `/local
-off` stops it, and `/server local` adds it to another chat's scope.
+Open `skyportalai` in a project folder and the agent can work on this machine,
+the way Claude Code does: the model runs on Skyportal and the commands run in
+your terminal. The first time, the CLI asks whether you trust the folder, and
+trust covers that folder and everything inside it. Say yes and new chats run on
+this machine, `/server auto` included; `/local` shows it, `/local off` stops it,
+and `/server local` adds it to another chat's scope.
 
-The trusted folder is only where commands start, not a boundary. A command can
+A trusted folder is only where commands start, not a boundary. A command can
 `cd` anywhere and read or change anything you can: your files, your git
 credentials, your cloud logins, the CLI's own saved sign-in. Only trust a folder
 whose code you trust. The CLI won't connect from a filesystem or drive root
@@ -207,18 +208,29 @@ credentials) and branch, never a full path. kubectl and helm don't run here,
 because your kubeconfig can point at any cluster; add the cluster itself
 instead.
 
-The terminal prints every command it runs here, with the chat it came from and
-its exit code, for example `▸ running: git log  (chat #123)`. A chat this CLI
-started can also be continued from your browser while the CLI is open, and its
-commands still show up here. Ctrl-C stops every command running here, including
-ones started from a chat you continued in the browser.
+Commands run in `bash`. On Windows that is the `bash` on your PATH unless it is
+WSL's (System32's, or the Store's `WindowsApps` alias), then the bash that comes
+with Git for Windows, and without either Windows PowerShell 5.1, which can't run
+`a && b`.
 
-Commands run without any `SKYPORTALAI_*` environment variable, so the key you
-signed in with doesn't show in `printenv`; a command can still read the files
-you can read, the CLI's saved sign-in included. A command that writes more than
-64 MiB to stdout or stderr is stopped (exit code 153) and the chat is told why.
-If the machine is removed in Skyportal, the CLI says so once, stops fetching
-commands and drops `local#` from the prompt; reconnect it with `/local on`.
+The terminal prints every command it runs here, with the chat it came from and
+its exit code, for example `▸ running: git log  (chat #123)`. A command is shown
+as one line of up to 500 characters, with `(+N more characters)` after it when
+it is longer, and a character a terminal would act on is written out (`\x1b`,
+`\n`), so what you read is what runs. A chat this CLI started can also be
+continued from your browser while the CLI is open, and its commands still show
+up here. Ctrl-C stops every command running here, at the prompt or while a turn
+runs, including ones started from a chat you continued in the browser.
+
+Commands run without any `SKYPORTALAI_*` (or legacy `SKYPORTAL_*`) environment
+variable, so the key you signed in with doesn't show in `printenv`; a command can
+still read the files you can read, the CLI's saved sign-in included. A command
+that writes more than 64 MiB to stdout or stderr is stopped (exit code 153) and
+the chat is told why. If Skyportal removes the machine, or refuses the CLI's key,
+the CLI says so once, stops fetching commands and drops `local#` from the prompt:
+reconnect with `/local on` (after `/login`, for a refused key). While Skyportal
+can't be reached the CLI keeps trying, waiting longer between tries, up to 30
+seconds.
 
 ## Kubernetes clusters
 

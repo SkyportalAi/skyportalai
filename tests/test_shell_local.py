@@ -1,7 +1,9 @@
 """The shell connects this machine in a trusted folder and binds its chats to it (skyportal-website#3665)."""
 
+import http.client
 import os
 import signal
+import ssl
 import time
 from io import StringIO
 from pathlib import Path
@@ -254,11 +256,12 @@ def test_closing_the_terminal_window_disconnects_this_machine(tmp_path, monkeypa
             time.sleep(1)
 
     shell.session = _HangUp()
+    before = signal.getsignal(signal.SIGHUP)  # SIG_IGN under nohup, SIG_DFL otherwise
     with pytest.raises(SystemExit):
         shell.run()
 
     assert _Target.made[-1].closed
-    assert signal.getsignal(signal.SIGHUP) is signal.SIG_DFL
+    assert signal.getsignal(signal.SIGHUP) == before
 
 
 def test_the_real_entry_point_wires_this_machine():
@@ -308,8 +311,9 @@ def test_the_trust_prompt_says_the_folder_is_where_commands_start_not_a_limit(tm
     shell._offer_local_target()
 
     said = _said(shell)
-    assert "only where they start, not a limit" in said
+    assert "starts in this folder, but that is not a limit" in said
     assert "anything you can" in said
+    assert "this folder and everything inside it" in said
     assert "runs what Skyportal sends it" in said
     assert "home folder" not in said
 
@@ -380,3 +384,149 @@ def test_the_idle_prompt_is_drawn_from_the_current_context_so_a_notice_redraws_i
     assert "local#altaf-laptop" in "".join(text for _, text in seen[0]())
     shell.local_target.closed = True
     assert "local#" not in "".join(text for _, text in seen[0]())
+
+
+class _Interrupted:
+    """A prompt that is interrupted once, then ends the shell."""
+
+    def __init__(self):
+        self.asked = 0
+
+    def prompt(self, _message):
+        self.asked += 1
+        raise KeyboardInterrupt if self.asked == 1 else EOFError
+
+
+@pytest.mark.parametrize(
+    ("running", "said", "not_said"),
+    [
+        (2, "Stopped 2 commands running on this machine", "Press Ctrl-D"),
+        (1, "Stopped 1 command running on this machine", "Press Ctrl-D"),
+        (0, "Press Ctrl-D", "Stopped"),
+    ],
+)
+def test_ctrl_c_at_the_idle_prompt_stops_what_runs_on_this_machine(tmp_path, monkeypatch, running, said, not_said):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    shell.local_target.interrupt = lambda: running
+    shell.session = _Interrupted()
+
+    shell._loop()
+
+    assert said in _said(shell)
+    assert not_said not in _said(shell)
+
+
+def test_ctrl_c_at_the_idle_prompt_without_this_machine_keeps_the_old_message(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, factory=None)
+    shell.session = _Interrupted()
+
+    shell._loop()
+
+    assert "Press Ctrl-D or type /exit" in _said(shell)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionResetError("connection reset"),
+        http.client.RemoteDisconnected("closed without a response"),
+        ssl.SSLError("handshake failed"),
+        OSError("network unreachable"),
+        ValueError("odd"),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_a_failure_connecting_this_machine_never_aborts_the_shell(tmp_path, monkeypatch, error):
+    class _Dropped(_Target):
+        def connect(self):
+            raise error
+
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True, factory=_Dropped)
+
+    shell.run()
+
+    said = _said(shell)
+    assert shell.local_target is None
+    assert "Could not connect this machine" in said and "/local on" in said
+
+
+def test_a_factory_that_fails_never_aborts_the_shell(tmp_path, monkeypatch):
+    def broken(client, folder):
+        raise RuntimeError("no target for you")
+
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True, factory=broken)
+
+    shell.run()
+
+    assert shell.local_target is None
+    assert "Could not connect this machine" in _said(shell)
+
+
+def test_a_folder_that_no_longer_exists_is_not_a_crash(tmp_path, monkeypatch):
+    _Target.made.clear()
+    shell, _, _, asked = _shell(tmp_path, monkeypatch, answers=["y"])
+
+    def gone(cls):
+        raise FileNotFoundError("the current folder was deleted")
+
+    monkeypatch.setattr(Path, "cwd", classmethod(gone))
+    shell._offer_local_target()
+
+    assert asked == [] and _Target.made == []
+    assert "no longer exists" in _said(shell)
+
+
+def test_a_trust_choice_that_cannot_be_saved_still_connects_for_this_session(tmp_path, monkeypatch):
+    blocker = tmp_path / "blocked"
+    blocker.write_text("")
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, answers=["y"])
+    shell._trust_store = TrustStore(blocker / "trusted.json")
+
+    shell._offer_local_target()
+
+    assert shell.local_target is not None and shell.local_target.connected
+    assert "only until you leave the shell" in _said(shell)
+    assert shell._trust_store.is_trusted(tmp_path)
+
+
+def test_server_auto_says_new_chats_still_start_on_this_machine(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+
+    shell._cmd_server(["auto"])
+
+    assert "New chats still start on this machine" in _said(shell)
+    assert "/local off" in _said(shell)
+
+
+def test_server_auto_without_this_machine_says_nothing_about_it(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, factory=None)
+
+    shell._cmd_server(["auto"])
+
+    assert "Server selection set to automatic" in _said(shell)
+    assert "this machine" not in _said(shell)
+
+
+def test_a_line_from_a_worker_falls_back_to_a_direct_print_when_the_prompts_loop_closed(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+
+    def closed(_callback):
+        raise RuntimeError("Event loop is closed")
+
+    loop = SimpleNamespace(call_soon_threadsafe=closed)
+    shell.session = SimpleNamespace(app=SimpleNamespace(is_running=True, loop=loop))
+
+    shell._print_from_worker("▸ exit 0: git log  (chat #123)")
+
+    assert "▸ exit 0: git log  (chat #123)" in shell.console.file.getvalue()
+
+
+def test_a_line_from_a_worker_never_carries_a_terminal_escape(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+
+    shell._print_from_worker("▸ running: echo \x1b[2K\x1b]0;title\x07evil")
+
+    assert "\x1b" not in shell.console.file.getvalue() and "\x07" not in shell.console.file.getvalue()
+    assert "evil" in shell.console.file.getvalue()

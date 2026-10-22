@@ -106,12 +106,10 @@ COMMANDS: Dict[str, CommandInfo] = {
 
 @contextmanager
 def _ending_on_hangup() -> Iterator[None]:
-    """Closing the terminal window (SIGHUP) or a kill (SIGTERM) ends the shell the way /exit does.
-
-    Otherwise the process dies without its cleanup, and a command it was running on this machine
-    keeps going in a session of its own. Windows needs none of this: the job each command runs in
-    dies with the CLI.
-    """
+    """Closing the terminal window (SIGHUP) or a kill (SIGTERM) ends the shell the way /exit does."""
+    # Otherwise the process dies without its cleanup, and a command it was running on this machine
+    # keeps going in a session of its own. Windows needs none of this: the job each command runs in
+    # dies with the CLI.
     if os.name == "nt" or threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -152,7 +150,7 @@ class SkyportalCompleter(Completer):
         elif command == "/server":
             options = (
                 ("auto", "let the agent choose a server"),
-                ("local", "this machine, in this folder"),
+                ("local", "this machine (commands start in this folder)"),
             )
         elif command == "/local":
             options = (
@@ -341,7 +339,7 @@ class InteractiveShell:
                 # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
                 line = self.session.prompt(self._prompt_fragments)
             except KeyboardInterrupt:
-                self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
+                self._interrupt_at_prompt()
                 continue
             except EOFError:
                 self.console.print("\n[dim]Session closed. See you in orbit.[/dim]")
@@ -360,6 +358,19 @@ class InteractiveShell:
                 self._print_section("Command failed", style="red")
                 self.console.print(error)
                 self.console.print("[dim]The shell is still running. Try /help or retry.[/dim]\n")
+
+    def _interrupt_at_prompt(self) -> None:
+        """Ctrl-C at the idle prompt stops what runs on this machine; with nothing running it says how to leave."""
+        local = self._local_connected()
+        stopped = local.interrupt() if local is not None else 0
+        if stopped:
+            self.console.print(
+                "[yellow]■ Stopped {} command{} running on this machine.[/yellow]".format(
+                    stopped, "" if stopped == 1 else "s"
+                )
+            )
+        else:
+            self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
 
     def _prompt_fragments(self) -> List[Tuple[str, str]]:
         connected = self.client.is_authenticated()
@@ -1011,6 +1022,10 @@ class InteractiveShell:
             self.selected_namespaces = {}
             self.kubernetes_namespaces = {}
             self.console.print("[green]✓ Server selection set to automatic.[/green]")
+            if self._local_connected() is not None:
+                self.console.print(
+                    "[dim]New chats still start on this machine while it is connected; /local off stops that.[/dim]"
+                )
             return
         if any(argument.lower() == "auto" for argument in args):
             self.console.print("[yellow]Use 'auto' by itself, or provide server names.[/yellow]")
@@ -1378,7 +1393,7 @@ class InteractiveShell:
     def _begin_turn_here(self, message: str, local: LocalTarget, namespaces: Optional[Dict[str, Any]]) -> int:
         """Start or continue a chat bound to this CLI, so its commands on this machine run here."""
         if self.chat_id is not None:
-            # A chat started elsewhere keeps its scope; binding only lets it reach this folder.
+            # A chat started elsewhere keeps its scope; binding only lets it reach this machine.
             chat_id = self.client.begin_chat_turn(message, chat_id=self.chat_id, local_session=local.session)
         else:
             # Unless servers were chosen, a new chat's scope is this machine.
@@ -1403,7 +1418,20 @@ class InteractiveShell:
         if self._local_target_factory is None or self._local_offered or not self.client.is_authenticated():
             return
         self._local_offered = True
-        folder = Path.cwd()
+        try:
+            self._offer_in_current_folder()
+        except Exception as error:  # the shell works without this machine, whatever went wrong
+            self._local_unavailable(error)
+
+    def _offer_in_current_folder(self) -> None:
+        try:
+            folder = Path.cwd()
+        except OSError:
+            self.console.print(
+                "[yellow]This folder no longer exists, so Skyportal can't run commands from it. "
+                "Move to a project folder and use /local on.[/yellow]\n"
+            )
+            return
         if is_filesystem_root(folder):
             self.console.print(
                 "[yellow]Skyportal won't run commands from {}: it is the root of a filesystem, so trusting it "
@@ -1417,7 +1445,11 @@ class InteractiveShell:
                     "[dim]Skyportal won't run commands on this machine. Change that with /local on.[/dim]\n"
                 )
                 return
-            self._trust_store.trust(folder)
+            if not self._trust_store.trust(folder):
+                self.console.print(
+                    "[yellow]Could not save this choice, so the folder is trusted only until you leave the shell."
+                    "[/yellow]\n"
+                )
         self._connect_local_target(folder)
 
     def _ask_to_trust(self, folder: Path) -> bool:
@@ -1430,14 +1462,14 @@ class InteractiveShell:
             )
         self.console.print(
             "Skyportal can run commands on this machine, with your access: your files, your git "
-            "credentials, your cloud logins. This folder is only where they start, not a limit: a "
-            "command can read or change anything you can, anywhere on this machine. Commands that "
-            "change things or touch secrets ask you first, as on any host, unless your approval mode "
-            "is autoapprove. While the CLI is open it runs what Skyportal sends it, and prints every "
-            "command here. Only trust a folder whose code you trust.\n"
+            "credentials, your cloud logins. A command starts in this folder, but that is not a limit: "
+            "it can read or change anything you can, anywhere on this machine. Trust covers this folder "
+            "and everything inside it. Commands that change things or touch secrets ask you first, as on "
+            "any host, unless your approval mode is autoapprove. While the CLI is open it runs what "
+            "Skyportal sends it, and prints every command here. Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
-        return self._confirm("Trust this folder and let Skyportal run commands here? [y/N] ")
+        return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")
 
     def _connect_local_target(self, folder: Path) -> None:
         # A target Skyportal removed is still held here; chats bound to its session can't use the new one.
@@ -1445,30 +1477,33 @@ class InteractiveShell:
         self._bound_chats.clear()
         target = self._local_target_factory(self.client, folder)
         target.show = self._print_from_worker
-        try:
-            with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
-                target.connect()
-        except PortalError as error:
-            self.console.print(
-                "[yellow]Could not connect this machine: {}[/yellow] "
-                "Commands won't run here; retry with /local on.\n".format(escape(str(error)))
-            )
-            return
+        with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
+            target.connect()
         self.local_target = target
         self.console.print(
             "[green]✓ This machine is connected:[/green] {}. "
             "Commands start in this folder, but can reach anything you can.\n".format(escape(target.describe()))
         )
 
+    def _local_unavailable(self, error: Exception) -> None:
+        reason = str(error) if isinstance(error, PortalError) else "{}: {}".format(type(error).__name__, error)
+        self.console.print(
+            "[yellow]Could not connect this machine: {}[/yellow] "
+            "Commands won't run here; retry with /local on.\n".format(escape(reason))
+        )
+
     def _print_from_worker(self, line: str) -> None:
         """Print a line from a background thread, above the prompt when the user is at it, so it can't garble it."""
-        text = Text(line, style="cyan")
+        text = Text(self._clean_terminal_text(line), style="cyan")
         app = getattr(self.session, "app", None)
         loop = getattr(app, "loop", None) if app is not None and app.is_running else None
-        if loop is None:
-            self.console.print(text)
-            return
-        loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: self.console.print(text)))
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: self.console.print(text)))
+                return
+            except RuntimeError:
+                pass  # the prompt's loop closed between looking and scheduling; print here instead
+        self.console.print(text)
 
     def _close_local_target(self) -> None:
         target, self.local_target = self.local_target, None

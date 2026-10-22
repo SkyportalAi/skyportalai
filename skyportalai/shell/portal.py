@@ -439,11 +439,7 @@ class SkyportalClient:
         selected_namespaces: Optional[Dict[Any, List[str]]] = None,
         local_session: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Create a headless chat and atomically scope its first turn.
-
-        ``local_session`` binds the chat to this CLI's session, so its commands on
-        this machine run here (skyportal-website#3665); it needs ``server_ids``.
-        """
+        """Create a headless chat and atomically scope its first turn; `local_session` binds it to this CLI."""
         if server_id is not None and server_ids is not None:
             raise PortalError("Use server_id or server_ids, not both")
         if server_ids is None and (
@@ -506,7 +502,7 @@ class SkyportalClient:
         )
 
     def local_machine_heartbeat(self, server_id: int, instance: str, timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Tell Skyportal this session is alive, busy or not; `timeout` bounds the call below the client's own."""
+        """Tell Skyportal this session is alive; `timeout` replaces the client's own for each socket operation."""
         return self._request(
             "POST",
             "/api/v1/agent/local/{}/heartbeat/".format(server_id),

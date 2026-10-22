@@ -1,19 +1,4 @@
-"""Run SARA's commands on this machine, in this folder, the way Claude Code works (skyportal-website#3665).
-
-The model runs on Skyportal's side and nothing there connects into this machine. When the
-shell starts in a folder the user trusts, it registers the machine, opens a session for this
-process and leases the commands Skyportal queues for that session over outbound HTTPS, the
-same loop the in-cluster agent uses. Each one runs here, in this folder, and its output goes
-back to the chat.
-
-Skyportal decides what runs: its gate decides what reaches the queue, and the CLI asks
-nothing a second time. The CLI runs what Skyportal sends it, so anyone holding the user's API
-key or web session, including a browser turn on a chat this CLI started while it is open, can
-have commands run here. Every command is printed in the terminal. The trusted folder is only
-where commands start, not a boundary: a command can read or change anything the user can.
-What leaves this machine about it: a random machine id, its name, its OS and shell, and the
-repository's remote and branch with the folder's path inside it. Never an absolute path.
-"""
+"""Run SARA's commands on this machine, starting in the folder the user trusts (skyportal-website#3665)."""
 
 from __future__ import annotations
 
@@ -39,7 +24,6 @@ import requests
 
 from skyportalai import _env
 from skyportalai._version import __version__
-from skyportalai.agent.kubernetes.commands import CommandPoller
 
 from .portal import PortalError, SkyportalClient
 
@@ -47,13 +31,19 @@ from .portal import PortalError, SkyportalClient
 logging.getLogger("skyportalai").addHandler(logging.NullHandler())
 logger = logging.getLogger(__name__)
 
+# The CLI runs what Skyportal sends it and asks nothing a second time: Skyportal's gate decides what is queued.
+# So anyone holding the user's API key or web session can have commands run here, and each one is printed.
 LEASE_PATH = "/api/v1/agent/local/{server_id}/commands/lease/"
 RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
 # Skyportal takes a CLI silent for 40 s as closed and withdraws its commands. A beat starts every
-# HEARTBEAT_SECONDS whatever the last one took, and one that hangs is cut off after
-# HEARTBEAT_TIMEOUT_SECONDS, so one lost beat still lands inside the window.
+# HEARTBEAT_SECONDS whatever the last one took, and each socket operation of one is cut off after
+# HEARTBEAT_TIMEOUT_SECONDS. That is not a wall-clock limit: a beat that connects slowly can run longer.
 HEARTBEAT_SECONDS = 15
 HEARTBEAT_TIMEOUT_SECONDS = 10
+# After repeated failures the lease poll waits longer between tries, up to this.
+LEASE_BACKOFF_MAX_SECONDS = 30
+# The longest Skyportal gives a command on this machine, whatever a lease asks for.
+MAX_TIMEOUT_SECONDS = 1800
 # Kept per stream: the head and the tail, where a failing build says why. The model reads less than this.
 OUTPUT_HEAD_BYTES = 30_000
 OUTPUT_TAIL_BYTES = 70_000
@@ -70,8 +60,10 @@ _STOPPED_BECAUSE = {
 _GIT_SECONDS = 5
 # How often a running command is checked for its timeout, a stop and the size of its output.
 _POLL_SECONDS = 0.1
-# How much of a command the terminal shows when it starts and ends: one line, never the whole script.
-_SHOWN_COMMAND_CHARS = 120
+# How much of a command the terminal shows when it starts and ends: one line, with the rest counted.
+_SHOWN_COMMAND_CHARS = 500
+# How long a killed process gets to exit before it is given up on: one in uninterruptible sleep never does.
+_KILL_WAIT_SECONDS = 5
 _CREATE_SUSPENDED = 0x00000004
 
 if os.name == "nt":
@@ -158,10 +150,11 @@ def is_home_folder(folder: Path) -> bool:
 
 
 class TrustStore:
-    """The folders the user said SARA may run commands in. A trusted folder covers everything below it."""
+    """The folders the user trusts Skyportal to start commands in; each covers everything inside it."""
 
     def __init__(self, path: Optional[Path] = None):
         self.path = path or _env.config_path("trusted_folders.json", "SKYPORTALAI_TRUSTED_FOLDERS_PATH")
+        self._session: List[str] = []
 
     def _folders(self) -> List[str]:
         try:
@@ -173,7 +166,7 @@ class TrustStore:
 
     def is_trusted(self, folder: Path) -> bool:
         folder = folder.resolve()
-        for trusted in self._folders():
+        for trusted in [*self._folders(), *self._session]:
             # A root trusted before roots were refused would cover every folder on the disk.
             if is_filesystem_root(Path(trusted)):
                 continue
@@ -184,21 +177,30 @@ class TrustStore:
             return True
         return False
 
-    def trust(self, folder: Path) -> None:
-        folders = self._folders()
+    def trust(self, folder: Path) -> bool:
+        """Trust a folder; False if it could only be remembered until this shell exits."""
         resolved = str(folder.resolve())
+        if resolved not in self._session:
+            self._session.append(resolved)
+        folders = self._folders()
         if resolved not in folders:
             folders.append(resolved)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"folders": folders}, indent=2))
-        self.path.chmod(0o600)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps({"folders": folders}, indent=2))
+            self.path.chmod(0o600)
+        except OSError:
+            logger.warning("Could not save the trusted folders to %s", self.path)
+            return False
+        return True
 
 
 def _git(folder: Path, *args: str) -> str:
     try:
         completed = subprocess.run(
             ["git", "-C", str(folder), *args],
-            capture_output=True, text=True, timeout=_GIT_SECONDS, check=False, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, errors="replace", timeout=_GIT_SECONDS, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -211,10 +213,18 @@ def display_remote(url: str) -> str:
     if not url:
         return ""
     if "://" in url:
-        parsed = urlparse(url)
-        if parsed.scheme == "file" or not parsed.hostname:
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+        except ValueError:
             return ""
-        host = parsed.hostname + (f":{parsed.port}" if parsed.port else "")
+        if parsed.scheme == "file" or not hostname:
+            return ""
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None  # not a port: show the host alone rather than guess
+        host = hostname + (f":{port}" if port else "")
         path = parsed.path
     elif ":" in url and not url.startswith(("/", ".", "~")) and not (len(url) > 1 and url[1] == ":"):
         # scp form: [user@]host:owner/repo.git
@@ -228,6 +238,8 @@ def display_remote(url: str) -> str:
     return f"{host}/{path}" if path else host
 
 
+# What leaves this machine about a repository: its remote (without credentials), the branch and this
+# folder's path inside it. Never an absolute path.
 @dataclass(frozen=True)
 class RepoContext:
     remote: str = ""
@@ -260,11 +272,16 @@ def repo_context(folder: Path) -> Optional[RepoContext]:
     return RepoContext(remote=remote, branch=branch, path="" if inside == "." else inside)
 
 
+def _is_wsl_launcher(path: str) -> bool:
+    """System32's bash.exe and the Store's WindowsApps alias start WSL: another filesystem, where this folder isn't."""
+    lowered = path.lower().replace("\\", "/")
+    return "system32" in lowered or "windowsapps" in lowered or lowered.rsplit("/", 1)[-1] == "wsl.exe"
+
+
 def _windows_bash(which: Callable[[str], Optional[str]] = shutil.which) -> Optional[str]:
     """Git for Windows' bash, which is not on PATH in PowerShell or Windows Terminal; None without Git."""
     bash = which("bash")
-    # System32's bash is WSL: another filesystem, where this folder isn't.
-    if bash and "system32" not in bash.lower():
+    if bash and not _is_wsl_launcher(bash):
         return bash
     git = which("git")
     if not git:
@@ -297,8 +314,9 @@ def platform_name() -> str:
 
 def _child_env() -> Dict[str, str]:
     """This process's environment without the CLI's own settings and credentials, which a command would print."""
-    # Upper-cased: Windows names are case-insensitive.
-    return {name: value for name, value in os.environ.items() if not name.upper().startswith(_env.PREFIX)}
+    # Upper-cased: Windows names are case-insensitive. The removed SKYPORTAL_ names can still hold a live key.
+    own = (_env.PREFIX, _env.REMOVED_PREFIX)
+    return {name: value for name, value in os.environ.items() if not name.upper().startswith(own)}
 
 
 def _stream_bytes(file: Any) -> int:
@@ -345,12 +363,10 @@ def _job_for(process: subprocess.Popen) -> Optional[int]:
 
 
 class _ProcessTree:
-    """A command's process and everything it starts, so stopping it stops them all.
+    """A command's process and everything it starts, so stopping it stops them all."""
 
-    POSIX: a session of its own, killed as a process group. Windows: a job object, because Git
-    Bash's children aren't Windows children of bash.exe and taskkill /T leaves them running.
-    """
-
+    # POSIX: a session of its own, killed as a process group. Windows: a job object, because Git
+    # Bash's children aren't Windows children of bash.exe and taskkill /T leaves them running.
     def __init__(self, argv: List[str], **options: Any):
         # kill() can come from another thread (the CLI closing, a Ctrl-C) while the runner closes the job.
         self._lock = threading.Lock()
@@ -374,13 +390,17 @@ class _ProcessTree:
                     _kernel32.TerminateJobObject(self._job, 1)
                 elif os.name == "nt":
                     subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(self.process.pid)], capture_output=True, check=False,
+                        ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
+                        capture_output=True, check=False, timeout=_KILL_WAIT_SECONDS,
                     )
                 else:
                     os.killpg(self.process.pid, signal.SIGKILL)
             except (OSError, subprocess.SubprocessError):
                 self.process.kill()
-        self.process.wait()
+        try:
+            self.process.wait(timeout=_KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning("Process %s was still running %ss after it was killed", self.process.pid, _KILL_WAIT_SECONDS)
 
     def close(self) -> None:
         with self._lock:
@@ -391,8 +411,12 @@ class _ProcessTree:
                 self._job = None
 
 
+def _result(exit_code: int, stdout: str = "", stderr: str = "") -> Dict[str, Any]:
+    return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
+
+
 class ShellRunner:
-    """Run one leased command in this folder, for its timeout at most, and report what it printed."""
+    """Run one leased command, starting in this folder, for its timeout at most, and report what it printed."""
 
     def __init__(self, folder: Path, stop: threading.Event, *, shell: Optional[List[str]] = None):
         self.folder = folder
@@ -411,21 +435,25 @@ class ShellRunner:
 
     def __call__(self, command: object, timeout: float) -> Dict[str, Any]:
         if not isinstance(command, str) or not command.strip():
-            return {"exit_code": 126, "stdout": "", "stderr": "The CLI was sent no command to run."}
+            return _result(126, stderr="The CLI was sent no command to run.")
+        # A lease can ask for more than the server allows, even more than a float can hold (10**400).
+        timeout = min(timeout, MAX_TIMEOUT_SECONDS)
         deadline = time.monotonic() + timeout
         # Files, not pipes: a chatty command can't fill a pipe and hang, or fill this process's memory.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             # One critical section with stop_all(): a command leased as the CLI closes is stopped by it, or never started.
             with self._lock:
                 if self._stop.is_set():
-                    return {"exit_code": STOPPED_EXIT_CODE, "stdout": "", "stderr": _STOPPED_BECAUSE["closed"]}
+                    return _result(STOPPED_EXIT_CODE, stderr=_STOPPED_BECAUSE["closed"])
                 try:
                     tree = _ProcessTree(
                         [*self._shell, command], cwd=self.folder, env=_child_env(),
                         stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                     )
                 except OSError as error:
-                    return {"exit_code": 127, "stdout": "", "stderr": f"Could not start {self._shell[0]}: {error}"}
+                    return _result(127, stderr=f"Could not start {self._shell[0]}: {error}")
+                except Exception as error:  # a NUL in the command is a ValueError; the chat still needs its result
+                    return _result(126, stderr=f"Could not run this command: {error}")
                 self._running.add(tree)
             try:
                 self._wait(tree, deadline, (out, err))
@@ -445,7 +473,7 @@ class ShellRunner:
         elif tree.stopped_because in _STOPPED_BECAUSE:
             exit_code = STOPPED_EXIT_CODE
             stderr += "\n" + _STOPPED_BECAUSE[tree.stopped_because]
-        return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
+        return _result(exit_code, stdout, stderr)
 
     def _wait(self, tree: _ProcessTree, deadline: float, streams: Tuple[Any, ...]) -> None:
         while True:
@@ -462,14 +490,20 @@ class ShellRunner:
                 tree.kill("output")
 
 
+def _visible(text: str) -> str:
+    """The text with every character a terminal would act on written out, so what is shown is what runs."""
+    return "".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii") for char in text)
+
+
 def _command_label(command: object, chat_id: object) -> str:
     """One line naming a leased command and the chat it came from."""
-    text = " ".join(str(command or "").split())
+    text = str(command or "").strip()
+    label = _visible(text[:_SHOWN_COMMAND_CHARS])
     if len(text) > _SHOWN_COMMAND_CHARS:
-        text = text[: _SHOWN_COMMAND_CHARS - 1] + "…"
+        label += f" … (+{len(text) - _SHOWN_COMMAND_CHARS} more characters)"
     if isinstance(chat_id, int) and not isinstance(chat_id, bool):
-        text += f"  (chat #{chat_id})"
-    return text
+        label += f"  (chat #{chat_id})"
+    return label
 
 
 def _session_without_redirects() -> requests.Session:
@@ -481,7 +515,7 @@ def _session_without_redirects() -> requests.Session:
 
 @dataclass
 class LocalTarget:
-    """This machine, connected as a command target for as long as the shell runs in this folder."""
+    """This machine, connected as a command target for as long as this shell is open."""
 
     client: SkyportalClient
     folder: Path
@@ -489,19 +523,19 @@ class LocalTarget:
     server_id: Optional[int] = None
     hostname: str = ""
     repo: Optional[RepoContext] = None
-    poller_factory: Callable[..., Any] = CommandPoller
+    poller_factory: Optional[Callable[..., Any]] = None
     # Where each command this machine runs is shown, as it starts and as it ends: a chat this CLI started
     # can be continued from the owner's browser, so nothing may run here without a trace in the terminal.
     show: Callable[[str], None] = logger.info
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
-    # Skyportal answered a lease with 404: the machine was removed there.
-    _gone: bool = False
+    # Skyportal removed this machine or refused this CLI's key: nothing more runs here.
+    _ended: bool = False
 
     @property
     def connected(self) -> bool:
-        return self.server_id is not None and not self._stop.is_set() and not self._gone
+        return self.server_id is not None and not self._stop.is_set() and not self._ended
 
     @property
     def session(self) -> Dict[str, Any]:
@@ -513,12 +547,22 @@ class LocalTarget:
         return f"{self.hostname} · {where}"
 
     def connect(self) -> None:
-        """Register the machine and start running what Skyportal queues for this session; PortalError if it can't."""
+        """Register the machine and start running what Skyportal queues for this session."""
+        # Deferred: importing the agent package (and wandb, if installed) would slow every start of the CLI.
+        from skyportalai.agent.kubernetes.commands import CommandPoller
+
         self.repo = repo_context(self.folder)
         self._open()
+        try:
+            self._start(self.poller_factory or CommandPoller)
+        except Exception:
+            self.close()
+            raise
+
+    def _start(self, poller_factory: Callable[..., Any]) -> None:
         token = self.client.bearer_token()
         self._runner = ShellRunner(self.folder, self._stop)
-        poller = self.poller_factory(
+        poller = poller_factory(
             self.client.base_url, token,
             session=_session_without_redirects(),
             session_factory=_session_without_redirects,
@@ -529,7 +573,9 @@ class LocalTarget:
             extra_headers={"User-Agent": f"skyportalai-cli/{__version__}", "X-Agent-Instance": self.instance},
             command_field=None,
             thread_prefix="local-command",
-            on_not_found=self._machine_removed,
+            on_gone=self._machine_removed,
+            on_refused=self._key_refused,
+            max_backoff_seconds=LEASE_BACKOFF_MAX_SECONDS,
         )
         for name, target in (("local-command-poller", poller.run_forever), ("local-heartbeat", self._beat)):
             thread = threading.Thread(target=target, name=name, daemon=True)
@@ -537,11 +583,15 @@ class LocalTarget:
             self._threads.append(thread)
 
     def _run_leased(self, lease: object, timeout: float) -> Dict[str, Any]:
-        """Run one leased command in this folder, showing it as it starts and its exit code as it ends."""
+        """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
         self._tell(f"▸ running: {label}")
-        result = self._runner(lease.get("command"), timeout)
+        try:
+            result = self._runner(lease.get("command"), timeout)
+        except Exception as error:  # the chat waits for a result whatever went wrong here
+            logger.exception("Could not run a leased command")
+            result = _result(127, stderr=f"The CLI could not run this command: {error}")
         self._tell(f"▸ exit {result['exit_code']}: {label}")
         return result
 
@@ -567,24 +617,43 @@ class LocalTarget:
         self.hostname = str(connected.get("hostname") or machine_name())
 
     def _machine_removed(self) -> None:
-        """Skyportal no longer has this machine: stop polling, drop out of the prompt and say how to reconnect."""
-        self._gone = True
-        self._tell("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
+        self._end("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
+
+    def _key_refused(self) -> None:
+        self._end("▸ Skyportal refused this CLI's key, so no commands will run here. Run /login, then /local on.")
+
+    def _end(self, line: str) -> None:
+        """Stop for good: out of the prompt, nothing more fetched, and one line saying why and what to do."""
+        if self._ended:
+            return
+        self._ended = True
+        self._tell(line)
 
     def _beat(self) -> None:
         """Tell Skyportal this CLI is alive while it runs a long command; open the session again if it was lost."""
         next_at = time.monotonic() + HEARTBEAT_SECONDS
-        while not self._stop.wait(max(0.0, next_at - time.monotonic())) and not self._gone:
+        while not self._stop.wait(max(0.0, next_at - time.monotonic())) and not self._ended:
             next_at = time.monotonic() + HEARTBEAT_SECONDS
             try:
                 self.client.local_machine_heartbeat(self.server_id, self.instance, timeout=HEARTBEAT_TIMEOUT_SECONDS)
             except PortalError as error:
-                if error.code == "session_closed":
-                    self._reopen()
-                else:
-                    logger.warning("Heartbeat failed: %s", error)
+                self._beat_failed(error)
+            except Exception as error:  # noqa: BLE001 — a dropped connection must not end the heartbeat
+                logger.warning("Heartbeat failed: %s", error)
+
+    def _beat_failed(self, error: PortalError) -> None:
+        if error.code == "session_closed":
+            self._reopen()
+        elif error.status_code == 410:
+            self._machine_removed()
+        elif error.status_code in (401, 403):
+            self._key_refused()
+        else:
+            logger.warning("Heartbeat failed: %s", error)
 
     def _reopen(self) -> None:
+        if self._stop.is_set():
+            return
         try:
             self._open()
         except PortalError as error:
@@ -602,10 +671,10 @@ class LocalTarget:
         # Here, not on the workers' threads: the CLI may exit as soon as this returns, and they die with it.
         if self._runner is not None:
             self._runner.stop_all("closed")
-        if self.server_id is None or self._gone:
+        if self.server_id is None or self._ended:
             return
         try:
             self.client.disconnect_local_machine(self.server_id, self.instance)
-        except PortalError as error:
+        except Exception as error:  # noqa: BLE001 — whatever the network did, the CLI still exits
             # Skyportal withdraws them anyway once this session stops answering.
             logger.warning("Could not disconnect this machine: %s", error)
