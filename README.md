@@ -117,6 +117,13 @@ are indefinite by default so long-running single-host, multi-host, and
 Kubernetes turns can finish; pass `timeout=` when an automation job needs a
 finite deadline.
 
+A command that targets a host or namespace outside the chat's scope waits on a
+`scope` approval: approving adds the target to the chat and runs the command.
+It is never autoapproved; only an `on_approval` callback answers it, and
+`approval.scope` says what it adds. One whose `approval.scope["namespace"]` is
+`None` asks which namespace to add: answer it with
+`client.chat.approve(chat_id, approval_id, approval_type="scope", namespace="...")`.
+
 To make the full multi-host scope available to the first turn, create the chat
 with repeatable server scope and an active default:
 

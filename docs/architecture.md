@@ -63,6 +63,14 @@ typed decision at a time and waits for the durable checkpoint to advance before
 submitting another. Backend read-only, target scope, repository, and environment
 policy are always rechecked.
 
+A `scope` approval (skyportal-website#3724) is a command refused for a target
+outside the chat's scope. Approving adds the target to the chat, the way the
+website's Scope pill does, and runs the same command again through the approval
+gate. Its `scope` object carries the server's wording (`label`), what it adds
+(`kind`, `hostname`, `namespace`) and whether approving also approves the command
+(`combined`). When `namespace` is null the CLI asks which of `namespace_choices`
+to add and sends it as `namespace`. It is never autoapproved.
+
 ## Server context
 
 `GET /api/v1/experiments/my-servers/` provides the authenticated account's
