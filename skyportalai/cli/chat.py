@@ -248,7 +248,7 @@ def approve(
             always=always,
         ),
     )
-    _state(context).output.success(result, human=_approval_text(approval_id, result))
+    _state(context).output.success(result, human=_approval_text(approval_id, result, always))
 
 
 @chat_app.command("reject")
@@ -417,10 +417,13 @@ def wait_for_chat(
     _exit_for_status(current)
 
 
-def _approval_text(approval_id: str, result: ApprovalResult) -> str:
+def _approval_text(approval_id: str, result: ApprovalResult, always: bool) -> str:
     text = f"Approval {approval_id}: {result.decision or 'approved'}"
-    if not result.raw.get("always"):
+    if not always:
         return text
+    if result.raw.get("always") is not True:
+        # A server without skyportal-website#3750 ignores "always" and approves once.
+        return text + "; Always allow wasn't applied, so this approved the command once"
     added = result.raw.get("added_prefixes") or []
     if not added:
         return text + "; nothing new was added to the allow list"

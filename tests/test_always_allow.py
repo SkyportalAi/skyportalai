@@ -55,9 +55,11 @@ class _Session:
 class _Client:
     base_url = "https://app.skyportal.ai"
 
-    def __init__(self, mode="ask"):
+    def __init__(self, mode="ask", answer=None, times_out=False):
         self.mode = mode
         self.submit_calls = []
+        self.answer = answer if answer is not None else {"success": True}
+        self.times_out = times_out
 
     def is_authenticated(self):
         return True
@@ -71,14 +73,20 @@ class _Client:
     def submit_chat_approval(self, chat_id, approval, decision, *, autoapproved=False, rejection_reason=None,
                              namespace=None, always=False):
         self.submit_calls.append((approval["type"], decision, autoapproved, namespace, always))
-        return {"success": True}
+        if self.times_out:
+            raise TimeoutError("the approve request timed out")
+        return self.answer
+
+    def chat_status(self, chat_id):
+        # The approval went through: the chat moved on.
+        return {"status": "processing"}
 
     def wait_for_chat(self, chat_id, after_sequence=0, timeout=300, on_progress=None, on_status=None):
         return ChatTurnResult(chat_id=42, status="idle", messages=[], pending_approvals=[], latest_sequence=0)
 
 
-def _run(approval, answers=(), picks=(), mode="ask"):
-    client = _Client(mode)
+def _run(approval, answers=(), picks=(), mode="ask", answer=None, times_out=False):
+    client = _Client(mode, answer, times_out)
     console = Console(file=StringIO(), force_terminal=False, width=200)
     session = _Session(answers)
     shell = InteractiveShell(
@@ -134,6 +142,43 @@ def test_autoapprove_never_always_allows(tmp_path, monkeypatch):
     assert client.submit_calls == [("bash_command", "approved", True, None, False)]
 
 
+ALWAYS_ANSWER = {"success": True, "decision": "approved", "always": True, "added_prefixes": ["kubectl logs"]}
+
+
+def test_the_shell_says_what_always_allow_added(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    # A bash answer names its host; a scope answer doesn't, and the card's does.
+    for approval, answer in ((_bash(), {**ALWAYS_ANSWER, "host": "kind-smoke"}), (_scope(), ALWAYS_ANSWER)):
+        _, output, _ = _run(approval, answers=["a"], answer=answer)
+        assert "Now always allowed on kind-smoke: kubectl logs" in output
+        assert "wasn't applied" not in output
+
+    _, output, _ = _run(_bash(), answers=["a"], answer={**ALWAYS_ANSWER, "added_prefixes": []})
+    assert "Nothing new was added to the allow list." in output
+
+
+def test_a_server_that_ignored_always_allow_is_reported(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    # skyportal-website before #3750 approves once and drops "always".
+    _, output, _ = _run(_bash(), answers=["a"], answer={"success": True, "decision": "approved"})
+    assert "Always allow wasn't applied: this Skyportal server approved the command once" in output
+    assert "Now always allowed" not in output
+
+
+def test_an_answer_that_timed_out_claims_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    _, output, _ = _run(_bash(), answers=["a"], times_out=True)
+    assert "it isn't known whether Always allow was applied" in output
+    assert "Now always allowed" not in output
+
+
+def test_an_approve_once_says_nothing_about_always_allow(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_LAST_CHAT_PATH", str(tmp_path / "last_chat"))
+    _, output, _ = _run(_bash(), answers=["y"], answer=ALWAYS_ANSWER)
+    assert "Now always allowed" not in output
+    assert "wasn't applied" not in output
+
+
 def test_the_shell_client_sends_always_only_with_an_approval():
     client = SkyportalClient.__new__(SkyportalClient)
     sent = {}
@@ -167,23 +212,36 @@ def test_the_sdk_reads_the_offer_and_sends_always(requests_mock):
 
 
 class _FakeChat:
-    def __init__(self):
+    def __init__(self, server_has_always=True):
         self.calls = []
+        self.server_has_always = server_has_always
 
     def approve(self, chat_id, approval_id, *, approval_type, command, namespace=None, always=False):
         self.calls.append((chat_id, approval_id, approval_type, always))
-        raw = {"success": True, "decision": "approved", "always": always, "added_prefixes": ["ls"] if always else []}
+        raw = {"success": True, "decision": "approved"}
+        if always and self.server_has_always:
+            raw.update(always=True, added_prefixes=["ls"])
         return ApprovalResult(success=True, decision="approved", raw=raw)
 
 
-def test_chat_approve_always(monkeypatch, tmp_path):
+def _cli(monkeypatch, tmp_path, chat):
     monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
     monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
     monkeypatch.setenv("SKYPORTALAI_API_KEY", "sk-test")
+    monkeypatch.setattr(CLIContext, "client", lambda self: type("Fake", (), {"chat": chat})())
+    return CliRunner()
+
+
+def test_chat_approve_always_against_a_server_without_it(monkeypatch, tmp_path):
+    runner = _cli(monkeypatch, tmp_path, _FakeChat(server_has_always=False))
+    result = runner.invoke(app, ["chat", "approve", "42", "a1", "--always"])
+    assert result.exit_code == 0, result.output
+    assert "Always allow wasn't applied, so this approved the command once" in result.stdout
+
+
+def test_chat_approve_always(monkeypatch, tmp_path):
     chat = _FakeChat()
-    fake = type("Fake", (), {"chat": chat})()
-    monkeypatch.setattr(CLIContext, "client", lambda self: fake)
-    runner = CliRunner()
+    runner = _cli(monkeypatch, tmp_path, chat)
 
     result = runner.invoke(app, ["chat", "approve", "42", "a1", "--always"])
     assert result.exit_code == 0, result.output

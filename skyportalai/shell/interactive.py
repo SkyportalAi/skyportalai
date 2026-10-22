@@ -1395,14 +1395,15 @@ class InteractiveShell:
         rejection_reason: Optional[str] = None,
         namespace: Optional[str] = None,
         always: bool = False,
-    ) -> bool:
+    ) -> "tuple[bool, Optional[Dict[str, Any]]]":
         """Submit a decision; recover when an older synchronous server times out.
 
         Older deployments execute the resumed workflow inside the approval POST.
         The client can therefore hit its request timeout after the decision was
         durably accepted. A single status reconciliation avoids resubmitting (and
         potentially re-running) that approval. Explicit HTTP failures still fail.
-        Returns True when timeout recovery was needed.
+        Returns whether timeout recovery was needed, and the server's answer
+        (None after a recovery, which has none).
         """
         # Only the options this decision uses, so a client without one still takes it.
         options: Dict[str, Any] = {}
@@ -1416,8 +1417,7 @@ class InteractiveShell:
             if always:
                 options["always"] = True
         try:
-            self.client.submit_chat_approval(chat_id, approval, decision, **options)
-            return False
+            return False, self.client.submit_chat_approval(chat_id, approval, decision, **options)
         except PortalError as error:
             if (
                 autoapproved
@@ -1439,7 +1439,7 @@ class InteractiveShell:
             raise original_error from reconciliation_error
         if not accepted:
             raise original_error
-        return True
+        return True, None
 
     def _process_turn(
         self,
@@ -1588,16 +1588,19 @@ class InteractiveShell:
                             "[dim](Ctrl-C to stop)[/dim]".format(decision),
                             spinner="dots",
                         ) as status:
-                            recovered = self._submit_approval_with_recovery(
+                            sent_always = always and not autoapprove
+                            recovered, answer = self._submit_approval_with_recovery(
                                 turn.chat_id,
                                 approval,
                                 decision,
                                 autoapproved=autoapprove,
                                 rejection_reason=None if autoapprove else rejection_reason,
                                 namespace=namespace,
-                                always=always and not autoapprove,
+                                always=sent_always,
                             )
                             handled_approvals.add(approval_id)
+                            if sent_always and decision == "approved":
+                                self._report_always_allow(approval, answer, recovered)
                             if decision == "approved" and approval_type == "scope":
                                 try:
                                     self._note_scope_added(approval, namespace)
@@ -1707,6 +1710,42 @@ class InteractiveShell:
         if not isinstance(offer, dict) or not offer.get("prefixes"):
             return None
         return str(offer.get("label") or "Always allow " + ", ".join("`{}`".format(p) for p in offer["prefixes"]))
+
+    def _report_always_allow(
+        self, approval: Dict[str, Any], answer: Optional[Dict[str, Any]], recovered: bool,
+    ) -> None:
+        """Say what "Always allow" did, from the server's answer to it.
+
+        A server without skyportal-website#3750 approves once and ignores ``always``;
+        saying nothing would leave the user thinking the command won't ask again.
+        """
+        if recovered:
+            self.console.print(
+                "[yellow]Approved, but the server's answer timed out, so it isn't known whether "
+                "Always allow was applied.[/yellow]"
+            )
+            return
+        answer = answer if isinstance(answer, dict) else {}
+        if answer.get("always") is not True:
+            self.console.print(
+                "[yellow]Always allow wasn't applied: this Skyportal server approved the command once, "
+                "so it will ask again next time.[/yellow]"
+            )
+            return
+        added = [str(prefix) for prefix in answer.get("added_prefixes") or []]
+        if not added:
+            self.console.print("[dim]Nothing new was added to the allow list.[/dim]")
+            return
+        context = approval.get("approval_context")
+        host = answer.get("host") or (context.get("host") if isinstance(context, dict) else None)
+        line = Text("Now always allowed", style="green")
+        if host:
+            line.append(" on " + self._bounded_one_line(str(host), 120), style="green")
+        line.append(": ", style="green")
+        for index, prefix in enumerate(added):
+            line.append(", " if index else "")
+            line.append(self._bounded_one_line(prefix, 200), style="bold")
+        self.console.print(line)
 
     def _ask_decision(self, always_label: Optional[str] = None) -> "tuple[str, Optional[str], bool]":
         """y approves; a approves and always allows, when offered; r rejects with a reason; anything else rejects."""
