@@ -74,6 +74,15 @@ All notable changes to this project are documented here. This project follows
   network blip got in the way. It now keeps trying until the `report_by`
   deadline SkyPortal sends with the command. An older server sends no deadline,
   and against it the agent keeps trying for about 77 seconds.
+- **A chat command survives an agent restart.** Each agent process now names
+  itself to SkyPortal with an `X-Agent-Instance` header, a random id made when
+  it starts, and says which lease a result answers. When the pod restarts in the
+  middle of a command, a server that supports it gives the command to the new
+  process to run once more, instead of waiting for the old one until the
+  deadline, and refuses a late result from the old one (skyportal-website#3709).
+  While all 4 command slots are busy the agent asks SkyPortal for no new command,
+  so it sends a heartbeat instead to show it is still alive. An older server
+  ignores the header and the heartbeat.
 
 ## 0.3.1
 

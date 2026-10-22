@@ -14,9 +14,11 @@ import logging
 import subprocess
 import sys
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -133,6 +135,7 @@ class FakeCommandServer:
         self.leases = list(leases)
         self.busy_at_lease: list[int] = []
         self.results: dict[int, dict] = {}
+        self.heartbeats: list[dict] = []
         self._leased = 0
         self._changed = threading.Condition()
 
@@ -142,6 +145,10 @@ class FakeCommandServer:
 
     def post(self, url, json=None, headers=None, timeout=None):
         with self._changed:
+            if url == BASE_URL + commands.HEARTBEAT_PATH:
+                self.heartbeats.append(headers)
+                self._changed.notify_all()
+                return FakeResponse(204)
             if url == BASE_URL + commands.LEASE_PATH:
                 self.busy_at_lease.append(self._leased - len(self.results))
                 if not self.leases:
@@ -155,6 +162,10 @@ class FakeCommandServer:
     def wait_for_results(self, count: int) -> bool:
         with self._changed:
             return self._changed.wait_for(lambda: len(self.results) >= count, timeout=5)
+
+    def wait_for_heartbeats(self, count: int) -> bool:
+        with self._changed:
+            return self._changed.wait_for(lambda: len(self.heartbeats) >= count, timeout=5)
 
     def __enter__(self):
         return self
@@ -469,6 +480,33 @@ class TestCommandPoller:
         assert self._handle(self._poller(session, run)) is True
         assert [call["headers"]["X-Agent-Capabilities"] for call in session.calls] == ["command-timeouts"] * 2
 
+    def test_every_lease_and_result_names_this_process(self):
+        # The server reads each lease poll as this process's heartbeat (skyportal-website#3709).
+        def run(argv, timeout):
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS}), FakeResponse(200, {"recorded": True})])
+        poller = self._poller(session, run)
+        assert self._handle(poller) is True
+        assert [call["headers"]["X-Agent-Instance"] for call in session.calls] == [poller.instance] * 2
+        assert str(uuid.UUID(poller.instance)) == poller.instance
+        # A restarted pod is a new process, which the server tells apart from the one that died.
+        assert self._poller(FakeSession(), run).instance != poller.instance
+
+    @pytest.mark.parametrize(
+        ("lease", "answered"),
+        [({"attempt": 2}, 2), ({}, None), ({"attempt": True}, None), ({"attempt": "2"}, None)],
+        ids=["numbered", "older-server", "bool", "string"],
+    )
+    def test_a_result_names_the_lease_it_answers(self, lease, answered):
+        # The server refuses a result from a lease it gave to another process after this one went silent.
+        def run(argv, timeout):
+            return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, **lease}), FakeResponse(200, {})])
+        assert self._handle(self._poller(session, run)) is True
+        assert session.calls[1]["json"].get("attempt") == answered
+
     def test_runs_a_leased_command_on_its_own_thread_and_posts_its_result(self):
         ran_on = []
 
@@ -755,6 +793,64 @@ class TestCommandPoller:
         assert sorted(server.results) == [*range(1, slots + 1), 99]
         # Nor at any other point while every slot held a command with no result yet.
         assert max(server.busy_at_lease) < slots
+
+    def test_with_every_slot_busy_it_sends_heartbeats_instead_of_asking_for_work(self, monkeypatch):
+        # It asks for no command then, so without these the server would take its commands for abandoned.
+        monkeypatch.setattr(commands, "POLL_SECONDS", 0.01)
+        slots = commands.COMMAND_SLOTS
+        all_running, release = threading.Barrier(slots + 1, timeout=5), threading.Event()
+
+        def run(argv, timeout):
+            all_running.wait()
+            release.wait(5)
+            return {"argv": argv, "exit_code": 0, "stdout": "ok", "stderr": ""}
+
+        server = FakeCommandServer([{"id": n, "argv": GET_PODS} for n in range(1, slots + 1)])
+        stop = threading.Event()
+        poller = self._poller(server, run, stop)
+        loop = threading.Thread(target=poller.run_forever, daemon=True)
+        loop.start()
+        try:
+            all_running.wait()
+            assert server.wait_for_heartbeats(3)
+            assert server.lease_calls == slots
+        finally:
+            release.set()
+            stop.set()
+            loop.join(5)
+        assert {headers["X-Agent-Instance"] for headers in server.heartbeats} == {poller.instance}
+
+    @pytest.mark.parametrize(
+        ("reply", "logged"),
+        [
+            (requests.ConnectionError("reset"), ["Heartbeat failed: ConnectionError"]),
+            (FakeResponse(503), ["Heartbeat failed: HTTP 503"]),
+            (FakeResponse(404), []),
+            (FakeResponse(204), []),
+        ],
+        ids=["connection-error", "server-error", "older-server", "accepted"],
+    )
+    def test_a_failed_heartbeat_is_a_debug_line_and_an_older_servers_404_is_nothing(self, caplog, reply, logged):
+        session = FakeSession([reply])
+        with caplog.at_level(logging.DEBUG, logger=commands.logger.name):
+            self._poller(session, run=lambda argv, timeout: pytest.fail("ran"))._heartbeat()
+        assert session.calls[0]["url"] == BASE_URL + commands.HEARTBEAT_PATH
+        records = [record for record in caplog.records if record.name == commands.logger.name]
+        assert [record.getMessage() for record in records] == logged
+        assert all(record.levelno == logging.DEBUG for record in records)
+
+    def test_a_shutdown_while_every_slot_is_busy_sends_no_heartbeat(self):
+        server = FakeCommandServer()
+        stop = threading.Event()
+        poller = self._poller(server, run=lambda argv, timeout: pytest.fail("ran"), stop_event=stop)
+
+        def every_slot_busy(timeout=None):
+            stop.set()  # the shutdown starts while the loop waits for a slot
+            return False
+
+        poller._slots = SimpleNamespace(acquire=every_slot_busy, release=lambda: None)
+        poller.run_forever()
+        assert server.heartbeats == [] and server.lease_calls == 0
 
     def test_a_command_that_raises_frees_its_slot(self, caplog):
         def boom(argv, timeout):
