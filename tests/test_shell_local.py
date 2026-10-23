@@ -193,8 +193,10 @@ def test_a_new_chat_is_scoped_to_this_machine_and_bound_to_this_session(tmp_path
     assert first["server_ids"] == [5]
     assert first["active_server_id"] == 5
     assert first["local_session"] == {"server_id": 5, "instance": "session-1"}
-    # Bound once: a follow-up carries nothing more.
-    assert second == {"message": "now lint", "chat_id": 42, "server_id": None}
+    # A follow-up names the session too, so its turn counts as typed here; the scope travels only on create.
+    assert second == {
+        "message": "now lint", "chat_id": 42, "server_id": None, "local_session": {"server_id": 5, "instance": "session-1"},
+    }
 
 
 def test_chosen_servers_stay_the_scope_and_the_chat_is_still_bound(tmp_path, monkeypatch):
@@ -208,16 +210,18 @@ def test_chosen_servers_stay_the_scope_and_the_chat_is_still_bound(tmp_path, mon
     assert turn["local_session"]["server_id"] == 5
 
 
-def test_a_resumed_chat_is_bound_on_its_next_message_without_changing_its_scope(tmp_path, monkeypatch):
+def test_every_message_names_this_session_without_changing_the_chats_scope(tmp_path, monkeypatch):
     shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
     shell.chat_id = 17
     shell._send_prompt("continue")
     shell._send_prompt("and again")
 
-    first, second = client.turns
-    assert first == {"message": "continue", "chat_id": 17, "server_id": None,
-                     "local_session": {"server_id": 5, "instance": "session-1"}}
-    assert "local_session" not in second and "server_ids" not in second
+    # Each turn is typed here, so Skyportal tells this CLI to run its commands without asking.
+    session = {"server_id": 5, "instance": "session-1"}
+    assert client.turns == [
+        {"message": "continue", "chat_id": 17, "server_id": None, "local_session": session},
+        {"message": "and again", "chat_id": 17, "server_id": None, "local_session": session},
+    ]
 
 
 def test_server_local_selects_this_machine(tmp_path, monkeypatch):
@@ -355,7 +359,6 @@ def test_a_machine_removed_in_skyportal_leaves_the_prompt_and_reconnects_with_lo
     first = shell.local_target
     shell._send_prompt("run the tests")
     assert "local#altaf-laptop" in "".join(text for _, text in shell._prompt_fragments())
-    assert shell._bound_chats == {42}
 
     first.gone = True
     assert "local#" not in "".join(text for _, text in shell._prompt_fragments())
@@ -364,7 +367,9 @@ def test_a_machine_removed_in_skyportal_leaves_the_prompt_and_reconnects_with_lo
 
     assert first.closed
     assert shell.local_target is not first and shell.local_target.connected
-    assert shell._bound_chats == set()
+    # The next message binds the chat to the new session.
+    shell._send_prompt("and now")
+    assert shell.client.turns[-1]["local_session"]["instance"] == shell.local_target.instance
 
 
 def test_the_idle_prompt_is_drawn_from_the_current_context_so_a_notice_redraws_it(tmp_path, monkeypatch):

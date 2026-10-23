@@ -267,8 +267,6 @@ class InteractiveShell:
         self._trust_store = trust_store or TrustStore()
         self.local_target: Optional[LocalTarget] = None
         self._local_offered = False
-        # Chats this process has bound to its session: only those run commands here.
-        self._bound_chats: set = set()
         # y/N questions from command threads about turns this CLI didn't type, asked one at a time between prompts.
         self._questions: "queue.Queue[_TerminalQuestion]" = queue.Queue()
         self._question_prompt = question_prompt or self._default_question_prompt
@@ -1461,7 +1459,9 @@ class InteractiveShell:
         # server-side, not just stop the shell from listening.
         namespaces = self._namespace_payload(self.selected_namespaces)
         local = self._local_connected()
-        if local is not None and (self.chat_id is None or self.chat_id not in self._bound_chats):
+        # Every message names this session, so Skyportal knows its turn was typed here and this CLI runs its
+        # commands without asking; a turn typed anywhere else waits for a y here.
+        if local is not None:
             chat_id = self._begin_turn_here(message, local, namespaces)
         elif len(self.selected_server_ids) > 1 or namespaces:
             # Namespaces only travel on the plural create, so a single
@@ -1505,7 +1505,7 @@ class InteractiveShell:
         self._process_turn(turn, render_state=render_state)
 
     def _begin_turn_here(self, message: str, local: LocalTarget, namespaces: Optional[Dict[str, Any]]) -> int:
-        """Start or continue a chat bound to this CLI, so its commands on this machine run here."""
+        """Start or continue a chat bound to this CLI, its turn typed here, so its commands on this machine run here."""
         if self.chat_id is not None:
             # A chat started elsewhere keeps its scope; binding only lets it reach this machine.
             chat_id = self.client.begin_chat_turn(message, chat_id=self.chat_id, local_session=local.session)
@@ -1520,7 +1520,6 @@ class InteractiveShell:
             if namespaces:
                 scope["selected_namespaces"] = namespaces
             chat_id = self.client.begin_chat_turn(message, **scope)
-        self._bound_chats.add(chat_id)
         return chat_id
 
     def _local_connected(self) -> Optional[LocalTarget]:
@@ -1587,9 +1586,8 @@ class InteractiveShell:
         return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")
 
     def _connect_local_target(self, folder: Path) -> None:
-        # A target Skyportal removed is still held here; chats bound to its session can't use the new one.
+        # A target Skyportal removed is still held here; the next message binds its chat to the new one.
         self._close_local_target()
-        self._bound_chats.clear()
         target = self._local_target_factory(self.client, folder)
         target.show = self._print_from_worker
         target.ask = self._ask_from_worker
@@ -1641,7 +1639,6 @@ class InteractiveShell:
                 self.console.print("[dim]This machine isn't connected.[/dim]")
                 return
             self._close_local_target()
-            self._bound_chats.clear()
             self.console.print("[green]✓ Disconnected.[/green] Skyportal no longer runs commands on this machine.")
             return
         if action == "on":
