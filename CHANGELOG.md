@@ -29,6 +29,14 @@ All notable changes to this project are documented here. This project follows
   --namespace NAME` answer one that asks for a namespace.
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
+
+### Fixed
+
+- **`Chat.plan()` no longer 404s.** It called `/plan/`, a route the server never had.
+  It now reads `/plans/` and returns the newest plan, or `None` if there are none.
+  The new `Chat.plans()` / `client.chat.get_plans()` return the full history,
+  newest first (skyportal-website#3738).
+
 ### Added
 
 - **Approvals say why.** With a server that sends it (skyportal-website#3632), the
