@@ -434,7 +434,7 @@ def test_the_agents_poller_runs_the_local_queue_with_the_cli_session():
         run=lambda command, timeout: ran.append((command, timeout)) or {"exit_code": 0, "stdout": "ok", "stderr": ""},
         lease_path="/api/v1/agent/local/5/commands/lease/",
         result_path="/api/v1/agent/local/5/commands/{id}/result/",
-        extra_headers={"X-Agent-Instance": "session-1"},
+        instance="session-1",
         command_field=None,
         thread_prefix="local-command",
     )
@@ -504,7 +504,7 @@ def test_connecting_registers_the_machine_and_leases_for_this_session_only(tmp_p
         assert str(tmp_path) not in repr(payload)
         options = _Poller.made[-1].options
         assert options["lease_path"] == "/api/v1/agent/local/5/commands/lease/"
-        assert options["extra_headers"]["X-Agent-Instance"] == target.instance
+        assert options["instance"] == target.instance
         assert options["command_field"] is None
         assert options["max_backoff_seconds"] == local_target.LEASE_BACKOFF_MAX_SECONDS
         assert options["run"] == target._run_leased
