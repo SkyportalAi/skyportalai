@@ -60,6 +60,7 @@ jobs:
               "config.baseUrl=skyportal.example.com" \
               "image.tag=20260914" \
               "persistence.size=1Gib" \
+              "kubernetes.node.gpu.nodeLabel.key=" \
               "persistance.enabled=false"; do
             if helm template rel "$CHART_DIR" --set token.existingSecret=t --set "$bad" >/dev/null 2>&1; then
               echo "schema accepted --set $bad"; exit 1
@@ -92,11 +93,54 @@ jobs:
             --set image.tag=0.3.0 \
             --set kubernetes.node.gpu.runtimeClassName=nvidia \
             > rendered/kubernetes.yaml
-          grep -q 'kind: DaemonSet' rendered/kubernetes.yaml
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set kubernetes.enabled=true \
+            --set image.tag=0.3.0 \
+            > rendered/kubernetes-cpu.yaml
           # The Kubernetes roles are refused on an agent image that predates them.
           if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true --set-string image.tag=0.2.2 >/dev/null 2>&1; then
             echo "kubernetes.enabled rendered on an image without the Kubernetes roles"; exit 1
           fi
+
+      - name: GPU nodes get their own DaemonSet only when a RuntimeClass is set
+        run: |
+          # yq is mikefarah's v4, preinstalled on GitHub's Ubuntu runners. Its ==
+          # compares scalars only, so maps and lists are compared as compact JSON.
+          expect() {  # expect <rendered file> <yq expression over all its documents> <expected JSON> <what it proves>
+            got="$(yq ea -o json -I0 "$2" "$1")"
+            if [ "$got" = "$3" ]; then echo "ok: $4"; else printf 'FAIL: %s\n  expected %s\n  got      %s\n' "$4" "$3" "$got"; exit 1; fi
+          }
+          ds='[select(.kind == "DaemonSet")]'
+          node="$ds | map(select(.metadata.name == \"rel-skyportalai-agent-node\")) | .[0]"
+          gpu="$ds | map(select(.metadata.name == \"rel-skyportalai-agent-node-gpu\")) | .[0]"
+          spool='.spec.template.spec.volumes[] | select(.name == "spool") | .hostPath.path'
+          nvidia_env='[.spec.template.spec.containers[0].env[].name | select(test("^NVIDIA_"))]'
+          policies='[select(.kind == "NetworkPolicy") | .metadata.name] | sort'
+          selector='{"app.kubernetes.io/name":"skyportalai-agent-node","app.kubernetes.io/instance":"rel","app.kubernetes.io/component":"node"}'
+
+          f=rendered/kubernetes.yaml
+          expect "$f" "$ds | map(.metadata.name) | sort" '["rel-skyportalai-agent-node","rel-skyportalai-agent-node-gpu"]' "GPU set: two node DaemonSets"
+          expect "$f" "$gpu | .spec.template.spec.runtimeClassName" '"nvidia"' "node-gpu runs with the RuntimeClass"
+          expect "$f" "$gpu | .spec.template.spec.nodeSelector" '{"nvidia.com/gpu.present":"true"}' "node-gpu only on GPU-labelled nodes"
+          expect "$f" "$gpu | .spec.template.spec.affinity" 'null' "node-gpu has no node affinity"
+          expect "$f" "$gpu | $nvidia_env" '["NVIDIA_VISIBLE_DEVICES","NVIDIA_DRIVER_CAPABILITIES"]' "node-gpu sees the driver"
+          expect "$f" "$gpu | $spool" '"/var/lib/skyportalai-agent-gpu"' "node-gpu has its own spool"
+          expect "$f" "$node | .spec.template.spec.runtimeClassName" 'null' "node has no RuntimeClass"
+          expect "$f" "$node | .spec.template.spec.nodeSelector" 'null' "node has no nodeSelector"
+          expect "$f" "$node | .spec.template.spec.affinity" '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"nvidia.com/gpu.present","operator":"NotIn","values":["true"]}]}]}}}' "node on every node without the GPU label"
+          expect "$f" "$node | $nvidia_env" '[]' "node has no NVIDIA env"
+          expect "$f" "$node | $spool" '"/var/lib/skyportalai-agent"' "node keeps its spool"
+          expect "$f" "$node | .spec.selector.matchLabels" "$selector" "node keeps its selector, so helm upgrade works"
+          expect "$f" "$policies" '["rel-skyportalai-agent","rel-skyportalai-agent-cluster","rel-skyportalai-agent-node","rel-skyportalai-agent-node-gpu"]' "node-gpu has its own NetworkPolicy"
+
+          f=rendered/kubernetes-cpu.yaml
+          expect "$f" "$ds | map(.metadata.name)" '["rel-skyportalai-agent-node"]' "GPU unset: one node DaemonSet"
+          expect "$f" "$node | .spec.template.spec | [.runtimeClassName, .nodeSelector, .affinity]" '[null,null,null]' "node has no GPU scheduling"
+          expect "$f" "$node | $nvidia_env" '[]' "node has no NVIDIA env"
+          expect "$f" "$node | $spool" '"/var/lib/skyportalai-agent"' "node keeps its spool"
+          expect "$f" "$node | .spec.selector.matchLabels" "$selector" "node keeps its selector"
+          expect "$f" "$policies" '["rel-skyportalai-agent","rel-skyportalai-agent-cluster","rel-skyportalai-agent-node"]' "no node-gpu NetworkPolicy"
 
       - name: Rendered chart and plain manifests are valid Kubernetes
         run: |

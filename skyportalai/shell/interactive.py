@@ -1643,6 +1643,7 @@ class InteractiveShell:
         *,
         autoapproved: bool = False,
         rejection_reason: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> bool:
         """Submit a decision; recover when an older synchronous server times out.
 
@@ -1664,6 +1665,8 @@ class InteractiveShell:
                 self.client.submit_chat_approval(
                     chat_id, approval, decision, rejection_reason=rejection_reason,
                 )
+            elif namespace:
+                self.client.submit_chat_approval(chat_id, approval, decision, namespace=namespace)
             else:
                 self.client.submit_chat_approval(chat_id, approval, decision)
             return False
@@ -1821,6 +1824,11 @@ class InteractiveShell:
                         "[dim]This approval type requires an explicit decision.[/dim]"
                     )
                 decision, rejection_reason = self._ask_decision()
+            namespace: Optional[str] = None
+            if decision == "approved" and self._scope_asks_for_namespace(approval):
+                namespace = self._pick_scope_namespace(approval)
+                if namespace is None:
+                    decision = "rejected"
             try:
                 while True:
                     try:
@@ -1835,8 +1843,18 @@ class InteractiveShell:
                                 decision,
                                 autoapproved=autoapprove,
                                 rejection_reason=None if autoapprove else rejection_reason,
+                                namespace=namespace,
                             )
                             handled_approvals.add(approval_id)
+                            if decision == "approved" and approval_type == "scope":
+                                try:
+                                    self._note_scope_added(approval, namespace)
+                                except PortalError:
+                                    # The server already took the approval; keep following the turn.
+                                    self.console.print(
+                                        "[yellow]Approved, but the shell scope could not be "
+                                        "refreshed; check /status.[/yellow]"
+                                    )
                             approval_settlement_deadline = (
                                 time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
                             )
@@ -1868,6 +1886,59 @@ class InteractiveShell:
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
+
+    @staticmethod
+    def _scope_asks_for_namespace(approval: Dict[str, Any]) -> bool:
+        """A scope approval for a cluster with no namespace picked (skyportal-website#3724)."""
+        scope = approval.get("scope") if isinstance(approval.get("scope"), dict) else {}
+        return approval.get("type") == "scope" and scope.get("kind") == "namespace" and not scope.get("namespace")
+
+    def _pick_scope_namespace(self, approval: Dict[str, Any]) -> Optional[str]:
+        """Ask which of the cluster's namespaces to add; None (nothing added) on a blank answer."""
+        scope = approval["scope"]
+        choices = [str(name) for name in scope.get("namespace_choices") or []]
+        hostname = self._bounded_one_line(str(scope.get("hostname") or "the cluster"), 120)
+        while True:
+            try:
+                # Not self.session: that saves every answer to ~/.skyportalai/history.
+                answer = self._confirm_prompt(
+                    "Namespace on {} to add ({}), blank to decline: ".format(hostname, ", ".join(choices))
+                ).strip()
+            except (KeyboardInterrupt, EOFError):
+                answer = ""
+            if not answer:
+                self.console.print("[dim]No namespace picked; declining.[/dim]")
+                return None
+            if answer in choices:
+                return answer
+            self.console.print("[yellow]{} is not one of: {}[/yellow]".format(
+                escape(self._bounded_one_line(answer, 80)), escape(", ".join(choices)),
+            ))
+
+    def _note_scope_added(self, approval: Dict[str, Any], namespace: Optional[str]) -> None:
+        """Keep the shell's scope in step with an approved scope card.
+
+        The server added the target. Without this, /status shows the old scope and the next
+        /namespace edit, which replaces the whole selection, drops the target again.
+        """
+        scope = approval.get("scope") if isinstance(approval.get("scope"), dict) else {}
+        try:
+            server_id = int(scope.get("server_id"))
+        except (TypeError, ValueError):
+            return
+        if server_id not in self.selected_server_ids:
+            servers = self._items(self.client.servers())
+            self.selected_server_ids = [*self.selected_server_ids, server_id]
+            self.selected_server_names = [*self.selected_server_names, str(scope.get("hostname") or server_id)]
+            self.selected_server_id = self.selected_server_id or server_id
+            self.kubernetes_namespaces = self._kubernetes_namespaces_for(self.selected_server_ids, servers)
+        current = self.selected_namespaces.get(server_id, [])
+        if scope.get("kind") == "all_namespaces":
+            self.selected_namespaces[server_id] = [ALL_NAMESPACES]
+        elif scope.get("kind") == "namespace" and ALL_NAMESPACES not in current:
+            added = namespace or scope.get("namespace")
+            if added and added not in current:
+                self.selected_namespaces[server_id] = [*current, str(added)]
 
     def _ask_decision(self) -> "tuple[str, Optional[str]]":
         """y approves; r rejects with a reason the agent is told; anything else rejects."""
@@ -1992,6 +2063,14 @@ class InteractiveShell:
                         )
                 return "\n".join(lines)
             return "Approve this execution plan to begin."
+
+        scope = approval.get("scope")
+        if approval_type == "scope" and isinstance(scope, dict) and scope.get("label"):
+            # Worded by the server, the same on every client (skyportal-website#3724).
+            lines = [str(scope["label"])]
+            if scope.get("combined"):
+                lines.append("Approving also approves this command.")
+            return "\n".join(lines)
 
         return str(
             approval.get("executed_command")

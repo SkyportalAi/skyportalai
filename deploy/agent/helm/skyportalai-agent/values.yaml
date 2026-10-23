@@ -179,17 +179,31 @@ kubernetes:
         memory: 512Mi
   node:
     # Host directory for each node's upload spool. Its filesystem is also the disk
-    # the node reports.
+    # the node reports. The node-gpu DaemonSet (gpu below) uses this path with a
+    # "-gpu" suffix, so the two never share a spool.
     spoolHostPath: /var/lib/skyportalai-agent
     # Tolerate every taint, so the agent runs on every node, GPU nodes included.
-    # Narrow it (or set nodeSelector) to monitor a subset.
+    # Narrow it (or set nodeSelector) to monitor a subset. Both node DaemonSets
+    # use these.
     tolerations:
       - operator: Exists
     nodeSelector: {}
     gpu:
       # RuntimeClass that exposes the NVIDIA driver to a pod without a GPU request,
-      # usually "nvidia" with the GPU operator. Empty: no GPU metrics.
+      # usually "nvidia" with the GPU operator. Empty: one "node" DaemonSet on every
+      # node, CPU only, no GPU metrics. Set: a "node-gpu" DaemonSet with this
+      # RuntimeClass runs on the nodes carrying nodeLabel, and "node" keeps every
+      # other node, without it. A node whose runtime lacks the class's handler
+      # can't start a pod that names it, so one DaemonSet can't serve both.
       runtimeClassName: ""
+      # The label that marks a GPU node, set by the NVIDIA GPU operator's feature
+      # discovery. A GPU node without it is monitored as CPU only; check with
+      #   kubectl get nodes -L nvidia.com/gpu.present
+      # Pass the value with --set-string: --set turns "true" into a boolean, which
+      # the schema rejects.
+      nodeLabel:
+        key: nvidia.com/gpu.present
+        value: "true"
     resources:
       requests:
         cpu: 20m

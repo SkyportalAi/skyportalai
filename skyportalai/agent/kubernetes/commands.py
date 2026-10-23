@@ -15,6 +15,7 @@ import logging
 import math
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 LEASE_PATH = "/agent/api/kubernetes/commands/lease/"
 RESULT_PATH = "/agent/api/kubernetes/commands/{id}/result/"
+HEARTBEAT_PATH = "/agent/api/kubernetes/commands/heartbeat/"
 # How long a chat command can wait before the agent notices it. The server waits for each
 # command's own timeout (sent with the lease), so this short poll only keeps chat latency
 # to a couple of seconds.
@@ -58,6 +60,9 @@ class _LeasedCommand:
     timeout: float
     # When the server stops taking the result, on the poller's clock; None if it didn't say.
     report_deadline: float | None
+    # Which lease of the command this is. Sent back with the result, so the server can refuse one from a
+    # lease it handed to another process; None from a server that doesn't number them.
+    attempt: int | None = None
 
 
 class CommandPoller:
@@ -73,6 +78,7 @@ class CommandPoller:
         run: Callable[[list[str], float], dict] = run_kubectl,
         stop_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
+        instance: str | None = None,
         lease_path: str = LEASE_PATH,
         result_path: str = RESULT_PATH,
         extra_headers: Mapping[str, str] | None = None,
@@ -88,6 +94,10 @@ class CommandPoller:
         max_backoff_seconds: float | None = None,
     ):
         self.base_url = base_url.rstrip("/")
+        # Names this process to the server, which takes each lease poll as its heartbeat. A restarted
+        # pod is a new process with a new id, so the server can give it the command the old one was
+        # running instead of waiting for that one until the deadline (skyportal-website#3709).
+        self.instance = instance or str(uuid.uuid4())
         self._lease_path = lease_path
         self._result_path = result_path
         self._command_field = command_field
@@ -106,6 +116,7 @@ class CommandPoller:
             "Authorization": f"Bearer {token}",
             "User-Agent": f"skyportalai-agent/{__version__}",
             "X-Agent-Capabilities": AGENT_CAPABILITIES,
+            "X-Agent-Instance": self.instance,
             **(extra_headers or {}),
         }
         self._run = run
@@ -116,7 +127,11 @@ class CommandPoller:
     def run_forever(self) -> None:
         while not self._stop.is_set() and not self._ended:
             if not self._slots.acquire(timeout=POLL_SECONDS):
-                continue  # every slot is busy; look at the stop event again
+                # Every slot is busy, so no lease poll tells the server this process is still alive.
+                # Not once shutdown has started: the request could hold up the exit for its timeout.
+                if not self._stop.is_set():
+                    self._heartbeat()
+                continue
             if self._start_next() is None:
                 self._stop.wait(self._idle_wait())
 
@@ -124,6 +139,19 @@ class CommandPoller:
         if self._max_backoff is None or not self._failures:
             return POLL_SECONDS
         return min(POLL_SECONDS * 2 ** min(self._failures - 1, 16), self._max_backoff)
+
+    def _heartbeat(self) -> None:
+        try:
+            resp = self.session.post(self.base_url + HEARTBEAT_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+        except requests.RequestException as exc:
+            failure = type(exc).__name__
+        else:
+            # An older server has no heartbeat endpoint, so its 404 is expected.
+            if resp.status_code < 400 or resp.status_code == 404:
+                return
+            failure = f"HTTP {resp.status_code}"
+        # Debug, not a warning: with every slot busy this runs every couple of seconds, and the next one counts.
+        logger.debug("Heartbeat failed: %s", failure)
 
     def poll_once(self) -> threading.Thread | None:
         """Start the next queued command if a slot is free; returns the thread running it."""
@@ -167,7 +195,13 @@ class CommandPoller:
             logger.warning("Ignored a leased command with no usable id")
             return None
         handed = command if self._command_field is None else command.get(self._command_field)
-        return _LeasedCommand(command_id, handed, _command_timeout(command), self._report_deadline(command))
+        return _LeasedCommand(
+            command_id,
+            handed,
+            _command_timeout(command),
+            self._report_deadline(command),
+            _command_attempt(command),
+        )
 
     def _ending_hook(self, status: int) -> Callable[[], None] | None:
         if status == 410:
@@ -185,7 +219,7 @@ class CommandPoller:
         try:
             # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
             # one still gets a result back and chat fails fast instead of waiting it out.
-            payload = _result_payload(self._run(command.payload, command.timeout))
+            payload = _result_payload(self._run(command.payload, command.timeout), command.attempt)
             with self._session_factory() as session:
                 self._post_result(session, command, payload)
         except Exception:
@@ -227,13 +261,16 @@ class CommandPoller:
                 return  # that wait ran to the deadline, so the post after it was the last
 
 
-def _result_payload(result: dict) -> dict:
-    """The result fields the server takes, each stream cut to the head it keeps."""
-    return {
+def _result_payload(result: dict, attempt: int | None = None) -> dict:
+    """The result fields the server takes, each stream cut to the head it keeps, and the lease it answers."""
+    payload = {
         "exit_code": result["exit_code"],
         "stdout": result["stdout"][:MAX_COMMAND_OUTPUT_CHARS],
         "stderr": result["stderr"][:MAX_COMMAND_OUTPUT_CHARS],
     }
+    if attempt is not None:
+        payload["attempt"] = attempt
+    return payload
 
 
 def _command_id(command) -> int | None:
@@ -243,6 +280,12 @@ def _command_id(command) -> int | None:
         return int(command.get("id"))
     except (TypeError, ValueError):
         return None
+
+
+def _command_attempt(command: dict) -> int | None:
+    value = command.get("attempt")
+    # A bool is an int; an older server sends none.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _command_timeout(command: dict) -> float:

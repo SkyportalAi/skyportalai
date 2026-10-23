@@ -44,7 +44,17 @@ All notable changes to this project are documented here. This project follows
   characters written out. If the machine is removed in Skyportal or the key is
   refused, the CLI says so once and stops polling; `/local on` reconnects. Needs
   a Skyportal server with skyportal-website#3665.
-
+- **Scope approvals.** When the agent's command targets a host or namespace outside
+  the chat's scope, a server with skyportal-website#3724 asks to add it and run the
+  command, instead of ending the turn. The CLI shows the card's wording, asks y/N,
+  and when the cluster has no namespace picked, asks which one to add. Approving
+  adds the target to the chat and the same command runs; the shell's own scope
+  follows, so `/status` shows it and the next `/namespace` edit keeps it. Declining
+  tells the agent.
+  A scope approval is never autoapproved, in the CLI or in `wait()`; an explicit
+  `on_approval` callback answers it, and `PendingApproval.scope` says what it adds.
+  `chat.approve(..., namespace=...)` and `skyportalai chat approve --type scope
+  --namespace NAME` answer one that asks for a namespace.
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
 ### Added
@@ -84,6 +94,15 @@ All notable changes to this project are documented here. This project follows
   network blip got in the way. It now keeps trying until the `report_by`
   deadline SkyPortal sends with the command. An older server sends no deadline,
   and against it the agent keeps trying for about 77 seconds.
+- **A chat command survives an agent restart.** Each agent process now names
+  itself to SkyPortal with an `X-Agent-Instance` header, a random id made when
+  it starts, and says which lease a result answers. When the pod restarts in the
+  middle of a command, a server that supports it gives the command to the new
+  process to run once more, instead of waiting for the old one until the
+  deadline, and refuses a late result from the old one (skyportal-website#3709).
+  While all 4 command slots are busy the agent asks SkyPortal for no new command,
+  so it sends a heartbeat instead to show it is still alive. An older server
+  ignores the header and the heartbeat.
 
 ## 0.3.1
 
