@@ -33,7 +33,8 @@ logging.getLogger("skyportalai").addHandler(logging.NullHandler())
 logger = logging.getLogger(__name__)
 
 # Skyportal's gate decides what is queued. The CLI asks one thing: a command from a turn it didn't type (the browser
-# continuing its chat, say) runs only after a y at its terminal. Each command it runs is printed.
+# continuing its chat, say) runs only after a y at its terminal. Each command it runs is printed, and none starts
+# before Skyportal confirms it is still wanted: a turn stopped while the terminal asked has withdrawn it.
 LEASE_PATH = "/api/v1/agent/local/{server_id}/commands/lease/"
 RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
 # Skyportal takes a CLI silent for 40 s as closed and withdraws its commands. A beat starts every
@@ -43,7 +44,8 @@ HEARTBEAT_SECONDS = 15
 HEARTBEAT_TIMEOUT_SECONDS = 10
 # After repeated failures the lease poll waits longer between tries, up to this.
 LEASE_BACKOFF_MAX_SECONDS = 30
-# A no reaches Skyportal this long before the lease's report_by, while the turn still waits for the command.
+# A yes leaves the command its whole timeout and this much more before the lease's report_by, so its result is
+# still taken; a no reaches Skyportal while the turn still waits for the command.
 ANSWER_MARGIN_SECONDS = 15
 # The longest Skyportal gives a command on this machine, whatever a lease asks for.
 MAX_TIMEOUT_SECONDS = 1800
@@ -56,7 +58,12 @@ TIMEOUT_EXIT_CODE = 124
 STOPPED_EXIT_CODE = 130
 # 128 + SIGXFSZ, what a shell reports for a process that exceeded its file size limit.
 OUTPUT_LIMIT_EXIT_CODE = 153
-_NOT_RUN_BECAUSE = {"declined": "you said no", "no_answer": "no answer in time"}
+_NOT_RUN_BECAUSE = {
+    "declined": "you said no",
+    "no_answer": "no answer in time",
+    "withdrawn": "its turn was stopped",
+    "unconfirmed": "Skyportal couldn't confirm it was still wanted",
+}
 _STOPPED_BECAUSE = {
     "closed": "Stopped: the skyportalai CLI was closed.",
     "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
@@ -511,12 +518,20 @@ def _command_label(command: object, chat_id: object) -> str:
 
 
 def _seconds_to_answer(report_by: object, timeout: float) -> float:
-    """How long the terminal has to say yes: until ANSWER_MARGIN_SECONDS before the lease's report_by."""
+    """How long the terminal has to say yes: a yes must leave the command its whole timeout before report_by."""
     try:
-        left = (datetime.fromisoformat(str(report_by)) - datetime.now(timezone.utc)).total_seconds()
+        left = (datetime.fromisoformat(str(report_by)) - datetime.now(timezone.utc)).total_seconds() - timeout
     except (TypeError, ValueError):
         left = timeout  # no report_by, or one without a UTC offset: the command's own time
     return max(0.0, left - ANSWER_MARGIN_SECONDS)
+
+
+def _not_run(reason: str) -> Dict[str, Any]:
+    """The result of a leased command that never ran; a no at the terminal is the user's, so Skyportal records it so."""
+    if reason in ("declined", "no_answer"):
+        return {**_result(-1), "refused_by_user": reason}
+    # Withdrawn: Skyportal no longer takes this result, so posting it changes nothing.
+    return _result(-1, stderr=f"Not run on this machine: {_NOT_RUN_BECAUSE[reason]}.")
 
 
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Optional[bool]:
@@ -607,10 +622,10 @@ class LocalTarget:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
-        refused = self._refusal_at_terminal(lease, label, timeout)
+        refused = self._refusal_at_terminal(lease, label, timeout) or self._refusal_to_start(lease)
         if refused is not None:
             self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
-            return {**_result(-1), "refused_by_user": refused}
+            return _not_run(refused)
         self._tell(f"▸ running: {label}")
         try:
             result = self._runner(lease.get("command"), timeout)
@@ -632,6 +647,19 @@ class LocalTarget:
         if answer is None:
             return "no_answer"
         return None if answer else "declined"
+
+    def _refusal_to_start(self, lease: Dict[str, Any]) -> Optional[str]:
+        """None once Skyportal says the command may start; else why not. Its turn may have been stopped meanwhile."""
+        try:
+            self.client.start_local_command(self.server_id, self.instance, lease.get("id"))
+        except PortalError as error:
+            if error.code == "too_late":
+                return "no_answer"  # a yes this late couldn't finish before its result is due
+            return "withdrawn" if error.code == "withdrawn" else "unconfirmed"
+        except Exception as error:  # noqa: BLE001 — what Skyportal didn't confirm never runs
+            logger.warning("Could not confirm a leased command: %s", error)
+            return "unconfirmed"
+        return None
 
     def _tell(self, line: str) -> None:
         try:

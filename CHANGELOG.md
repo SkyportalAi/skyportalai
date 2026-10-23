@@ -26,8 +26,11 @@ All notable changes to this project are documented here. This project follows
   what runs. A command from a turn typed elsewhere, such as the browser
   continuing a chat this CLI started, runs only after you answer y at this
   terminal (`Run this on <machine>? [y/N]`, with the command, its chat and where
-  the turn came from). N, Ctrl-C or no answer before its deadline is reported as
-  refused by you and never runs; autoapprove doesn't answer it. Commands run in
+  the turn came from). N, Ctrl-C or no answer in time is reported as refused by
+  you and never runs; autoapprove doesn't answer it. You have a little under five
+  minutes, so a yes still leaves the command its whole timeout. Every command,
+  even one typed here, starts only after Skyportal confirms it is still wanted,
+  so a turn stopped while the question waits runs nothing. Commands run in
   bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
   PowerShell 5.1. Chats started in the shell use this machine unless you pick
   servers (`/server auto` doesn't change that); `/local [on|off]` shows or

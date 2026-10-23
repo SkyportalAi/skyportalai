@@ -511,6 +511,15 @@ class SkyportalClient:
             timeout=timeout,
         )
 
+    def start_local_command(self, server_id: int, instance: str, command_id: object) -> Dict[str, Any]:
+        """Ask Skyportal whether a leased command may start now; a PortalError says it may not."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/commands/{}/start/".format(server_id, command_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+        )
+
     def disconnect_local_machine(self, server_id: int, instance: str) -> Dict[str, Any]:
         """Close this session; Skyportal withdraws the commands it still held."""
         return self._request(

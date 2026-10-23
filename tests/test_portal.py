@@ -310,12 +310,15 @@ def test_connecting_this_machine_names_the_session_in_its_header(credential_path
         client.connect_local_machine(
             "session-1", machine_id="m-1234567890", name="laptop", platform="Linux", shell="bash", repo=None,
         )
+        client.start_local_command(5, "session-1", 7)
         client.disconnect_local_machine(5, "session-1")
 
-    connect, disconnect = (made.args[0] for made in call.call_args_list)
+    connect, start, disconnect = (made.args[0] for made in call.call_args_list)
     assert connect.full_url == "https://app.skyportal.ai/api/v1/agent/local/connect/"
     assert connect.get_header("X-agent-instance") == "session-1"
     assert json.loads(connect.data) == {"machine_id": "m-1234567890", "name": "laptop", "platform": "Linux", "shell": "bash"}
+    assert start.full_url == "https://app.skyportal.ai/api/v1/agent/local/5/commands/7/start/"
+    assert start.get_header("X-agent-instance") == "session-1"
     assert disconnect.full_url == "https://app.skyportal.ai/api/v1/agent/local/5/disconnect/"
     assert client.bearer_token() == "sk_test"
 

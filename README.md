@@ -210,9 +210,13 @@ any host. A command from a turn you typed in this CLI runs as soon as it is
 approved. One from anywhere else, such as your browser continuing a chat this
 CLI started, runs only after you answer `y` at this terminal. It shows the
 command, its chat and where the turn came from, and asks `Run this on
-<machine>? [y/N]`. `N`, Ctrl-C, or no answer before the command's deadline
-tells the agent you refused, and it never runs. No setting skips the
-question, and `/permission autoapprove` doesn't answer it.
+<machine>? [y/N]`. `N`, Ctrl-C, or no answer in time tells the agent you
+refused, and it never runs. You have a little under five minutes: a later
+yes couldn't finish before Skyportal stops waiting for the result. No setting
+skips the question, and `/permission autoapprove` doesn't answer it. Before
+any command runs, even one you typed, the CLI checks with Skyportal that it
+is still wanted, so if the turn is stopped while the question waits, a later
+`y` runs nothing.
 Nothing connects into your machine: the CLI fetches its commands over outbound
 HTTPS, and only while it is open. It sends the repository's remote (without
 credentials) and branch, never a full path. kubectl and helm don't run here,

@@ -36,6 +36,10 @@ POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="runs commands in a POSI
 NEEDS_BASH = pytest.mark.skipif(
     os.name == "nt" and local_target._windows_bash() is None, reason="needs bash (Git for Windows)",
 )
+# _running() lists processes from /proc on POSIX; macOS has none, where it would always count 0.
+NEEDS_PROCESS_LIST = pytest.mark.skipif(
+    os.name != "nt" and not Path("/proc/self").exists(), reason="counts processes through /proc",
+)
 
 
 def _eventually(condition, timeout=10.0):
@@ -229,6 +233,7 @@ def _running(marker: str) -> int:
 
 
 @NEEDS_BASH
+@NEEDS_PROCESS_LIST
 def test_stopping_a_command_stops_everything_it_started(tmp_path):
     # On Windows, Git Bash's children aren't Windows children of bash.exe, so taskkill /T missed them.
     stop = threading.Event()
@@ -240,6 +245,7 @@ def test_stopping_a_command_stops_everything_it_started(tmp_path):
 
 
 @NEEDS_BASH
+@NEEDS_PROCESS_LIST
 def test_ctrl_c_stops_the_running_command_and_says_so(tmp_path):
     runner = ShellRunner(tmp_path, threading.Event())
     threading.Timer(1.5, runner.stop_all, args=("interrupted",)).start()
@@ -251,6 +257,7 @@ def test_ctrl_c_stops_the_running_command_and_says_so(tmp_path):
 
 
 @NEEDS_BASH
+@NEEDS_PROCESS_LIST
 def test_closing_the_target_kills_the_running_command_before_it_returns(tmp_path, monkeypatch):
     # The CLI exits right after close(): a worker thread polling every 0.5 s would never get to kill it.
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
@@ -458,10 +465,12 @@ def test_the_agents_poller_runs_the_local_queue_with_the_cli_session():
 class _Client:
     base_url = BASE_URL
 
-    def __init__(self, heartbeat_errors=()):
+    def __init__(self, heartbeat_errors=(), start_error=None):
         self.connects = []
         self.disconnects = []
+        self.starts = []
         self.heartbeat_errors = list(heartbeat_errors)
+        self.start_error = start_error
 
     def bearer_token(self):
         return "sk_key"
@@ -478,6 +487,12 @@ class _Client:
     def disconnect_local_machine(self, server_id, instance):
         self.disconnects.append((server_id, instance))
         return {"withdrawn": 0}
+
+    def start_local_command(self, server_id, instance, command_id):
+        self.starts.append((server_id, instance, command_id))
+        if self.start_error is not None:
+            raise self.start_error
+        return {}
 
 
 class _Poller:
@@ -1005,7 +1020,8 @@ def test_a_command_from_a_turn_typed_elsewhere_runs_only_after_a_yes(tmp_path, m
     [(details, prompt, seconds)] = asked
     assert details.startswith("echo hi  (chat #12)") and said in details
     assert prompt == f"Run this on {target.hostname}? [y/N] "
-    assert 100 < seconds <= 120 - local_target.ANSWER_MARGIN_SECONDS
+    # A yes must leave the command its 60 s timeout before report_by, where its result is no longer taken.
+    assert 40 < seconds <= 120 - 60 - local_target.ANSWER_MARGIN_SECONDS
     assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
     assert "refused_by_user" not in result
     assert shown[0] == "▸ running: echo hi  (chat #12)"
@@ -1046,6 +1062,46 @@ def test_a_command_from_a_turn_typed_in_this_cli_runs_without_asking(tmp_path, m
 
     assert asked == []
     assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+
+
+def test_every_command_is_confirmed_with_skyportal_before_it_starts(tmp_path, monkeypatch):
+    target, run = _connected(tmp_path, monkeypatch)
+    client = target.client
+    try:
+        run({"id": 7, "command": "echo hi", "turn_origin": target.instance, "report_by": _report_by(120)}, 60)
+    finally:
+        target.close()
+
+    assert client.starts == [(5, target.instance, 7)]
+
+
+@pytest.mark.parametrize(
+    ("error", "said", "refused"),
+    [
+        (PortalError("withdrawn", status_code=409, code="withdrawn"), "its turn was stopped", None),
+        (PortalError("too late", status_code=409, code="too_late"), "no answer in time", "no_answer"),
+        (PortalError("gone", status_code=410, code="machine_removed"), "couldn't confirm", None),
+        (ConnectionResetError("reset by peer"), "couldn't confirm", None),
+    ],
+)
+def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, error, said, refused):
+    shown = []
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    target = LocalTarget(
+        _Client(start_error=error), tmp_path, poller_factory=_Poller, show=shown.append, ask=lambda *_question: True,
+    )
+    target.connect()
+    try:
+        result = _Poller.made[-1].options["run"](
+            {"id": 7, "command": "echo ran > ran.txt", "chat_id": 12, "turn_origin": "", "report_by": _report_by(120)}, 60,
+        )
+    finally:
+        target.close()
+
+    assert not (tmp_path / "ran.txt").exists()
+    assert result["exit_code"] == -1 and result.get("refused_by_user") == refused
+    [line] = shown
+    assert line.startswith("▸ not run (") and said in line
 
 
 def test_without_a_terminal_to_ask_a_turn_typed_elsewhere_runs_nothing(tmp_path, monkeypatch):
