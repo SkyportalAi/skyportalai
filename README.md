@@ -206,9 +206,13 @@ whose code you trust. The CLI won't connect from a filesystem or drive root
 folder.
 
 Skyportal decides what runs: every command passes the same approval rules as on
-any host, and the CLI asks nothing a second time. The CLI runs what Skyportal
-sends it. While it is open, anyone holding your API key or your web session can
-have commands run here, including a browser turn on a chat this CLI started.
+any host. A command from a turn you typed in this CLI runs as soon as it is
+approved. One from anywhere else, such as your browser continuing a chat this
+CLI started, runs only after you answer `y` at this terminal. It shows the
+command, its chat and where the turn came from, and asks `Run this on
+<machine>? [y/N]`. `N`, Ctrl-C, or no answer before the command's deadline
+tells the agent you refused, and it never runs. No setting skips the
+question, and `/permission autoapprove` doesn't answer it.
 Nothing connects into your machine: the CLI fetches its commands over outbound
 HTTPS, and only while it is open. It sends the repository's remote (without
 credentials) and branch, never a full path. kubectl and helm don't run here,

@@ -23,9 +23,11 @@ All notable changes to this project are documented here. This project follows
   The folder is only where commands start, not a boundary: a command can read or
   change anything you can, and the CLI won't connect from a filesystem or drive
   root (the trust prompt warns when it is your home folder). Skyportal decides
-  what runs; the CLI asks nothing a second time and runs what it is sent, so
-  anyone holding your API key or web session, including a browser turn on a chat
-  this CLI started while it is open, can have commands run here. Commands run in
+  what runs. A command from a turn typed elsewhere, such as the browser
+  continuing a chat this CLI started, runs only after you answer y at this
+  terminal (`Run this on <machine>? [y/N]`, with the command, its chat and where
+  the turn came from). N, Ctrl-C or no answer before its deadline is reported as
+  refused by you and never runs; autoapprove doesn't answer it. Commands run in
   bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
   PowerShell 5.1. Chats started in the shell use this machine unless you pick
   servers (`/server auto` doesn't change that); `/local [on|off]` shows or

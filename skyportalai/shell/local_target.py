@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -31,8 +32,8 @@ from .portal import PortalError, SkyportalClient
 logging.getLogger("skyportalai").addHandler(logging.NullHandler())
 logger = logging.getLogger(__name__)
 
-# The CLI runs what Skyportal sends it and asks nothing a second time: Skyportal's gate decides what is queued.
-# So anyone holding the user's API key or web session can have commands run here, and each one is printed.
+# Skyportal's gate decides what is queued. The CLI asks one thing: a command from a turn it didn't type (the browser
+# continuing its chat, say) runs only after a y at its terminal. Each command it runs is printed.
 LEASE_PATH = "/api/v1/agent/local/{server_id}/commands/lease/"
 RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
 # Skyportal takes a CLI silent for 40 s as closed and withdraws its commands. A beat starts every
@@ -42,6 +43,8 @@ HEARTBEAT_SECONDS = 15
 HEARTBEAT_TIMEOUT_SECONDS = 10
 # After repeated failures the lease poll waits longer between tries, up to this.
 LEASE_BACKOFF_MAX_SECONDS = 30
+# A no reaches Skyportal this long before the lease's report_by, while the turn still waits for the command.
+ANSWER_MARGIN_SECONDS = 15
 # The longest Skyportal gives a command on this machine, whatever a lease asks for.
 MAX_TIMEOUT_SECONDS = 1800
 # Kept per stream: the head and the tail, where a failing build says why. The model reads less than this.
@@ -53,6 +56,7 @@ TIMEOUT_EXIT_CODE = 124
 STOPPED_EXIT_CODE = 130
 # 128 + SIGXFSZ, what a shell reports for a process that exceeded its file size limit.
 OUTPUT_LIMIT_EXIT_CODE = 153
+_NOT_RUN_BECAUSE = {"declined": "you said no", "no_answer": "no answer in time"}
 _STOPPED_BECAUSE = {
     "closed": "Stopped: the skyportalai CLI was closed.",
     "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
@@ -506,6 +510,19 @@ def _command_label(command: object, chat_id: object) -> str:
     return label
 
 
+def _seconds_to_answer(report_by: object, timeout: float) -> float:
+    """How long the terminal has to say yes: until ANSWER_MARGIN_SECONDS before the lease's report_by."""
+    try:
+        left = (datetime.fromisoformat(str(report_by)) - datetime.now(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        left = timeout  # no report_by, or one without a UTC offset: the command's own time
+    return max(0.0, left - ANSWER_MARGIN_SECONDS)
+
+
+def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Optional[bool]:
+    return None
+
+
 def _session_without_redirects() -> requests.Session:
     # The shell's own client refuses redirects so the key is never sent on; this one does the same.
     session = requests.Session()
@@ -527,6 +544,9 @@ class LocalTarget:
     # Where each command this machine runs is shown, as it starts and as it ends: a chat this CLI started
     # can be continued from the owner's browser, so nothing may run here without a trace in the terminal.
     show: Callable[[str], None] = logger.info
+    # Asks the terminal y/N about a command from a turn this CLI didn't type: True or False as answered, None when
+    # nobody answered in the seconds given. With no terminal to ask, nobody answers, so no such command runs.
+    ask: Callable[[str, str, float], Optional[bool]] = _nobody_answers
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
@@ -587,6 +607,10 @@ class LocalTarget:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
+        refused = self._refusal_at_terminal(lease, label, timeout)
+        if refused is not None:
+            self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
+            return {**_result(-1), "refused_by_user": refused}
         self._tell(f"▸ running: {label}")
         try:
             result = self._runner(lease.get("command"), timeout)
@@ -595,6 +619,19 @@ class LocalTarget:
             result = _result(127, stderr=f"The CLI could not run this command: {error}")
         self._tell(f"▸ exit {result['exit_code']}: {label}")
         return result
+
+    def _refusal_at_terminal(self, lease: Dict[str, Any], label: str, timeout: float) -> Optional[str]:
+        """None to run it; "declined" or "no_answer" when its turn wasn't typed here and nobody said yes."""
+        origin = lease.get("turn_origin")
+        if origin == self.instance:
+            return None
+        where = "another skyportalai CLI session" if origin else "the browser, Slack or the API"
+        details = f"{label}\nIts turn wasn't typed in this terminal: it came from {where}."
+        seconds = _seconds_to_answer(lease.get("report_by"), timeout)
+        answer = self.ask(details, f"Run this on {self.hostname}? [y/N] ", seconds) if seconds > 0 else None
+        if answer is None:
+            return "no_answer"
+        return None if answer else "declined"
 
     def _tell(self, line: str) -> None:
         try:

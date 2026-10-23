@@ -1,7 +1,9 @@
 """Persistent conversational Skyportal terminal shell."""
 
+import asyncio
 import json
 import os
+import queue
 import re
 import shlex
 import signal
@@ -102,6 +104,47 @@ COMMANDS: Dict[str, CommandInfo] = {
     "/exit": CommandInfo("/exit", "Leave Skyportal"),
     "/quit": CommandInfo("/quit", "Leave Skyportal"),
 }
+
+
+_QUESTION_WAITING = "▸ A command from outside this terminal is waiting for your y/N; it is asked when this finishes."
+
+
+@dataclass(frozen=True)
+class _HeldInput:
+    """What was typed at the idle prompt when a question for this terminal took it over."""
+
+    text: str
+
+
+class _TerminalQuestion:
+    """A y/N a command thread asks the terminal, settled once: by the answer, or by its deadline with none."""
+
+    def __init__(self, details: str, prompt: str, deadline: float):
+        self.details = details
+        self.prompt = prompt
+        self.deadline = deadline
+        self.answer: Optional[bool] = None
+        self._settled = threading.Event()
+        self._lock = threading.Lock()
+
+    @property
+    def settled(self) -> bool:
+        return self._settled.is_set()
+
+    def settle(self, answer: Optional[bool]) -> bool:
+        """Record the answer unless one already was; whether this one counted."""
+        with self._lock:
+            if self._settled.is_set():
+                return False
+            self.answer = answer
+            self._settled.set()
+            return True
+
+    def wait(self, seconds: float) -> Optional[bool]:
+        """The answer given within `seconds`, else None, which then stands whatever is typed later."""
+        self._settled.wait(max(0.0, seconds))
+        self.settle(None)
+        return self.answer
 
 
 @contextmanager
@@ -214,6 +257,7 @@ class InteractiveShell:
         confirm_prompt: Optional[Callable[[str], str]] = None,
         local_target_factory: Optional[Callable[[SkyportalClient, Path], LocalTarget]] = None,
         trust_store: Optional[TrustStore] = None,
+        question_prompt: Optional[Callable[[str, float], Optional[str]]] = None,
     ):
         self.console = console
         self.client = client_factory()
@@ -225,6 +269,10 @@ class InteractiveShell:
         self._local_offered = False
         # Chats this process has bound to its session: only those run commands here.
         self._bound_chats: set = set()
+        # y/N questions from command threads about turns this CLI didn't type, asked one at a time between prompts.
+        self._questions: "queue.Queue[_TerminalQuestion]" = queue.Queue()
+        self._question_prompt = question_prompt or self._default_question_prompt
+        self._at_idle_prompt = False
         self.running = True
         self.browser_login_started = False
         self.chat_id: Optional[int] = None
@@ -323,6 +371,18 @@ class InteractiveShell:
         # answer to ~/.skyportalai/history.
         return secure_prompt(message)
 
+    @staticmethod
+    def _default_question_prompt(message: str, seconds: float) -> Optional[str]:
+        """A fresh prompt, like the confirm prompt, that gives up after `seconds` and then returns None."""
+
+        async def ask() -> str:
+            return await PromptSession().prompt_async(message)
+
+        try:
+            return asyncio.run(asyncio.wait_for(ask(), timeout=seconds))
+        except asyncio.TimeoutError:
+            return None
+
     def run(self) -> None:
         """Run until `/exit` or Ctrl-D, preserving the prompt after errors."""
         self._show_onboarding()
@@ -334,16 +394,22 @@ class InteractiveShell:
             self._close_local_target()
 
     def _loop(self) -> None:
+        held = ""
         while self.running:
+            self._answer_questions()
             try:
-                # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
-                line = self.session.prompt(self._prompt_fragments)
+                line = self._idle_prompt(held)
             except KeyboardInterrupt:
                 self._interrupt_at_prompt()
                 continue
             except EOFError:
                 self.console.print("\n[dim]Session closed. See you in orbit.[/dim]")
                 break
+            held = ""
+            if isinstance(line, _HeldInput):
+                # A question for this terminal took the prompt over; it is asked at the top, then the text comes back.
+                held = line.text
+                continue
 
             line = line.strip()
             if not line:
@@ -358,6 +424,54 @@ class InteractiveShell:
                 self._print_section("Command failed", style="red")
                 self.console.print(error)
                 self.console.print("[dim]The shell is still running. Try /help or retry.[/dim]\n")
+
+    def _idle_prompt(self, held: str) -> Any:
+        """The prompt between turns, which a question for this terminal may take over; `held` is typed back in."""
+        self._at_idle_prompt = True
+        try:
+            # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
+            if held:
+                return self.session.prompt(self._prompt_fragments, default=held)
+            return self.session.prompt(self._prompt_fragments)
+        finally:
+            self._at_idle_prompt = False
+
+    def _ask_from_worker(self, details: str, prompt: str, seconds: float) -> Optional[bool]:
+        """On a command thread: ask the terminal y/N; True or False as answered, None if nobody did in `seconds`."""
+        question = _TerminalQuestion(details, prompt, time.monotonic() + seconds)
+        self._questions.put(question)
+        if not self._on_prompt_loop(self._take_the_prompt_for_a_question):
+            # In a turn: asked as soon as it ends, if that is in time.
+            self._print_from_worker(_QUESTION_WAITING)
+        return question.wait(seconds)
+
+    def _take_the_prompt_for_a_question(self) -> None:
+        """On the prompt's loop: leave the idle prompt so the loop asks; any other prompt is answered first."""
+        app = self.session.app
+        if self._at_idle_prompt and app.is_running:
+            app.exit(result=_HeldInput(app.current_buffer.text))
+        else:
+            run_in_terminal(lambda: self.console.print(Text(_QUESTION_WAITING, style="cyan")))
+
+    def _answer_questions(self) -> None:
+        """Ask each waiting question for this terminal in turn, each until its deadline; Ctrl-C is a no."""
+        while True:
+            try:
+                question = self._questions.get_nowait()
+            except queue.Empty:
+                return
+            left = question.deadline - time.monotonic()
+            if question.settled or left <= 0:
+                continue  # its command thread already reported that nobody answered
+            self._print_section("A command from outside this terminal", style="yellow")
+            self.console.print(Text(self._clean_terminal_text(question.details)))
+            try:
+                reply = self._question_prompt(question.prompt, left)
+            except (KeyboardInterrupt, EOFError):
+                reply = ""
+            answer = None if reply is None else reply.strip().lower() in ("y", "yes")
+            if not question.settle(answer):
+                self.console.print("[dim]Too late: it was already reported as not run.[/dim]")
 
     def _interrupt_at_prompt(self) -> None:
         """Ctrl-C at the idle prompt stops what runs on this machine; with nothing running it says how to leave."""
@@ -1465,8 +1579,9 @@ class InteractiveShell:
             "credentials, your cloud logins. A command starts in this folder, but that is not a limit: "
             "it can read or change anything you can, anywhere on this machine. Trust covers this folder "
             "and everything inside it. Commands that change things or touch secrets ask you first, as on "
-            "any host, unless your approval mode is autoapprove. While the CLI is open it runs what "
-            "Skyportal sends it, and prints every command here. Only trust a folder whose code you trust.\n"
+            "any host, unless your approval mode is autoapprove. A command from a turn typed anywhere but "
+            "here (your browser, say) also waits for your y in this terminal. Every command is printed "
+            "here. Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
         return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")
@@ -1477,6 +1592,7 @@ class InteractiveShell:
         self._bound_chats.clear()
         target = self._local_target_factory(self.client, folder)
         target.show = self._print_from_worker
+        target.ask = self._ask_from_worker
         with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
             target.connect()
         self.local_target = target
@@ -1495,15 +1611,20 @@ class InteractiveShell:
     def _print_from_worker(self, line: str) -> None:
         """Print a line from a background thread, above the prompt when the user is at it, so it can't garble it."""
         text = Text(self._clean_terminal_text(line), style="cyan")
+        if not self._on_prompt_loop(lambda: run_in_terminal(lambda: self.console.print(text))):
+            self.console.print(text)
+
+    def _on_prompt_loop(self, callback: Callable[[], None]) -> bool:
+        """Run `callback` on the running prompt's event loop; False when no prompt is running."""
         app = getattr(self.session, "app", None)
         loop = getattr(app, "loop", None) if app is not None and app.is_running else None
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: self.console.print(text)))
-                return
-            except RuntimeError:
-                pass  # the prompt's loop closed between looking and scheduling; print here instead
-        self.console.print(text)
+        if loop is None:
+            return False
+        try:
+            loop.call_soon_threadsafe(callback)
+            return True
+        except RuntimeError:
+            return False  # the prompt's loop closed between looking and scheduling
 
     def _close_local_target(self) -> None:
         target, self.local_target = self.local_target, None

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -636,9 +637,10 @@ def test_a_heartbeat_that_stalls_is_cut_off_and_the_next_still_starts_on_its_cad
 
 
 def test_a_leased_command_runs_here_and_its_result_is_posted_with_its_exit_code(tmp_path, skyportal):
-    server = skyportal(leases=[{"id": 7, "command": "echo hi", "chat_id": 123, "timeout_seconds": 30}])
+    # Typed in this CLI, so it runs without asking.
+    server = skyportal(leases=[{"id": 7, "command": "echo hi", "chat_id": 123, "timeout_seconds": 30, "turn_origin": "s-1"}])
     shown = []
-    target = LocalTarget(SkyportalClient(server.url), tmp_path, show=shown.append)
+    target = LocalTarget(SkyportalClient(server.url), tmp_path, show=shown.append, instance="s-1")
     target.connect()
     try:
         assert _eventually(lambda: server.results)
@@ -747,7 +749,7 @@ def test_every_command_run_here_is_shown_with_its_chat_and_its_exit_code(tmp_pat
     target.connect()
     try:
         run = _Poller.made[-1].options["run"]
-        result = run({"id": 7, "command": "echo hi", "chat_id": 123, "timeout_seconds": 5}, 5)
+        result = run({"id": 7, "command": "echo hi", "chat_id": 123, "timeout_seconds": 5, "turn_origin": target.instance}, 5)
     finally:
         target.close()
 
@@ -764,7 +766,9 @@ def test_a_terminal_that_cannot_print_still_reports_the_result(tmp_path, monkeyp
     target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, show=broken)
     target.connect()
     try:
-        result = _Poller.made[-1].options["run"]({"id": 7, "command": "echo hi", "chat_id": 123}, 5)
+        result = _Poller.made[-1].options["run"](
+            {"id": 7, "command": "echo hi", "chat_id": 123, "turn_origin": target.instance}, 5,
+        )
     finally:
         target.close()
 
@@ -802,7 +806,9 @@ def test_the_lines_the_terminal_gets_carry_no_control_byte(tmp_path, monkeypatch
     target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, show=shown.append)
     target.connect()
     try:
-        _Poller.made[-1].options["run"]({"id": 7, "command": "echo \x1b[2Ksafe\x07", "chat_id": 1}, 5)
+        _Poller.made[-1].options["run"](
+            {"id": 7, "command": "echo \x1b[2Ksafe\x07", "chat_id": 1, "turn_origin": target.instance}, 5,
+        )
     finally:
         target.close()
 
@@ -850,7 +856,9 @@ def test_a_runner_that_fails_still_gives_the_chat_a_result(tmp_path, monkeypatch
     monkeypatch.setattr(ShellRunner, "__call__", lambda self, command, timeout: 1 / 0)
     target.connect()
     try:
-        result = _Poller.made[-1].options["run"]({"id": 7, "command": "echo hi", "chat_id": 1}, 5)
+        result = _Poller.made[-1].options["run"](
+            {"id": 7, "command": "echo hi", "chat_id": 1, "turn_origin": target.instance}, 5,
+        )
     finally:
         target.close()
 
@@ -968,3 +976,99 @@ def test_importing_the_shell_does_not_load_the_agent_package():
     shown = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
 
     assert shown.strip() == "[]"
+
+
+def _report_by(seconds: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _connected(tmp_path, monkeypatch, **options):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, **options)
+    target.connect()
+    return target, _Poller.made[-1].options["run"]
+
+
+@pytest.mark.parametrize(
+    ("origin", "said"), [("", "the browser, Slack or the API"), ("another-session", "another skyportalai CLI session")],
+)
+def test_a_command_from_a_turn_typed_elsewhere_runs_only_after_a_yes(tmp_path, monkeypatch, origin, said):
+    asked, shown = [], []
+    target, run = _connected(
+        tmp_path, monkeypatch, show=shown.append, ask=lambda *question: asked.append(question) or True,
+    )
+    try:
+        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": origin, "report_by": _report_by(120)}, 60)
+    finally:
+        target.close()
+
+    [(details, prompt, seconds)] = asked
+    assert details.startswith("echo hi  (chat #12)") and said in details
+    assert prompt == f"Run this on {target.hostname}? [y/N] "
+    assert 100 < seconds <= 120 - local_target.ANSWER_MARGIN_SECONDS
+    assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+    assert "refused_by_user" not in result
+    assert shown[0] == "▸ running: echo hi  (chat #12)"
+
+
+@pytest.mark.parametrize(("answer", "reason"), [(False, "declined"), (None, "no_answer")])
+def test_a_no_or_no_answer_comes_back_refused_and_nothing_runs(tmp_path, monkeypatch, answer, reason):
+    shown = []
+    target, run = _connected(tmp_path, monkeypatch, show=shown.append, ask=lambda *_question: answer)
+    try:
+        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": "", "report_by": _report_by(120)}, 60)
+    finally:
+        target.close()
+
+    assert result == {"exit_code": -1, "stdout": "", "stderr": "", "refused_by_user": reason}
+    assert shown == [f"▸ not run ({local_target._NOT_RUN_BECAUSE[reason]}): echo hi  (chat #12)"]
+
+
+def test_with_no_time_left_to_answer_it_is_no_answer_without_asking(tmp_path, monkeypatch):
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or True)
+    try:
+        result = run({"id": 7, "command": "echo hi", "turn_origin": "", "report_by": _report_by(5)}, 60)
+    finally:
+        target.close()
+
+    assert result["refused_by_user"] == "no_answer"
+    assert asked == []
+
+
+def test_a_command_from_a_turn_typed_in_this_cli_runs_without_asking(tmp_path, monkeypatch):
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
+    try:
+        result = run({"id": 7, "command": "echo hi", "turn_origin": target.instance, "report_by": _report_by(120)}, 60)
+    finally:
+        target.close()
+
+    assert asked == []
+    assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+
+
+def test_without_a_terminal_to_ask_a_turn_typed_elsewhere_runs_nothing(tmp_path, monkeypatch):
+    target, run = _connected(tmp_path, monkeypatch)
+    try:
+        result = run({"id": 7, "command": "echo hi", "turn_origin": "", "report_by": _report_by(120)}, 60)
+    finally:
+        target.close()
+
+    assert result["refused_by_user"] == "no_answer"
+
+
+def test_the_poller_posts_a_refusal_for_skyportal_to_record():
+    server = _LocalServer()
+    poller = CommandPoller(
+        BASE_URL, "sk_key", session=server, session_factory=lambda: server,
+        run=lambda _lease, _timeout: {**local_target._result(-1), "refused_by_user": "declined"},
+        lease_path="/api/v1/agent/local/5/commands/lease/",
+        result_path="/api/v1/agent/local/5/commands/{id}/result/",
+        instance="session-1", command_field=None, thread_prefix="local-command",
+    )
+
+    poller.poll_once().join(5)
+
+    _, result = server.calls
+    assert result["json"] == {"exit_code": -1, "stdout": "", "stderr": "", "refused_by_user": "declined"}

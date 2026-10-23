@@ -4,6 +4,7 @@ import http.client
 import os
 import signal
 import ssl
+import threading
 import time
 from io import StringIO
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 from rich.console import Console
 
 from skyportalai.cli import shell_commands
-from skyportalai.shell.interactive import InteractiveShell
+from skyportalai.shell.interactive import InteractiveShell, _HeldInput
 from skyportalai.shell.local_target import LocalTarget, TrustStore
 from skyportalai.shell.portal import ChatTurnResult, PortalError
 
@@ -314,7 +315,7 @@ def test_the_trust_prompt_says_the_folder_is_where_commands_start_not_a_limit(tm
     assert "starts in this folder, but that is not a limit" in said
     assert "anything you can" in said
     assert "this folder and everything inside it" in said
-    assert "runs what Skyportal sends it" in said
+    assert "typed anywhere but here (your browser, say) also waits for your y in this terminal" in said
     assert "home folder" not in said
 
 
@@ -530,3 +531,96 @@ def test_a_line_from_a_worker_never_carries_a_terminal_escape(tmp_path, monkeypa
 
     assert "\x1b" not in shell.console.file.getvalue() and "\x07" not in shell.console.file.getvalue()
     assert "evil" in shell.console.file.getvalue()
+
+
+def _ask_on_a_worker(shell, seconds=30):
+    """What a command thread gets back, asked as LocalTarget asks for a turn typed elsewhere."""
+    got = []
+    worker = threading.Thread(target=lambda: got.append(shell._ask_from_worker(
+        "rm -rf build  (chat #12)\nIts turn wasn't typed in this terminal: it came from the browser, Slack or the API.",
+        "Run this on altaf-laptop? [y/N] ", seconds,
+    )))
+    worker.start()
+    deadline = time.monotonic() + 5
+    while shell._questions.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return worker, got
+
+
+def _pressed(error):
+    def press(_message, _seconds):
+        raise error
+
+    return press
+
+
+@pytest.mark.parametrize(
+    ("prompt", "answer"),
+    [
+        (lambda _message, _seconds: "y", True),
+        (lambda _message, _seconds: "n", False),
+        (_pressed(KeyboardInterrupt), False),
+        (lambda _message, _seconds: None, None),  # nobody answered before the deadline
+    ],
+)
+def test_a_command_threads_question_is_asked_here_and_its_answer_handed_back(tmp_path, monkeypatch, prompt, answer):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    # Autoapprove answers approval cards, never this question.
+    shell._permission_mode_for_approval = lambda: "autoapprove"
+    asked = []
+    shell._question_prompt = lambda message, seconds: asked.append((message, seconds)) or prompt(message, seconds)
+
+    worker, got = _ask_on_a_worker(shell)
+    shell._answer_questions()
+    worker.join(5)
+
+    assert got == [answer]
+    [(message, seconds)] = asked
+    assert message == "Run this on altaf-laptop? [y/N] " and 0 < seconds <= 30
+    said = _said(shell)
+    assert "A command from outside this terminal" in said
+    assert "rm -rf build (chat #12)" in said and "the browser, Slack or the API" in said
+    # No prompt was running (a turn, say), so it said one was waiting.
+    assert "waiting for your y/N" in said
+
+
+def test_a_question_takes_over_the_idle_prompt_and_what_was_typed_comes_back(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    exited = []
+    shell.session = SimpleNamespace(app=SimpleNamespace(
+        is_running=True, current_buffer=SimpleNamespace(text="git sta"), exit=lambda result: exited.append(result),
+    ))
+    shell._at_idle_prompt = True
+    shell._take_the_prompt_for_a_question()
+    assert exited == [_HeldInput("git sta")]
+
+    prompted, asked = [], []
+
+    class _Prompt:
+        def prompt(self, _message, **typed):
+            prompted.append(typed)
+            if len(prompted) == 1:
+                return _HeldInput("git sta")
+            raise EOFError
+
+    shell.session = _Prompt()
+    shell._answer_questions = lambda: asked.append("asked")
+    shell._loop()
+
+    assert prompted == [{}, {"default": "git sta"}]
+    assert asked == ["asked", "asked"]
+
+
+def test_a_question_waits_for_any_other_prompt_and_says_so(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    exited = []
+    shell.session = SimpleNamespace(app=SimpleNamespace(
+        is_running=True, current_buffer=SimpleNamespace(text="y"), exit=lambda result: exited.append(result),
+    ))
+    shell._at_idle_prompt = False  # an approval card's y/N, say
+
+    with patch("skyportalai.shell.interactive.run_in_terminal", side_effect=lambda func: func()):
+        shell._take_the_prompt_for_a_question()
+
+    assert exited == []
+    assert "waiting for your y/N" in _said(shell)

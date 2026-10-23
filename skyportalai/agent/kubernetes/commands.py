@@ -270,6 +270,9 @@ def _result_payload(result: dict, attempt: int | None = None) -> dict:
     }
     if attempt is not None:
         payload["attempt"] = attempt
+    # The CLI's local machine: nobody at its terminal said yes, so the command never ran.
+    if result.get("refused_by_user"):
+        payload["refused_by_user"] = result["refused_by_user"]
     return payload
 
 
