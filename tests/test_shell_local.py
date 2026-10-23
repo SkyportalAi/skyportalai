@@ -274,7 +274,8 @@ def test_the_real_entry_point_wires_this_machine():
         patch.object(shell_commands, "InteractiveShell") as shell_class,
         patch.object(shell_commands, "show_startup_animation"),
     ):
-        shell_commands.run_shell()
+        # The settings only reach the client factory, which this test never calls.
+        shell_commands.run_shell(SimpleNamespace())
 
     assert shell_class.call_args.kwargs["local_target_factory"] is LocalTarget
 

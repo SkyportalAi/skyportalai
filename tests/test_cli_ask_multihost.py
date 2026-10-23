@@ -25,7 +25,13 @@ class FakeClient:
 
 def _client(monkeypatch):
     client = FakeClient()
-    monkeypatch.setattr("skyportalai.cli.shell_commands._portal_client", lambda: client)
+    client.base_urls = []
+
+    def factory(settings):
+        client.base_urls.append(settings.base_url)
+        return client
+
+    monkeypatch.setattr("skyportalai.cli.shell_commands._portal_client", factory)
     return client
 
 
@@ -57,3 +63,12 @@ def test_ask_without_server_sends_an_unscoped_turn(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert client.calls == [("status?", {})]
+
+
+def test_ask_honours_the_base_url_flag(monkeypatch):
+    client = _client(monkeypatch)
+
+    result = CliRunner().invoke(app, ["--base-url", "https://staging.example", "ask", "hello"])
+
+    assert result.exit_code == 0, result.output
+    assert client.base_urls == ["https://staging.example"]
