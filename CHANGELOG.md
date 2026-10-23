@@ -16,6 +16,39 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **The agent works on your own machine, starting in the folder you opened.**
+  Started in a folder you trust (it asks once per folder, like Claude Code, and
+  trust covers that folder and everything inside it), the shell registers this
+  machine with Skyportal and runs the commands the agent's chat queues for it.
+  The folder is only where commands start, not a boundary: a command can read or
+  change anything you can, and the CLI won't connect from a filesystem or drive
+  root (the trust prompt warns when it is your home folder). Skyportal decides
+  what runs. A command from a turn typed elsewhere, such as the browser
+  continuing a chat this CLI started, runs only after you answer y at this
+  terminal (`Run this on <machine>? [y/N]`, with the command, its chat and where
+  the turn came from). N, Ctrl-C or no answer in time is reported as refused by
+  you and never runs; autoapprove doesn't answer it. You have a little under five
+  minutes, so a yes still leaves the command its whole timeout. Every command,
+  even one typed here, starts only after Skyportal confirms it is still wanted,
+  so a turn stopped while the question waits runs nothing. Commands run in
+  bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
+  PowerShell 5.1. Chats started in the shell use this machine unless you pick
+  servers (`/server auto` doesn't change that); `/local [on|off]` shows or
+  changes it and `/server local` selects it. Commands are fetched over outbound
+  HTTPS with the in-cluster agent's command loop, which now takes its endpoints,
+  headers and the lease field as options, plus optional hooks for a lease
+  answered 410 (removed) or 401/403 (key refused) and an optional growing wait
+  after failed polls. Commands run without any `SKYPORTALAI_*` or legacy
+  `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
+  command that writes more than 64 MiB to stdout or stderr is stopped (exit code
+  153). Closing the shell stops a running command and tells Skyportal; Ctrl-C,
+  at the prompt or during a turn, stops every command running here, including
+  ones from a chat you continued in the browser. The terminal prints every
+  command it runs here, with its chat and exit code (`▸ running: git log  (chat
+  #123)`), up to 500 characters of it with the rest counted and control
+  characters written out. If the machine is removed in Skyportal or the key is
+  refused, the CLI says so once and stops polling; `/local on` reconnects. Needs
+  a Skyportal server with skyportal-website#3665.
 - **Scope approvals.** When the agent's command targets a host or namespace outside
   the chat's scope, a server with skyportal-website#3724 asks to add it and run the
   command, instead of ending the turn. The CLI shows the card's wording, asks y/N,

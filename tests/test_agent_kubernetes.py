@@ -910,6 +910,90 @@ class TestCommandPoller:
         thread.join(5)
         assert alive
 
+    @pytest.mark.parametrize("status", [404, 401, 403, 410])
+    def test_a_refused_or_gone_lease_is_a_failed_poll_the_in_cluster_agent_keeps_retrying(self, status):
+        session = FakeSession([FakeResponse(status)] * 3)
+        poller = self._poller(session, run=lambda argv, timeout: pytest.fail("ran"))
+
+        assert [poller.poll_once() for _ in range(3)] == [None, None, None]
+        assert len(session.calls) == 3
+
+    def _hooked(self, session, monkeypatch, **hooks):
+        monkeypatch.setattr("skyportalai.agent.kubernetes.commands.POLL_SECONDS", 0.01)
+        return CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=threading.Event(), **hooks,
+        )
+
+    def _runs_to_its_end(self, poller):
+        thread = threading.Thread(target=poller.run_forever, daemon=True)
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive()
+
+    def test_a_410_lease_calls_on_gone_once_and_ends_polling(self, monkeypatch):
+        called = []
+        session = FakeSession([FakeResponse(410, {"code": "machine_removed"})] * 5)
+        poller = self._hooked(
+            session, monkeypatch, on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        self._runs_to_its_end(poller)
+
+        assert called == ["gone"]
+        assert len(session.calls) == 1
+        assert poller.poll_once() is None and len(session.calls) == 1
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_lease_calls_on_refused_once_and_ends_polling(self, monkeypatch, status):
+        called = []
+        session = FakeSession([FakeResponse(status)] * 5)
+        poller = self._hooked(
+            session, monkeypatch, on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        self._runs_to_its_end(poller)
+
+        assert called == ["refused"]
+        assert len(session.calls) == 1
+
+    def test_a_404_lease_never_reads_as_gone_even_with_the_hooks_set(self):
+        session = FakeSession([FakeResponse(404)] * 3)
+        called = []
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=threading.Event(),
+            on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        assert [poller.poll_once() for _ in range(3)] == [None, None, None]
+        assert called == [] and len(session.calls) == 3
+
+    @staticmethod
+    def _waits_between_polls(responses, **options):
+        """The delays the poller asks for between polls that find nothing, one per response."""
+        session = FakeSession(list(responses))
+        stop = RecordingStop(stop_on=len(responses))
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=stop, **options,
+        )
+        poller.run_forever()
+        return stop.waits
+
+    def test_failed_polls_back_off_up_to_the_cap_and_a_good_one_resets_it(self):
+        responses = [FakeResponse(503)] * 6 + [FakeResponse(204), FakeResponse(503)]
+        connection_lost = requests.ConnectionError("reset")
+
+        waits = self._waits_between_polls(responses + [connection_lost], max_backoff_seconds=30)
+
+        assert waits == [2, 4, 8, 16, 30, 30, 2, 2, 4]
+
+    def test_without_a_backoff_the_wait_between_polls_is_always_the_same(self):
+        waits = self._waits_between_polls([FakeResponse(503)] * 4 + [FakeResponse(204)])
+
+        assert waits == [2] * 5
+
 
 class TestConfigAndEntrypoint:
     def test_role_defaults_to_the_experiment_scanners(self):
