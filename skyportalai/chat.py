@@ -40,9 +40,11 @@ class Chat:
         )
 
     def approve(self, approval_id: str, *, approval_type: str = "bash_command",
-                command: str | None = None, namespace: str | None = None) -> ApprovalResult:
+                command: str | None = None, namespace: str | None = None,
+                always: bool = False) -> ApprovalResult:
         return self._client.chat.approve(
             self.chat_id, approval_id, approval_type=approval_type, command=command, namespace=namespace,
+            always=always,
         )
 
     def reject(self, approval_id: str, *, approval_type: str = "bash_command",

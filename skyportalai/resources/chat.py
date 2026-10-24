@@ -118,11 +118,18 @@ class ChatResource:
                         command: str | None = None,
                         reason: str | None = None,
                         autoapproved: bool = False,
-                        namespace: str | None = None) -> ApprovalResult:
+                        namespace: str | None = None,
+                        always: bool = False) -> ApprovalResult:
         """Submit an approval decision (``approved`` or ``rejected``).
 
         ``namespace`` answers a ``scope`` approval whose ``scope["namespace"]`` is
         None: one of its ``scope["namespace_choices"]``.
+
+        ``always`` is the card's "Always allow" (skyportal-website#3750): it approves
+        the command and adds ``approval.always_allow["prefixes"]`` to the permit list
+        of the card's host. Only for a ``bash_command`` or ``scope`` approval whose
+        ``always_allow`` is set; the server refuses it anywhere else, and never
+        accepts it as an automatic decision.
         """
         body: dict = {"decision": decision, "type": approval_type}
         if command is not None:
@@ -133,6 +140,8 @@ class ChatResource:
             body["autoapproved"] = True
         if namespace is not None:
             body["namespace"] = namespace
+        if always:
+            body["always"] = True
         data = self._client._request(
             "POST", self._approval_path(chat_id, approval_id), json=body,
         )
@@ -141,11 +150,12 @@ class ChatResource:
     def approve(self, chat_id: int, approval_id: str, *,
                 approval_type: str = "bash_command",
                 command: str | None = None,
-                namespace: str | None = None) -> ApprovalResult:
-        """Approve a pending bash command, plan or scope change."""
+                namespace: str | None = None,
+                always: bool = False) -> ApprovalResult:
+        """Approve a pending bash command, plan or scope change; ``always`` also always allows the command."""
         return self.submit_approval(
             chat_id, approval_id, decision="approved",
-            approval_type=approval_type, command=command, namespace=namespace,
+            approval_type=approval_type, command=command, namespace=namespace, always=always,
         )
 
     def reject(self, chat_id: int, approval_id: str, *,
