@@ -389,10 +389,14 @@ class ChatResource:
             params={"limit": limit},
         )
 
-    def get_plan(self, chat_id: int) -> dict:
-        """The chat's active plan, or None — a chat has at most one active
-        plan at a time; no history is kept once it's replaced or cleared."""
-        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plan/")
+    def get_plans(self, chat_id: int) -> dict:
+        """Every plan recorded for this chat, newest first: ``{"plans": [...]}``."""
+        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plans/")
+
+    def get_plan(self, chat_id: int) -> dict | None:
+        """The chat's newest plan, or None if it has never made one."""
+        plans = self.get_plans(chat_id).get("plans") or []
+        return plans[0] if plans else None
 
     def get_evaluations(self, chat_id: int, *, evaluator_type: str | None = None) -> dict:
         """Evaluator results plus a pass/fail summary."""
