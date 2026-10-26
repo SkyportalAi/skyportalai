@@ -212,7 +212,9 @@ CLI started, runs only after you answer `y` at this terminal. It shows the
 command, its chat and where the turn came from, and asks `Run this on
 <machine>? [y/N]`. `N`, Ctrl-C, or no answer in time tells the agent you
 refused, and it never runs. You have a little under five minutes: a later
-yes couldn't finish before Skyportal stops waiting for the result. No setting
+yes couldn't finish before Skyportal stops waiting for the result. That time
+is counted on Skyportal's clock, so a wrong clock on your machine doesn't
+change it. No setting
 skips the question, and `/permission autoapprove` doesn't answer it. Before
 any command runs, even one you typed, the CLI checks with Skyportal that it
 is still wanted, so if the turn is stopped while the question waits, a later

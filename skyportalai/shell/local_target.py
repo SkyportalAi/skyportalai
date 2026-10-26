@@ -17,7 +17,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -539,12 +538,10 @@ def _whole_command(command: object) -> str:
     return _SPACE_RUN.sub(lambda run: f"⟨{len(run.group())} spaces⟩", text)
 
 
-def _seconds_to_answer(report_by: object, timeout: float) -> float:
+def _seconds_to_answer(report_deadline: Optional[float], timeout: float) -> float:
     """How long the terminal has to say yes: a yes must leave the command its whole timeout before report_by."""
-    try:
-        left = (datetime.fromisoformat(str(report_by)) - datetime.now(timezone.utc)).total_seconds() - timeout
-    except (TypeError, ValueError):
-        left = timeout  # no report_by, or one without a UTC offset: the command's own time
+    # The poller's deadline, on time.monotonic and read against Skyportal's clock: this machine's can't move it.
+    left = timeout if report_deadline is None else report_deadline - time.monotonic() - timeout
     return max(0.0, left - ANSWER_MARGIN_SECONDS)
 
 
@@ -634,18 +631,19 @@ class LocalTarget:
             on_gone=self._machine_removed,
             on_refused=self._key_refused,
             max_backoff_seconds=LEASE_BACKOFF_MAX_SECONDS,
+            hand_report_deadline=True,
         )
         for name, target in (("local-command-poller", poller.run_forever), ("local-heartbeat", self._beat)):
             thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
             self._threads.append(thread)
 
-    def _run_leased(self, lease: object, timeout: float) -> Dict[str, Any]:
+    def _run_leased(self, lease: object, timeout: float, report_deadline: Optional[float] = None) -> Dict[str, Any]:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
         asked = lease.get("turn_origin") != self.instance
-        refused = self._refusal_at_terminal(lease, timeout) or self._refusal_to_start(lease, asked)
+        refused = self._refusal_at_terminal(lease, timeout, report_deadline) or self._refusal_to_start(lease, asked)
         if refused is not None:
             self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
             return _not_run(refused)
@@ -658,7 +656,9 @@ class LocalTarget:
         self._tell(f"▸ exit {result['exit_code']}: {label}")
         return result
 
-    def _refusal_at_terminal(self, lease: Dict[str, Any], timeout: float) -> Optional[str]:
+    def _refusal_at_terminal(
+        self, lease: Dict[str, Any], timeout: float, report_deadline: Optional[float],
+    ) -> Optional[str]:
         """None to run it; why not when its turn wasn't typed here and nobody said yes."""
         origin = lease.get("turn_origin")
         if origin == self.instance:
@@ -670,7 +670,7 @@ class LocalTarget:
         where = "another skyportalai CLI session" if origin else "the browser, Slack or the API"
         details = command + _in_chat(lease.get("chat_id"))
         details += f"\nIts turn wasn't typed in this terminal: it came from {where}."
-        seconds = _seconds_to_answer(lease.get("report_by"), timeout)
+        seconds = _seconds_to_answer(report_deadline, timeout)
         answer = self.ask(details, f"Run this on {self.hostname}? [y/N] ", seconds) if seconds > 0 else None
         if answer is None:
             return "no_answer"

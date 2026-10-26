@@ -39,8 +39,11 @@ All notable changes to this project are documented here. This project follows
   changes it and `/server local` selects it. Commands are fetched over outbound
   HTTPS with the in-cluster agent's command loop, which now takes its endpoints,
   headers and the lease field as options, plus optional hooks for a lease
-  answered 410 (removed) or 401/403 (key refused) and an optional growing wait
-  after failed polls. Commands run without any `SKYPORTALAI_*` or legacy
+  answered 410 (removed) or 401/403 (key refused), an optional growing wait
+  after failed polls, and an option to hand the runner the lease's report
+  deadline. The loop now reads a lease's `report_by` against the response's
+  `Date` header, so a machine whose clock is off keeps the time the server gave
+  it. Commands run without any `SKYPORTALAI_*` or legacy
   `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
   command that writes more than 64 MiB to stdout or stderr is stopped (exit code
   153). Closing the shell stops a running command and tells Skyportal; Ctrl-C at

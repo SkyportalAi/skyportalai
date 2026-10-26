@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -92,6 +93,8 @@ class CommandPoller:
         # After repeated failures the wait grows from POLL_SECONDS up to this, and resets on a good poll.
         # None keeps the fixed POLL_SECONDS wait.
         max_backoff_seconds: float | None = None,
+        # True also hands the runner the lease's report deadline, on `clock`, as `report_deadline` (None if unsaid).
+        hand_report_deadline: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         # Names this process to the server, which takes each lease poll as its heartbeat. A restarted
@@ -105,6 +108,7 @@ class CommandPoller:
         self._on_gone = on_gone
         self._on_refused = on_refused
         self._max_backoff = max_backoff_seconds
+        self._hand_report_deadline = hand_report_deadline
         self._ended = False
         self._failures = 0
         # requests doesn't promise a Session is safe to share across threads. Leases use this
@@ -199,7 +203,7 @@ class CommandPoller:
             command_id,
             handed,
             _command_timeout(command),
-            self._report_deadline(command),
+            self._report_deadline(command, _server_now(resp)),
             _command_attempt(command),
         )
 
@@ -208,18 +212,19 @@ class CommandPoller:
             return self._on_gone
         return self._on_refused if status in (401, 403) else None
 
-    def _report_deadline(self, command: dict) -> float | None:
+    def _report_deadline(self, command: dict, server_now: datetime) -> float | None:
         try:
-            left = datetime.fromisoformat(command.get("report_by")) - datetime.now(timezone.utc)
+            left = datetime.fromisoformat(command.get("report_by")) - server_now
         except (TypeError, ValueError):
             return None  # an older server sends none, and one without a UTC offset can't be placed
         return self._clock() + max(0.0, left.total_seconds())
 
     def _work(self, command: _LeasedCommand) -> None:
         try:
+            extra = {"report_deadline": command.report_deadline} if self._hand_report_deadline else {}
             # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
             # one still gets a result back and chat fails fast instead of waiting it out.
-            payload = _result_payload(self._run(command.payload, command.timeout), command.attempt)
+            payload = _result_payload(self._run(command.payload, command.timeout, **extra), command.attempt)
             with self._session_factory() as session:
                 self._post_result(session, command, payload)
         except Exception:
@@ -274,6 +279,15 @@ def _result_payload(result: dict, attempt: int | None = None) -> dict:
     if result.get("refused_by_user"):
         payload["refused_by_user"] = result["refused_by_user"]
     return payload
+
+
+def _server_now(resp: requests.Response) -> datetime:
+    """When the server answered, from its Date header, so report_by holds on a machine whose clock is off."""
+    try:
+        sent = parsedate_to_datetime(resp.headers["Date"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return datetime.now(timezone.utc)  # no usable Date header: this machine's clock, as before
+    return sent if sent.tzinfo is not None else sent.replace(tzinfo=timezone.utc)
 
 
 def _command_id(command) -> int | None:

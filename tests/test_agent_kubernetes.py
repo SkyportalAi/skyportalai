@@ -17,6 +17,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,6 +47,7 @@ GET_PODS = ["kubectl", "get", "pods", "-A", "-o", "json"]
 class FakeResponse:
     status_code: int
     body: dict | None = None
+    headers: dict = field(default_factory=dict)
 
     def json(self):
         if self.body is None:
@@ -739,6 +741,45 @@ class TestCommandPoller:
         assert len(session.calls) == 1 + 2
         assert stop.waits == list(commands.RESULT_RETRY_DELAYS[:2])
         assert any("command 7" in record.getMessage() for record in caplog.records)
+
+    def test_report_by_is_read_against_the_servers_date_not_this_machines_clock(self):
+        # A machine whose clock runs five minutes fast still keeps the whole window the server gave it.
+        server_now = datetime.now(timezone.utc) - timedelta(minutes=5)
+        lease = {"id": 7, "argv": GET_PODS, "report_by": (server_now + timedelta(seconds=330)).isoformat()}
+        session = FakeSession([FakeResponse(200, lease, headers={"Date": format_datetime(server_now, usegmt=True)})])
+        stop = RecordingStop()
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, run=lambda argv, timeout: pytest.fail("ran"),
+            stop_event=stop, clock=stop.clock,
+        )
+
+        command = poller._lease()
+
+        # Date counts whole seconds, so up to one more.
+        assert 330 <= command.report_deadline - stop.now < 331.5
+
+    @pytest.mark.parametrize("hand", [False, True], ids=["in-cluster agent", "CLI's local machine"])
+    def test_the_runner_gets_the_report_deadline_only_when_the_poller_is_told_to_hand_it(self, hand):
+        handed = []
+
+        def run(argv, timeout, **extra):
+            handed.append(extra)
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+        stop = RecordingStop()
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, "report_by": _report_by(400)})])
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session, run=run,
+            stop_event=stop, clock=stop.clock, hand_report_deadline=hand,
+        )
+
+        assert self._handle(poller) is True
+
+        [extra] = handed
+        if hand:
+            assert 398 < extra["report_deadline"] - stop.now <= 400
+        else:
+            assert extra == {}
 
     def test_poll_once_asks_for_nothing_while_every_slot_is_busy(self):
         release = threading.Event()

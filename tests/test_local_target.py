@@ -524,6 +524,7 @@ def test_connecting_registers_the_machine_and_leases_for_this_session_only(tmp_p
         assert options["command_field"] is None
         assert options["max_backoff_seconds"] == local_target.LEASE_BACKOFF_MAX_SECONDS
         assert options["run"] == target._run_leased
+        assert options["hand_report_deadline"] is True
         assert target.session == {"server_id": 5, "instance": target.instance}
         assert target.connected
     finally:
@@ -573,7 +574,7 @@ def test_heartbeats_start_on_a_fixed_cadence_however_long_each_takes(tmp_path, m
 class _FakeSkyportal:
     """A throwaway Skyportal on 127.0.0.1: leases the commands it is given, then nothing, and records what arrives."""
 
-    def __init__(self, leases=(), heartbeat_stall=0.0):
+    def __init__(self, leases=(), heartbeat_stall=0.0, clock_behind=0.0):
         self.leases = list(leases)
         self.results = []
         self.beats = []
@@ -581,6 +582,10 @@ class _FakeSkyportal:
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            def date_time_string(self, timestamp=None):
+                # Its Date header: Skyportal's clock, `clock_behind` seconds behind this machine's.
+                return super().date_time_string(time.time() - clock_behind)
+
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 if self.path.endswith("/connect/"):
@@ -666,6 +671,28 @@ def test_a_leased_command_runs_here_and_its_result_is_posted_with_its_exit_code(
     assert path == "/api/v1/agent/local/5/commands/7/result/"
     assert body["exit_code"] == 0 and body["stdout"].strip() == "hi"
     assert shown == ["▸ running: echo hi  (chat #123)", "▸ exit 0: echo hi  (chat #123)"]
+
+
+def test_a_machine_whose_clock_runs_fast_is_still_asked_for_the_time_skyportal_gave(tmp_path, skyportal):
+    fast = 300  # this machine's clock is five minutes ahead of Skyportal's
+    skyportal_now = datetime.now(timezone.utc) - timedelta(seconds=fast)
+    server = skyportal(clock_behind=fast, leases=[{
+        "id": 7, "command": "echo hi", "chat_id": 12, "timeout_seconds": 60, "turn_origin": "",
+        "report_by": (skyportal_now + timedelta(seconds=60 + 300)).isoformat(),
+    }])
+    asked = []
+    target = LocalTarget(SkyportalClient(server.url), tmp_path, ask=lambda *question: asked.append(question) or False)
+    target.connect()
+    try:
+        assert _eventually(lambda: server.results)
+    finally:
+        target.close()
+
+    # Read against this machine's clock, report_by left no time at all, and the command was refused unasked.
+    [(_details, _prompt, seconds)] = asked
+    assert 300 - local_target.ANSWER_MARGIN_SECONDS - 10 < seconds <= 300 - local_target.ANSWER_MARGIN_SECONDS + 1
+    [(_path, body)] = server.results
+    assert body["refused_by_user"] == "declined"
 
 
 class _Answers:
@@ -1009,8 +1036,9 @@ def test_importing_the_shell_does_not_load_the_agent_package():
     assert shown.strip() == "[]"
 
 
-def _report_by(seconds: float) -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+def _due_in(seconds: float) -> float:
+    """A lease's report deadline as the poller hands it over: on time.monotonic."""
+    return time.monotonic() + seconds
 
 
 def _connected(tmp_path, monkeypatch, **options):
@@ -1029,7 +1057,7 @@ def test_a_command_from_a_turn_typed_elsewhere_runs_only_after_a_yes(tmp_path, m
         tmp_path, monkeypatch, show=shown.append, ask=lambda *question: asked.append(question) or True,
     )
     try:
-        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": origin, "report_by": _report_by(120)}, 60)
+        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": origin}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
@@ -1048,7 +1076,7 @@ def test_a_no_or_no_answer_comes_back_refused_and_nothing_runs(tmp_path, monkeyp
     shown = []
     target, run = _connected(tmp_path, monkeypatch, show=shown.append, ask=lambda *_question: answer)
     try:
-        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": "", "report_by": _report_by(120)}, 60)
+        result = run({"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": ""}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
@@ -1060,7 +1088,7 @@ def test_with_no_time_left_to_answer_it_is_no_answer_without_asking(tmp_path, mo
     asked = []
     target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or True)
     try:
-        result = run({"id": 7, "command": "echo hi", "turn_origin": "", "report_by": _report_by(5)}, 60)
+        result = run({"id": 7, "command": "echo hi", "turn_origin": ""}, 60, report_deadline=_due_in(5))
     finally:
         target.close()
 
@@ -1072,7 +1100,7 @@ def test_a_command_from_a_turn_typed_in_this_cli_runs_without_asking(tmp_path, m
     asked = []
     target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
     try:
-        result = run({"id": 7, "command": "echo hi", "turn_origin": target.instance, "report_by": _report_by(120)}, 60)
+        result = run({"id": 7, "command": "echo hi", "turn_origin": target.instance}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
@@ -1084,7 +1112,7 @@ def test_every_command_is_confirmed_with_skyportal_before_it_starts(tmp_path, mo
     target, run = _connected(tmp_path, monkeypatch)
     client = target.client
     try:
-        run({"id": 7, "command": "echo hi", "turn_origin": target.instance, "report_by": _report_by(120)}, 60)
+        run({"id": 7, "command": "echo hi", "turn_origin": target.instance}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
@@ -1109,7 +1137,7 @@ def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, err
     target.connect()
     try:
         result = _Poller.made[-1].options["run"](
-            {"id": 7, "command": "echo ran > ran.txt", "chat_id": 12, "turn_origin": "", "report_by": _report_by(120)}, 60,
+            {"id": 7, "command": "echo ran > ran.txt", "chat_id": 12, "turn_origin": ""}, 60, report_deadline=_due_in(120),
         )
     finally:
         target.close()
@@ -1146,7 +1174,7 @@ def test_too_late_for_a_turn_typed_here_is_a_plain_not_run_result_never_no_answe
 def test_without_a_terminal_to_ask_a_turn_typed_elsewhere_runs_nothing(tmp_path, monkeypatch):
     target, run = _connected(tmp_path, monkeypatch)
     try:
-        result = run({"id": 7, "command": "echo hi", "turn_origin": "", "report_by": _report_by(120)}, 60)
+        result = run({"id": 7, "command": "echo hi", "turn_origin": ""}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
