@@ -71,6 +71,12 @@ gate. Its `scope` object carries the server's wording (`label`), what it adds
 (`combined`). When `namespace` is null the CLI asks which of `namespace_choices`
 to add and sends it as `namespace`. It is never autoapproved.
 
+"Always allow" (skyportal-website#3750) follows `approval_context.always_allow` on
+a bash or combined scope approval: the CLI offers `a` only when the server set it,
+with the server's label, and sends `"always": true`. The server checks the offer
+and the user's right to edit that host's allow list, and refuses it with
+`autoapproved`, so autoapprove never sends it.
+
 ## Server context
 
 `GET /api/v1/experiments/my-servers/` provides the authenticated account's

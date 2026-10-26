@@ -124,6 +124,11 @@ It is never autoapproved; only an `on_approval` callback answers it, and
 `None` asks which namespace to add: answer it with
 `client.chat.approve(chat_id, approval_id, approval_type="scope", namespace="...")`.
 
+When a bash or scope approval's `approval.always_allow` is set, the server offers
+"Always allow": `client.chat.approve(..., always=True)` approves the command and
+adds `approval.always_allow["prefixes"]` to that host's allow list. The server
+refuses it where the approval doesn't offer it.
+
 To make the full multi-host scope available to the first turn, create the chat
 with repeatable server scope and an active default:
 
