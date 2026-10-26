@@ -232,7 +232,10 @@ The terminal prints every command it runs here, with the chat it came from and
 its exit code, for example `▸ running: git log  (chat #123)`. A command is shown
 as one line of up to 500 characters, with `(+N more characters)` after it when
 it is longer, and a character a terminal would act on is written out (`\x1b`,
-`\n`), so what you read is what runs. A chat this CLI started can also be
+`\n`), so what you read is what runs. The `y/N` question shows the whole
+command instead, with each run of five or more spaces counted (`⟨495 spaces⟩`)
+so padding can't push the rest out of sight; a command longer than 10,000
+characters isn't asked about and doesn't run. A chat this CLI started can also be
 continued from your browser while the CLI is open, and its commands still show
 up here. Ctrl-C stops every command running here, at the prompt or while a turn
 runs, including ones started from a chat you continued in the browser.

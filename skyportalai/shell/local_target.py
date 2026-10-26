@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -63,6 +64,7 @@ _NOT_RUN_BECAUSE = {
     "no_answer": "no answer in time",
     "withdrawn": "its turn was stopped",
     "unconfirmed": "Skyportal couldn't confirm it was still wanted",
+    "too_long": "too long for its y/N question to show it all",
 }
 _STOPPED_BECAUSE = {
     "closed": "Stopped: the skyportalai CLI was closed.",
@@ -73,6 +75,10 @@ _GIT_SECONDS = 5
 _POLL_SECONDS = 0.1
 # How much of a command the terminal shows when it starts and ends: one line, with the rest counted.
 _SHOWN_COMMAND_CHARS = 500
+# The y/N question shows all of a command; one longer than this, as shown, is not asked about and never runs.
+_ASKED_COMMAND_CHARS = 10_000
+# In the question, a run of spaces this long is counted rather than printed: it could push the rest out of sight.
+_SPACE_RUN = re.compile(r" {5,}")
 # How long a killed process gets to exit before it is given up on: one in uninterruptible sleep never does.
 _KILL_WAIT_SECONDS = 5
 _CREATE_SUSPENDED = 0x00000004
@@ -506,15 +512,23 @@ def _visible(text: str) -> str:
     return "".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii") for char in text)
 
 
+def _in_chat(chat_id: object) -> str:
+    return f"  (chat #{chat_id})" if isinstance(chat_id, int) and not isinstance(chat_id, bool) else ""
+
+
 def _command_label(command: object, chat_id: object) -> str:
     """One line naming a leased command and the chat it came from."""
     text = str(command or "").strip()
     label = _visible(text[:_SHOWN_COMMAND_CHARS])
     if len(text) > _SHOWN_COMMAND_CHARS:
         label += f" … (+{len(text) - _SHOWN_COMMAND_CHARS} more characters)"
-    if isinstance(chat_id, int) and not isinstance(chat_id, bool):
-        label += f"  (chat #{chat_id})"
-    return label
+    return label + _in_chat(chat_id)
+
+
+def _whole_command(command: object) -> str:
+    """All of a command, for its y/N question: written out as in a label, with each long run of spaces counted."""
+    text = _visible(str(command or "").strip())
+    return _SPACE_RUN.sub(lambda run: f"⟨{len(run.group())} spaces⟩", text)
 
 
 def _seconds_to_answer(report_by: object, timeout: float) -> float:
@@ -622,7 +636,7 @@ class LocalTarget:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
-        refused = self._refusal_at_terminal(lease, label, timeout) or self._refusal_to_start(lease)
+        refused = self._refusal_at_terminal(lease, timeout) or self._refusal_to_start(lease)
         if refused is not None:
             self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
             return _not_run(refused)
@@ -635,13 +649,18 @@ class LocalTarget:
         self._tell(f"▸ exit {result['exit_code']}: {label}")
         return result
 
-    def _refusal_at_terminal(self, lease: Dict[str, Any], label: str, timeout: float) -> Optional[str]:
-        """None to run it; "declined" or "no_answer" when its turn wasn't typed here and nobody said yes."""
+    def _refusal_at_terminal(self, lease: Dict[str, Any], timeout: float) -> Optional[str]:
+        """None to run it; why not when its turn wasn't typed here and nobody said yes."""
         origin = lease.get("turn_origin")
         if origin == self.instance:
             return None
+        # The whole command, not the label's first line: a yes runs all of it.
+        command = _whole_command(lease.get("command"))
+        if len(command) > _ASKED_COMMAND_CHARS:
+            return "too_long"
         where = "another skyportalai CLI session" if origin else "the browser, Slack or the API"
-        details = f"{label}\nIts turn wasn't typed in this terminal: it came from {where}."
+        details = command + _in_chat(lease.get("chat_id"))
+        details += f"\nIts turn wasn't typed in this terminal: it came from {where}."
         seconds = _seconds_to_answer(lease.get("report_by"), timeout)
         answer = self.ask(details, f"Run this on {self.hostname}? [y/N] ", seconds) if seconds > 0 else None
         if answer is None:
