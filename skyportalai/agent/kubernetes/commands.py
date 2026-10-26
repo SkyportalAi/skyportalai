@@ -82,6 +82,8 @@ class CommandPoller:
         instance: str | None = None,
         lease_path: str = LEASE_PATH,
         result_path: str = RESULT_PATH,
+        # Where it says it is alive while every slot is busy, as it then polls for no lease.
+        heartbeat_path: str = HEARTBEAT_PATH,
         extra_headers: Mapping[str, str] | None = None,
         # The lease field the runner is handed; None hands it the whole lease.
         command_field: str | None = "argv",
@@ -103,6 +105,7 @@ class CommandPoller:
         self.instance = instance or str(uuid.uuid4())
         self._lease_path = lease_path
         self._result_path = result_path
+        self._heartbeat_path = heartbeat_path
         self._command_field = command_field
         self._thread_prefix = thread_prefix
         self._on_gone = on_gone
@@ -146,7 +149,7 @@ class CommandPoller:
 
     def _heartbeat(self) -> None:
         try:
-            resp = self.session.post(self.base_url + HEARTBEAT_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+            resp = self.session.post(self.base_url + self._heartbeat_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         except requests.RequestException as exc:
             failure = type(exc).__name__
         else:

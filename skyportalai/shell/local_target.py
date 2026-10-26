@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # before Skyportal confirms it is still wanted: a turn stopped while the terminal asked has withdrawn it.
 LEASE_PATH = "/api/v1/agent/local/{server_id}/commands/lease/"
 RESULT_PATH = "/api/v1/agent/local/{server_id}/commands/{{id}}/result/"
+HEARTBEAT_PATH = "/api/v1/agent/local/{server_id}/heartbeat/"
 # Skyportal takes a CLI silent for 40 s as closed and withdraws its commands. A beat starts every
 # HEARTBEAT_SECONDS whatever the last one took, and each socket operation of one is cut off after
 # HEARTBEAT_TIMEOUT_SECONDS. That is not a wall-clock limit: a beat that connects slowly can run longer.
@@ -624,6 +625,9 @@ class LocalTarget:
             stop_event=self._stop,
             lease_path=LEASE_PATH.format(server_id=self.server_id),
             result_path=RESULT_PATH.format(server_id=self.server_id),
+            # The poller's beat while every slot is busy. _beat stays: only it opens a session Skyportal closed again,
+            # notices a removed machine or a refused key while every slot is busy, and keeps a fixed cadence.
+            heartbeat_path=HEARTBEAT_PATH.format(server_id=self.server_id),
             instance=self.instance,
             extra_headers={"User-Agent": f"skyportalai-cli/{__version__}"},
             command_field=None,

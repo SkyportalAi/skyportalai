@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from skyportalai.agent.kubernetes.commands import CommandPoller
+from skyportalai.agent.kubernetes.commands import COMMAND_SLOTS, CommandPoller
 from skyportalai.shell import local_target
 from skyportalai.shell.local_target import (
     OUTPUT_LIMIT_EXIT_CODE,
@@ -520,6 +520,7 @@ def test_connecting_registers_the_machine_and_leases_for_this_session_only(tmp_p
         assert str(tmp_path) not in repr(payload)
         options = _Poller.made[-1].options
         assert options["lease_path"] == "/api/v1/agent/local/5/commands/lease/"
+        assert options["heartbeat_path"] == "/api/v1/agent/local/5/heartbeat/"
         assert options["instance"] == target.instance
         assert options["command_field"] is None
         assert options["max_backoff_seconds"] == local_target.LEASE_BACKOFF_MAX_SECONDS
@@ -578,6 +579,7 @@ class _FakeSkyportal:
         self.leases = list(leases)
         self.results = []
         self.beats = []
+        self.beat_paths = []
         self.released = threading.Event()
         owner = self
 
@@ -597,6 +599,7 @@ class _FakeSkyportal:
                     self.reply(200, {"recorded": True})
                 elif self.path.endswith("/heartbeat/"):
                     owner.beats.append(time.monotonic())
+                    owner.beat_paths.append(self.path)
                     owner.released.wait(heartbeat_stall)
                     self.reply(200, {})
                 else:
@@ -671,6 +674,25 @@ def test_a_leased_command_runs_here_and_its_result_is_posted_with_its_exit_code(
     assert path == "/api/v1/agent/local/5/commands/7/result/"
     assert body["exit_code"] == 0 and body["stdout"].strip() == "hi"
     assert shown == ["▸ running: echo hi  (chat #123)", "▸ exit 0: echo hi  (chat #123)"]
+
+
+@NEEDS_BASH
+def test_with_every_slot_busy_the_poller_beats_on_this_machines_route(tmp_path, monkeypatch, skyportal):
+    monkeypatch.setattr("skyportalai.agent.kubernetes.commands.POLL_SECONDS", 0.05)
+    server = skyportal(leases=[
+        {"id": n, "command": "sleep 30", "chat_id": 1, "timeout_seconds": 60, "turn_origin": "s-1"}
+        for n in range(1, COMMAND_SLOTS + 1)
+    ])
+    target = LocalTarget(SkyportalClient(server.url), tmp_path, instance="s-1")
+    target.connect()
+    try:
+        # Its own beat is 15 s off, so these come from the poller, which asks for no lease while every slot is busy.
+        assert _eventually(lambda: len(server.beat_paths) >= 3)
+    finally:
+        target.close()
+
+    # Not the in-cluster agent's route, which Skyportal answers 4xx for this CLI's key.
+    assert set(server.beat_paths) == {"/api/v1/agent/local/5/heartbeat/"}
 
 
 def test_a_machine_whose_clock_runs_fast_is_still_asked_for_the_time_skyportal_gave(tmp_path, skyportal):

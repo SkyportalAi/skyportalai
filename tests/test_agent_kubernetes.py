@@ -880,6 +880,12 @@ class TestCommandPoller:
         assert [record.getMessage() for record in records] == logged
         assert all(record.levelno == logging.DEBUG for record in records)
 
+    def test_a_heartbeat_goes_to_the_path_the_poller_was_given(self):
+        # The CLI's local machine beats on its own route, not the in-cluster agent's.
+        session = FakeSession([FakeResponse(204)])
+        CommandPoller(BASE_URL, TOKEN, session=session, heartbeat_path="/api/v1/agent/local/5/heartbeat/")._heartbeat()
+        assert [call["url"] for call in session.calls] == [BASE_URL + "/api/v1/agent/local/5/heartbeat/"]
+
     def test_a_shutdown_while_every_slot_is_busy_sends_no_heartbeat(self):
         server = FakeCommandServer()
         stop = threading.Event()
