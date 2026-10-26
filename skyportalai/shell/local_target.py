@@ -65,6 +65,7 @@ _NOT_RUN_BECAUSE = {
     "withdrawn": "its turn was stopped",
     "unconfirmed": "Skyportal couldn't confirm it was still wanted",
     "too_long": "too long for its y/N question to show it all",
+    "too_late": "it could no longer finish before its result was due",
 }
 _STOPPED_BECAUSE = {
     "closed": "Stopped: the skyportalai CLI was closed.",
@@ -643,7 +644,8 @@ class LocalTarget:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
-        refused = self._refusal_at_terminal(lease, timeout) or self._refusal_to_start(lease)
+        asked = lease.get("turn_origin") != self.instance
+        refused = self._refusal_at_terminal(lease, timeout) or self._refusal_to_start(lease, asked)
         if refused is not None:
             self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
             return _not_run(refused)
@@ -674,13 +676,14 @@ class LocalTarget:
             return "no_answer"
         return None if answer else "declined"
 
-    def _refusal_to_start(self, lease: Dict[str, Any]) -> Optional[str]:
+    def _refusal_to_start(self, lease: Dict[str, Any], asked: bool) -> Optional[str]:
         """None once Skyportal says the command may start; else why not. Its turn may have been stopped meanwhile."""
         try:
             self.client.start_local_command(self.server_id, self.instance, lease.get("id"))
         except PortalError as error:
             if error.code == "too_late":
-                return "no_answer"  # a yes this late couldn't finish before its result is due
+                # After a question, a yes this late couldn't finish in time; nobody was asked about a turn typed here.
+                return "no_answer" if asked else "too_late"
             return "withdrawn" if error.code == "withdrawn" else "unconfirmed"
         except Exception as error:  # noqa: BLE001 — what Skyportal didn't confirm never runs
             logger.warning("Could not confirm a leased command: %s", error)

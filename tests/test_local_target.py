@@ -1120,6 +1120,29 @@ def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, err
     assert line.startswith("▸ not run (") and said in line
 
 
+def test_too_late_for_a_turn_typed_here_is_a_plain_not_run_result_never_no_answer(tmp_path, monkeypatch):
+    shown, asked = [], []
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    too_late = PortalError("too late", status_code=409, code="too_late")
+    target = LocalTarget(
+        _Client(start_error=too_late), tmp_path, poller_factory=_Poller, show=shown.append,
+        ask=lambda *question: asked.append(question) or True,
+    )
+    target.connect()
+    try:
+        result = _Poller.made[-1].options["run"](
+            {"id": 7, "command": "echo ran > ran.txt", "chat_id": 12, "turn_origin": target.instance}, 60,
+        )
+    finally:
+        target.close()
+
+    assert asked == [] and not (tmp_path / "ran.txt").exists()
+    # Nobody was asked, so the chat isn't told nobody answered.
+    assert result["exit_code"] == -1 and "refused_by_user" not in result
+    assert "before its result was due" in result["stderr"]
+    assert shown == ["▸ not run (it could no longer finish before its result was due): echo ran > ran.txt  (chat #12)"]
+
+
 def test_without_a_terminal_to_ask_a_turn_typed_elsewhere_runs_nothing(tmp_path, monkeypatch):
     target, run = _connected(tmp_path, monkeypatch)
     try:
