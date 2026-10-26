@@ -46,7 +46,8 @@ All notable changes to this project are documented here. This project follows
   it. Commands run without any `SKYPORTALAI_*` or legacy
   `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
   command that writes more than 64 MiB to stdout or stderr is stopped (exit code
-  153). Closing the shell stops a running command and tells Skyportal; Ctrl-C at
+  153); what it leaves running in the background isn't held to that once it
+  ends. Closing the shell stops a running command and tells Skyportal; Ctrl-C at
   the prompt stops every command running here, including ones from a chat you
   continued in the browser, and during a turn only that chat's. The terminal
   prints every command it runs here, with its chat and exit code (`▸ running:

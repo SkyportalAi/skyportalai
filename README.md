@@ -239,9 +239,9 @@ it is longer, and a character a terminal would act on is written out (`\x1b`,
 `\n`), so what you read is what runs. The `y/N` question shows the whole
 command instead, with each run of five or more spaces counted (`⟨495 spaces⟩`)
 so padding can't push the rest out of sight; a command longer than 10,000
-characters isn't asked about and doesn't run. A chat this CLI started can also be
-continued from your browser while the CLI is open, and its commands still show
-up here. Ctrl-C at the prompt stops every command running here, including ones
+characters isn't asked about and doesn't run. A chat this CLI started can also
+be continued from your browser while the CLI is open, and its commands still
+show up here. Ctrl-C at the prompt stops every command running here, including ones
 started from a chat you continued in the browser. Ctrl-C while a turn runs stops
 that turn and only its chat's commands.
 
@@ -249,13 +249,18 @@ Commands run without any `SKYPORTALAI_*` (or legacy `SKYPORTAL_*`) environment
 variable, so the key you signed in with doesn't show in `printenv`; a command can
 still read the files you can read, the CLI's saved sign-in included. A command
 that writes more than 64 MiB to stdout or stderr is stopped (exit code 153) and
-the chat is told why. If Skyportal removes the machine, or refuses the CLI's key,
-the CLI says so once, stops fetching commands and drops `local#` from the prompt:
-reconnect with `/local on` (after `/login`, for a refused key). `/logout`
-disconnects the machine, and so does signing in with a new key, which may be
-another account's; the next message connects it again with that key. While Skyportal
-can't be reached the CLI keeps trying, waiting longer between tries, up to 30
-seconds.
+the chat is told why. That limit only holds while the command runs. Something it
+starts in the background (`cmd &`) keeps running after it ends, as in any shell,
+and can keep writing to the command's output, a deleted temporary file that
+still takes disk space until that process exits; redirect its output
+(`cmd > build.log 2>&1 &`) to keep it where you can see it.
+
+If Skyportal removes the machine, or refuses the CLI's key, the CLI says so
+once, stops fetching commands and drops `local#` from the prompt: reconnect
+with `/local on` (after `/login`, for a refused key). `/logout` disconnects the
+machine, and so does signing in with a new key, which may be another account's;
+the next message connects it again with that key. While Skyportal can't be
+reached the CLI keeps trying, waiting longer between tries, up to 30 seconds.
 
 ## Kubernetes clusters
 
