@@ -246,7 +246,9 @@ still read the files you can read, the CLI's saved sign-in included. A command
 that writes more than 64 MiB to stdout or stderr is stopped (exit code 153) and
 the chat is told why. If Skyportal removes the machine, or refuses the CLI's key,
 the CLI says so once, stops fetching commands and drops `local#` from the prompt:
-reconnect with `/local on` (after `/login`, for a refused key). While Skyportal
+reconnect with `/local on` (after `/login`, for a refused key). `/logout`
+disconnects the machine, and so does signing in with a new key, which may be
+another account's; the next message connects it again with that key. While Skyportal
 can't be reached the CLI keeps trying, waiting longer between tries, up to 30
 seconds.
 

@@ -49,8 +49,9 @@ All notable changes to this project are documented here. This project follows
   command it runs here, with its chat and exit code (`▸ running: git log  (chat
   #123)`), up to 500 characters of it with the rest counted and control
   characters written out. If the machine is removed in Skyportal or the key is
-  refused, the CLI says so once and stops polling; `/local on` reconnects. Needs
-  a Skyportal server with skyportal-website#3665.
+  refused, the CLI says so once and stops polling; `/local on` reconnects.
+  `/logout` or a new key disconnects the machine, and the next message connects
+  it with the new key. Needs a Skyportal server with skyportal-website#3665.
 - **Scope approvals.** When the agent's command targets a host or namespace outside
   the chat's scope, a server with skyportal-website#3724 asks to add it and run the
   command, instead of ending the turn. The CLI shows the card's wording, asks y/N,

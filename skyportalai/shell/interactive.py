@@ -726,8 +726,7 @@ class InteractiveShell:
                     "[yellow]Login cancelled.[/yellow] Run [bold]/token[/bold] to paste a key instead."
                 )
                 return
-            with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
-                self.client.set_access_token(token)
+            self._save_credential(token)
             self.console.print("[green]✓ Credential validated and saved securely.[/green]")
         finally:
             self.browser_login_started = False
@@ -763,12 +762,20 @@ class InteractiveShell:
                 "[yellow]Connection paused.[/yellow] Run [bold]/token[/bold] when the key is ready."
             )
             return
-        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
-            self.client.set_access_token(token)
+        self._save_credential(token)
         self.browser_login_started = False
         self.console.print("[green]✓ Credential validated and saved securely.[/green]")
 
+    def _save_credential(self, token: str) -> None:
+        # First, with the key it connected with: this machine's session keeps that key, and the new one may be
+        # another account's. The next message connects it again with the new key.
+        self._end_local_session()
+        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
+            self.client.set_access_token(token)
+
     def _cmd_logout(self, args: List[str]) -> None:
+        # Before the key is removed, so Skyportal hears this session close and withdraws what it held.
+        disconnected = self._end_local_session()
         self.client.logout()
         self.browser_login_started = False
         self.chat_id = None
@@ -780,6 +787,8 @@ class InteractiveShell:
         self.kubernetes_namespaces = {}
         self._forget_chat()
         self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
+        if disconnected:
+            self.console.print("[dim]Skyportal no longer runs commands on this machine.[/dim]")
 
     def _cmd_github_token(self, args: List[str]) -> None:
         subcommand = args[0].lower() if args else ""
@@ -1628,6 +1637,13 @@ class InteractiveShell:
         target, self.local_target = self.local_target, None
         if target is not None:
             target.close()
+
+    def _end_local_session(self) -> bool:
+        """Disconnect this machine for a sign-out or new key, until the next message; whether it was connected."""
+        connected = self._local_connected() is not None
+        self._close_local_target()
+        self._local_offered = False
+        return connected
 
     def _cmd_local(self, args: List[str]) -> None:
         if self._local_target_factory is None:

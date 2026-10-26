@@ -244,6 +244,45 @@ def test_local_off_disconnects_and_on_connects_again(tmp_path, monkeypatch):
     assert shell.local_target is not None and shell.local_target is not first
 
 
+def _prompt_says(shell) -> str:
+    return "".join(text for _, text in shell._prompt_fragments())
+
+
+def test_logout_disconnects_this_machine_while_the_key_still_works(tmp_path, monkeypatch):
+    shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    target = shell.local_target
+    logged_out = []
+    client.logout = lambda: logged_out.append(target.closed)
+
+    shell._cmd_logout([])
+
+    # Closed before the key was removed: its disconnect still reaches Skyportal.
+    assert logged_out == [True]
+    assert shell.local_target is None
+    assert "local#" not in _prompt_says(shell)
+    assert "no longer runs commands on this machine" in _said(shell)
+
+
+def test_a_new_key_disconnects_this_machine_and_the_next_message_connects_it_with_that_key(tmp_path, monkeypatch):
+    shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    first = shell.local_target
+    saved = []
+    client.login = lambda open_browser: {"verification_url": "https://app.skyportal.ai/api-keys", "browser_opened": True}
+    client.set_access_token = lambda token: saved.append((token, first.closed))
+    shell._token_prompt = lambda _prompt: "sk_another_account"
+
+    shell._cmd_token([])
+
+    # The poller kept the old key, which may be another account's: that session ends before the new key is saved.
+    assert saved == [("sk_another_account", True)]
+    assert shell.local_target is None
+    shell._send_prompt("hello")
+    assert shell.local_target is not first and shell.local_target.connected
+    assert client.turns[-1]["local_session"]["server_id"] == 5
+
+
 def test_leaving_the_shell_disconnects_this_machine(tmp_path, monkeypatch):
     shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
     shell.run()
