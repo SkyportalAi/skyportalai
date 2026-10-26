@@ -527,6 +527,20 @@ def test_a_factory_that_fails_never_aborts_the_shell(tmp_path, monkeypatch):
     assert "Could not connect this machine" in _said(shell)
 
 
+def test_ctrl_c_while_connecting_this_machine_never_aborts_the_shell(tmp_path, monkeypatch):
+    class _Interrupted(_Target):
+        def connect(self):
+            raise KeyboardInterrupt
+
+    shell, _, _, _ = _shell(tmp_path, monkeypatch, trusted=True, factory=_Interrupted)
+
+    shell.run()
+
+    assert shell.local_target is None
+    said = _said(shell)
+    assert "Stopped connecting this machine" in said and "/local on" in said
+
+
 def test_a_folder_that_no_longer_exists_is_not_a_crash(tmp_path, monkeypatch):
     _Target.made.clear()
     shell, _, _, asked = _shell(tmp_path, monkeypatch, answers=["y"])

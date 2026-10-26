@@ -1542,6 +1542,12 @@ class InteractiveShell:
         self._local_offered = True
         try:
             self._offer_in_current_folder()
+        except KeyboardInterrupt:
+            # The target closed whatever session it had opened; the shell goes on without this machine.
+            self.console.print(
+                "\n[yellow]Stopped connecting this machine.[/yellow] Commands won't run here; "
+                "connect it with /local on.\n"
+            )
         except Exception as error:  # the shell works without this machine, whatever went wrong
             self._local_unavailable(error)
 

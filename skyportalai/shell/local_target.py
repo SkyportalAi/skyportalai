@@ -608,10 +608,10 @@ class LocalTarget:
         from skyportalai.agent.kubernetes.commands import CommandPoller
 
         self.repo = repo_context(self.folder)
-        self._open()
         try:
+            self._open()
             self._start(self.poller_factory or CommandPoller)
-        except Exception:
+        except BaseException:  # a Ctrl-C too: a session opened here must not outlive the connect
             self.close()
             raise
 

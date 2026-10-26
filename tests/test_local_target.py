@@ -982,6 +982,22 @@ def test_a_connect_that_fails_after_the_session_opened_closes_it_again(tmp_path,
     assert not target.connected
 
 
+def test_ctrl_c_while_connecting_closes_the_session_it_opened(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+
+    def interrupted(base_url, token, **options):
+        raise KeyboardInterrupt
+
+    client = _Client()
+    target = LocalTarget(client, tmp_path, poller_factory=interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        target.connect()
+
+    assert client.disconnects == [(5, target.instance)]
+    assert not target.connected
+
+
 def test_importing_the_shell_does_not_load_the_agent_package():
     code = (
         "import sys, skyportalai.shell.interactive, skyportalai.shell.local_target, skyportalai.cli.shell_commands\n"
