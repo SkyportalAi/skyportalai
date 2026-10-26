@@ -214,8 +214,10 @@ command, its chat and where the turn came from, and asks `Run this on
 refused, and it never runs. You have a little under five minutes: a later
 yes couldn't finish before Skyportal stops waiting for the result. That time
 is counted on Skyportal's clock, so a wrong clock on your machine doesn't
-change it. No setting
-skips the question, and `/permission autoapprove` doesn't answer it. Before
+change it. At the prompt the question interrupts what you were typing, gives it
+back afterwards, and drops anything typed before it showed, so a `yes` meant
+for the agent can't answer it. No setting skips the question, and
+`/permission autoapprove` doesn't answer it. Before
 any command runs, even one you typed, the CLI checks with Skyportal that it
 is still wanted, so if the turn is stopped while the question waits, a later
 `y` runs nothing.

@@ -4,6 +4,7 @@ import http.client
 import os
 import signal
 import ssl
+import sys
 import threading
 import time
 from io import StringIO
@@ -12,10 +13,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from prompt_toolkit import PromptSession
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.input.typeahead import get_typeahead, store_typeahead
+from prompt_toolkit.key_binding import KeyPress
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from skyportalai.cli import shell_commands
-from skyportalai.shell.interactive import InteractiveShell, _HeldInput
+from skyportalai.shell import interactive
+from skyportalai.shell.interactive import InteractiveShell, _HeldInput, _TerminalQuestion
 from skyportalai.shell.local_target import LocalTarget, TrustStore
 from skyportalai.shell.portal import ChatTurnResult, PortalError
 
@@ -665,7 +673,8 @@ def test_a_question_takes_over_the_idle_prompt_and_what_was_typed_comes_back(tmp
     shell, _, _, _ = _shell(tmp_path, monkeypatch)
     exited = []
     shell.session = SimpleNamespace(app=SimpleNamespace(
-        is_running=True, current_buffer=SimpleNamespace(text="git sta"), exit=lambda result: exited.append(result),
+        is_running=True, is_done=False, current_buffer=SimpleNamespace(text="git sta"),
+        exit=lambda result: exited.append(result),
     ))
     shell._at_idle_prompt = True
     shell._take_the_prompt_for_a_question()
@@ -692,7 +701,8 @@ def test_a_question_waits_for_any_other_prompt_and_says_so(tmp_path, monkeypatch
     shell, _, _, _ = _shell(tmp_path, monkeypatch)
     exited = []
     shell.session = SimpleNamespace(app=SimpleNamespace(
-        is_running=True, current_buffer=SimpleNamespace(text="y"), exit=lambda result: exited.append(result),
+        is_running=True, is_done=False, current_buffer=SimpleNamespace(text="y"),
+        exit=lambda result: exited.append(result),
     ))
     shell._at_idle_prompt = False  # an approval card's y/N, say
 
@@ -701,3 +711,96 @@ def test_a_question_waits_for_any_other_prompt_and_says_so(tmp_path, monkeypatch
 
     assert exited == []
     assert "waiting for your y/N" in _said(shell)
+
+
+def _on_a_thread(call):
+    """What `call` returned, run on a thread so a prompt left waiting fails the test instead of hanging it."""
+    got = []
+    thread = threading.Thread(target=lambda: got.append(call()), daemon=True)
+    thread.start()
+    thread.join(5)
+    return got
+
+
+def test_a_question_put_as_the_idle_prompt_starts_takes_it_over_without_waiting_for_a_key(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    with create_pipe_input() as typed:
+        shell.session = PromptSession(input=typed, output=DummyOutput())
+        # After the loop looked for questions, before the prompt ran: there was nothing to take over yet.
+        shell._questions.put(_TerminalQuestion("ls", "Run this on altaf-laptop? [y/N] ", time.monotonic() + 30))
+
+        got = _on_a_thread(lambda: shell._idle_prompt("git sta"))
+
+    assert got == [_HeldInput("git sta")]
+
+
+def test_a_takeover_that_an_enter_beat_leaves_that_line_alone(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    with create_pipe_input() as typed:
+        shell.session = PromptSession(input=typed, output=DummyOutput())
+        shell._at_idle_prompt = True
+
+        def enter_then_the_question():
+            # Both on the prompt's loop, the Enter first: the takeover must not exit a prompt that already ended.
+            shell.session.app.exit(result="run the tests")
+            shell._take_the_prompt_for_a_question()
+
+        assert shell.session.prompt("> ", pre_run=enter_then_the_question) == "run the tests"
+
+
+def test_a_question_that_lost_the_prompt_to_an_enter_is_asked_before_that_line_runs(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    calls = []
+    lines = iter(["run the tests"])
+
+    class _Prompt:
+        def prompt(self, _message, **_typed):
+            line = next(lines, None)
+            if line is None:
+                raise EOFError
+            return line
+
+    shell.session = _Prompt()
+    shell._answer_questions = lambda: calls.append("asked")
+    shell._route = calls.append
+
+    shell._loop()
+
+    assert calls == ["asked", "asked", "run the tests", "asked"]
+
+
+def test_keys_typed_before_the_question_shows_never_answer_it(tmp_path, monkeypatch):
+    shell, _, _, _ = _shell(tmp_path, monkeypatch)
+    flushed = []
+    monkeypatch.setattr(interactive, "_flush_terminal_input", lambda: flushed.append("terminal"))
+    with create_pipe_input() as typed:
+        shell.session = SimpleNamespace(input=typed)
+        # "yes⏎", typed in reply to the model just as the question took the prompt over.
+        store_typeahead(typed, [KeyPress(key) for key in "yes"] + [KeyPress(Keys.ControlM, "\r")])
+        seen = []
+        shell._question_prompt = lambda message, seconds: seen.append((get_typeahead(typed), list(flushed))) or "n"
+
+        worker, got = _ask_on_a_worker(shell)
+        shell._answer_questions()
+        worker.join(5)
+
+    # By the time the y/N reads, neither prompt_toolkit nor the terminal holds what was typed before it showed.
+    assert seen == [([], ["terminal"])]
+    assert got == [False]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a pseudo-terminal is POSIX")
+def test_flushing_the_terminal_drops_what_was_typed_and_not_yet_read(monkeypatch):
+    controller, terminal = os.openpty()
+    try:
+        os.write(controller, b"yes\r")
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(fileno=lambda: terminal))
+
+        interactive._flush_terminal_input()
+
+        os.set_blocking(terminal, False)
+        with pytest.raises(BlockingIOError):
+            os.read(terminal, 100)
+    finally:
+        os.close(controller)
+        os.close(terminal)

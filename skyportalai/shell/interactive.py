@@ -7,6 +7,7 @@ import queue
 import re
 import shlex
 import signal
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.typeahead import clear_typeahead
 from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -42,6 +44,11 @@ from .portal import (
     PortalError,
     SkyportalClient,
 )
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import termios
 
 _PERMISSION_MODES = frozenset({"ask", "autoapprove"})
 _AUTOAPPROVE_TYPES = frozenset({"", "bash_command", "plan"})
@@ -145,6 +152,18 @@ class _TerminalQuestion:
         self._settled.wait(max(0.0, seconds))
         self.settle(None)
         return self.answer
+
+
+def _flush_terminal_input() -> None:
+    """Drop what was typed at the terminal that no prompt has read yet."""
+    try:
+        if os.name == "nt":
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        else:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:  # noqa: BLE001 — stdin isn't a terminal, so nothing was typed ahead
+        pass
 
 
 @contextmanager
@@ -408,6 +427,8 @@ class InteractiveShell:
                 # A question for this terminal took the prompt over; it is asked at the top, then the text comes back.
                 held = line.text
                 continue
+            # One that came as Enter was pressed found the prompt ending: it is asked before this line runs.
+            self._answer_questions()
 
             line = line.strip()
             if not line:
@@ -426,6 +447,10 @@ class InteractiveShell:
     def _idle_prompt(self, held: str) -> Any:
         """The prompt between turns, which a question for this terminal may take over; `held` is typed back in."""
         self._at_idle_prompt = True
+        app = getattr(self.session, "app", None)
+        if app is not None:
+            # A question put while this prompt was starting found nothing to take over yet: it does so as it starts.
+            app.pre_run_callables.append(self._take_the_prompt_if_asked)
         try:
             # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
             if held:
@@ -438,15 +463,25 @@ class InteractiveShell:
         """On a command thread: ask the terminal y/N; True or False as answered, None if nobody did in `seconds`."""
         question = _TerminalQuestion(details, prompt, time.monotonic() + seconds)
         self._questions.put(question)
-        if not self._on_prompt_loop(self._take_the_prompt_for_a_question):
+        # At an idle prompt that isn't running yet, or is ending, the loop asks next: no need to say it waits.
+        if not self._on_prompt_loop(self._take_the_prompt_for_a_question) and not self._at_idle_prompt:
             # In a turn: asked as soon as it ends, if that is in time.
             self._print_from_worker(_QUESTION_WAITING)
         return question.wait(seconds)
 
+    def _take_the_prompt_if_asked(self) -> None:
+        """As the idle prompt starts: take it over for a question that is already waiting."""
+        if not self._questions.empty():
+            # Soon, not now: the prompt has yet to take in what was typed ahead, which stays in its buffer.
+            asyncio.get_running_loop().call_soon(self._take_the_prompt_for_a_question)
+
     def _take_the_prompt_for_a_question(self) -> None:
         """On the prompt's loop: leave the idle prompt so the loop asks; any other prompt is answered first."""
         app = self.session.app
-        if self._at_idle_prompt and app.is_running:
+        if not app.is_running or app.is_done:
+            # An Enter got there first: the loop asks before that line runs, or once the turn it is in ends.
+            return
+        if self._at_idle_prompt:
             app.exit(result=_HeldInput(app.current_buffer.text))
         else:
             run_in_terminal(lambda: self.console.print(Text(_QUESTION_WAITING, style="cyan")))
@@ -463,6 +498,7 @@ class InteractiveShell:
                 continue  # its command thread already reported that nobody answered
             self._print_section("A command from outside this terminal", style="yellow")
             self.console.print(Text(self._clean_terminal_text(question.details)))
+            self._discard_typed_ahead()
             try:
                 reply = self._question_prompt(question.prompt, left)
             except (KeyboardInterrupt, EOFError):
@@ -470,6 +506,13 @@ class InteractiveShell:
             answer = None if reply is None else reply.strip().lower() in ("y", "yes")
             if not question.settle(answer):
                 self.console.print("[dim]Too late: it was already reported as not run.[/dim]")
+
+    def _discard_typed_ahead(self) -> None:
+        """Drop keys typed before a question showed: meant for the prompt it took over, a "yes⏎" there isn't its y."""
+        session_input = getattr(self.session, "input", None)
+        if session_input is not None:
+            clear_typeahead(session_input)
+        _flush_terminal_input()
 
     def _interrupt_at_prompt(self) -> None:
         """Ctrl-C at the idle prompt stops what runs on this machine; with nothing running it says how to leave."""
