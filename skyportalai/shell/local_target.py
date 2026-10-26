@@ -550,8 +550,9 @@ def _not_run(reason: str) -> Dict[str, Any]:
     """The result of a leased command that never ran; a no at the terminal is the user's, so Skyportal records it so."""
     if reason in ("declined", "no_answer"):
         return {**_result(-1), "refused_by_user": reason}
+    # Not an exit code, which Skyportal takes only for a command it let start: it records why this one never ran.
     # Withdrawn: Skyportal no longer takes this result, so posting it changes nothing.
-    return _result(-1, stderr=f"Not run on this machine: {_NOT_RUN_BECAUSE[reason]}.")
+    return {**_result(-1, stderr=f"Not run on this machine: {_NOT_RUN_BECAUSE[reason]}."), "not_run": reason}
 
 
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Optional[bool]:

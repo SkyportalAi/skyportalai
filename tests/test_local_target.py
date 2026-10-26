@@ -1142,15 +1142,15 @@ def test_every_command_is_confirmed_with_skyportal_before_it_starts(tmp_path, mo
 
 
 @pytest.mark.parametrize(
-    ("error", "said", "refused"),
+    ("error", "said", "refused", "not_run"),
     [
-        (PortalError("withdrawn", status_code=409, code="withdrawn"), "its turn was stopped", None),
-        (PortalError("too late", status_code=409, code="too_late"), "no answer in time", "no_answer"),
-        (PortalError("gone", status_code=410, code="machine_removed"), "couldn't confirm", None),
-        (ConnectionResetError("reset by peer"), "couldn't confirm", None),
+        (PortalError("withdrawn", status_code=409, code="withdrawn"), "its turn was stopped", None, "withdrawn"),
+        (PortalError("too late", status_code=409, code="too_late"), "no answer in time", "no_answer", None),
+        (PortalError("gone", status_code=410, code="machine_removed"), "couldn't confirm", None, "unconfirmed"),
+        (ConnectionResetError("reset by peer"), "couldn't confirm", None, "unconfirmed"),
     ],
 )
-def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, error, said, refused):
+def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, error, said, refused, not_run):
     shown = []
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
     target = LocalTarget(
@@ -1166,6 +1166,8 @@ def test_a_yes_skyportal_no_longer_wants_runs_nothing(tmp_path, monkeypatch, err
 
     assert not (tmp_path / "ran.txt").exists()
     assert result["exit_code"] == -1 and result.get("refused_by_user") == refused
+    # Skyportal takes an exit code only for a command it let start, so what never ran says why instead.
+    assert result.get("not_run") == not_run
     [line] = shown
     assert line.startswith("▸ not run (") and said in line
 
@@ -1189,6 +1191,7 @@ def test_too_late_for_a_turn_typed_here_is_a_plain_not_run_result_never_no_answe
     assert asked == [] and not (tmp_path / "ran.txt").exists()
     # Nobody was asked, so the chat isn't told nobody answered.
     assert result["exit_code"] == -1 and "refused_by_user" not in result
+    assert result["not_run"] == "too_late"
     assert "before its result was due" in result["stderr"]
     assert shown == ["▸ not run (it could no longer finish before its result was due): echo ran > ran.txt  (chat #12)"]
 
@@ -1203,11 +1206,12 @@ def test_without_a_terminal_to_ask_a_turn_typed_elsewhere_runs_nothing(tmp_path,
     assert result["refused_by_user"] == "no_answer"
 
 
-def test_the_poller_posts_a_refusal_for_skyportal_to_record():
+@pytest.mark.parametrize("never_ran", [{"refused_by_user": "declined"}, {"not_run": "too_late"}])
+def test_the_poller_posts_why_a_command_never_ran_for_skyportal_to_record(never_ran):
     server = _LocalServer()
     poller = CommandPoller(
         BASE_URL, "sk_key", session=server, session_factory=lambda: server,
-        run=lambda _lease, _timeout: {**local_target._result(-1), "refused_by_user": "declined"},
+        run=lambda _lease, _timeout: {**local_target._result(-1), **never_ran},
         lease_path="/api/v1/agent/local/5/commands/lease/",
         result_path="/api/v1/agent/local/5/commands/{id}/result/",
         instance="session-1", command_field=None, thread_prefix="local-command",
@@ -1216,7 +1220,7 @@ def test_the_poller_posts_a_refusal_for_skyportal_to_record():
     poller.poll_once().join(5)
 
     _, result = server.calls
-    assert result["json"] == {"exit_code": -1, "stdout": "", "stderr": "", "refused_by_user": "declined"}
+    assert result["json"] == {"exit_code": -1, "stdout": "", "stderr": "", **never_ran}
 
 
 def test_the_question_shows_all_of_a_long_padded_command_with_its_spaces_counted(tmp_path, monkeypatch):
@@ -1253,6 +1257,7 @@ def test_a_command_too_long_to_show_in_its_question_is_not_asked_and_never_runs(
     assert asked == [] and not (tmp_path / "ran.txt").exists()
     # Nobody refused it: the chat reads why it didn't run.
     assert result["exit_code"] == -1 and "refused_by_user" not in result
+    assert result["not_run"] == "too_long"
     assert "too long for its y/N question" in result["stderr"]
     [line] = shown
     assert line.startswith("▸ not run (too long for its y/N question to show it all): echo ran > ran.txt")
