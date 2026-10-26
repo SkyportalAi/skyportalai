@@ -133,17 +133,35 @@ def test_ctrl_c_or_ctrl_d_at_the_trust_prompt_is_a_no(tmp_path, monkeypatch):
         assert not store.is_trusted(tmp_path)
 
 
-def test_ctrl_c_on_a_turn_also_stops_the_command_running_here(tmp_path, monkeypatch):
+def test_ctrl_c_on_a_turn_also_stops_that_chats_command_running_here(tmp_path, monkeypatch):
     shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
     shell._offer_local_target()
     calls = []
     client.cancel_chat = lambda chat_id, reason=None: calls.append("cancel")
-    shell.local_target.interrupt = lambda: calls.append("interrupt") or 1
+    shell.local_target.interrupt = lambda chat_id=None: calls.append(("interrupt", chat_id)) or 1
 
     shell._cancel_active_turn(42)
 
-    # The turn is cancelled first, so the stopped command's result can't resume it.
-    assert calls == ["cancel", "interrupt"]
+    # The turn is cancelled first, so the stopped command's result can't resume it; only chat 42's commands stop.
+    assert calls == ["cancel", ("interrupt", 42)]
+    assert "Stopped the command running on this machine" in _said(shell)
+
+
+def test_ctrl_c_on_a_turn_that_already_ended_stops_nothing_here(tmp_path, monkeypatch):
+    shell, client, _, _ = _shell(tmp_path, monkeypatch, trusted=True)
+    shell._offer_local_target()
+    interrupted = []
+
+    def finished(chat_id, reason=None):
+        raise PortalError("no active turn", status_code=409)
+
+    client.cancel_chat = finished
+    shell.local_target.interrupt = lambda chat_id=None: interrupted.append(chat_id) or 1
+
+    shell._cancel_active_turn(42)
+
+    assert interrupted == []
+    assert "Nothing to stop" in _said(shell)
 
 
 def test_declining_connects_nothing(tmp_path, monkeypatch):

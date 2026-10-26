@@ -1685,12 +1685,11 @@ class InteractiveShell:
         except PortalError:
             self.console.print("[dim]Nothing to stop; the turn had already finished.[/dim]")
             return
-        finally:
-            # After the cancel, so the stopped command's result doesn't resume the turn first. Skyportal
-            # only withdraws a command that hasn't started; one running in this terminal stops here.
-            local = self._local_connected()
-            if local is not None and local.interrupt():
-                self.console.print("[yellow]■ Stopped the command running on this machine.[/yellow]")
+        # After the cancel, so the stopped command's result doesn't resume the turn first. Skyportal only
+        # withdraws a command that hasn't started; this chat's running here stop here, and other chats' keep going.
+        local = self._local_connected()
+        if local is not None and local.interrupt(chat_id):
+            self.console.print("[yellow]■ Stopped the command running on this machine.[/yellow]")
         self.console.print(
             "[yellow]■ Stopped.[/yellow] Chat #{} is still open; type to continue.".format(chat_id)
         )

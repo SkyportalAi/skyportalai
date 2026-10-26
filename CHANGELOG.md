@@ -43,11 +43,11 @@ All notable changes to this project are documented here. This project follows
   after failed polls. Commands run without any `SKYPORTALAI_*` or legacy
   `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
   command that writes more than 64 MiB to stdout or stderr is stopped (exit code
-  153). Closing the shell stops a running command and tells Skyportal; Ctrl-C,
-  at the prompt or during a turn, stops every command running here, including
-  ones from a chat you continued in the browser. The terminal prints every
-  command it runs here, with its chat and exit code (`▸ running: git log  (chat
-  #123)`), up to 500 characters of it with the rest counted and control
+  153). Closing the shell stops a running command and tells Skyportal; Ctrl-C at
+  the prompt stops every command running here, including ones from a chat you
+  continued in the browser, and during a turn only that chat's. The terminal
+  prints every command it runs here, with its chat and exit code (`▸ running:
+  git log  (chat #123)`), up to 500 characters of it with the rest counted and control
   characters written out. If the machine is removed in Skyportal or the key is
   refused, the CLI says so once and stops polling; `/local on` reconnects.
   `/logout` or a new key disconnects the machine, and the next message connects

@@ -237,8 +237,9 @@ command instead, with each run of five or more spaces counted (`⟨495 spaces⟩
 so padding can't push the rest out of sight; a command longer than 10,000
 characters isn't asked about and doesn't run. A chat this CLI started can also be
 continued from your browser while the CLI is open, and its commands still show
-up here. Ctrl-C stops every command running here, at the prompt or while a turn
-runs, including ones started from a chat you continued in the browser.
+up here. Ctrl-C at the prompt stops every command running here, including ones
+started from a chat you continued in the browser. Ctrl-C while a turn runs stops
+that turn and only its chat's commands.
 
 Commands run without any `SKYPORTALAI_*` (or legacy `SKYPORTAL_*`) environment
 variable, so the key you signed in with doesn't show in `printenv`; a command can

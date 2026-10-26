@@ -439,18 +439,19 @@ class ShellRunner:
         self.folder = folder
         self._stop = stop
         self._shell = shell or _shell_argv()
-        self._running: set = set()
+        # Each running command, with the chat it runs for.
+        self._running: Dict[_ProcessTree, Optional[int]] = {}
         self._lock = threading.Lock()
 
-    def stop_all(self, because: str) -> int:
-        """Stop every command running now, on the caller's thread; how many there were."""
+    def stop(self, because: str, chat_id: Optional[int] = None) -> int:
+        """Stop the commands running now, only that chat's if one is named, on the caller's thread; how many."""
         with self._lock:
-            running = list(self._running)
+            running = [tree for tree, chat in self._running.items() if chat_id is None or chat == chat_id]
         for tree in running:
             tree.kill(because)
         return len(running)
 
-    def __call__(self, command: object, timeout: float) -> Dict[str, Any]:
+    def __call__(self, command: object, timeout: float, chat_id: Optional[int] = None) -> Dict[str, Any]:
         if not isinstance(command, str) or not command.strip():
             return _result(126, stderr="The CLI was sent no command to run.")
         # A lease can ask for more than the server allows, even more than a float can hold (10**400).
@@ -458,7 +459,7 @@ class ShellRunner:
         deadline = time.monotonic() + timeout
         # Files, not pipes: a chatty command can't fill a pipe and hang, or fill this process's memory.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            # One critical section with stop_all(): a command leased as the CLI closes is stopped by it, or never started.
+            # One critical section with stop(): a command leased as the CLI closes is stopped by it, or never started.
             with self._lock:
                 if self._stop.is_set():
                     return _result(STOPPED_EXIT_CODE, stderr=_STOPPED_BECAUSE["closed"])
@@ -471,12 +472,12 @@ class ShellRunner:
                     return _result(127, stderr=f"Could not start {self._shell[0]}: {error}")
                 except Exception as error:  # a NUL in the command is a ValueError; the chat still needs its result
                     return _result(126, stderr=f"Could not run this command: {error}")
-                self._running.add(tree)
+                self._running[tree] = chat_id
             try:
                 self._wait(tree, deadline, (out, err))
             finally:
                 with self._lock:
-                    self._running.discard(tree)
+                    self._running.pop(tree, None)
                 tree.close()
             stdout = _read_bounded(out)
             stderr = _read_bounded(err)
@@ -512,8 +513,14 @@ def _visible(text: str) -> str:
     return "".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii") for char in text)
 
 
+def _chat_of(chat_id: object) -> Optional[int]:
+    """A lease's chat id, or None for anything but a number (a bool is an int)."""
+    return chat_id if isinstance(chat_id, int) and not isinstance(chat_id, bool) else None
+
+
 def _in_chat(chat_id: object) -> str:
-    return f"  (chat #{chat_id})" if isinstance(chat_id, int) and not isinstance(chat_id, bool) else ""
+    chat = _chat_of(chat_id)
+    return f"  (chat #{chat})" if chat is not None else ""
 
 
 def _command_label(command: object, chat_id: object) -> str:
@@ -642,7 +649,7 @@ class LocalTarget:
             return _not_run(refused)
         self._tell(f"▸ running: {label}")
         try:
-            result = self._runner(lease.get("command"), timeout)
+            result = self._runner(lease.get("command"), timeout, _chat_of(lease.get("chat_id")))
         except Exception as error:  # the chat waits for a result whatever went wrong here
             logger.exception("Could not run a leased command")
             result = _result(127, stderr=f"The CLI could not run this command: {error}")
@@ -744,9 +751,9 @@ class LocalTarget:
         except PortalError as error:
             logger.warning("Could not reconnect this machine: %s", error)
 
-    def interrupt(self) -> int:
-        """Ctrl-C: stop what is running here now; how many commands that was."""
-        return self._runner.stop_all("interrupted") if self._runner is not None else 0
+    def interrupt(self, chat_id: Optional[int] = None) -> int:
+        """Ctrl-C: stop what runs here now, only that chat's commands if one is named; how many that was."""
+        return self._runner.stop("interrupted", chat_id) if self._runner is not None else 0
 
     def close(self) -> None:
         """Stop running commands here and tell Skyportal, which withdraws whatever this session still held."""
@@ -755,7 +762,7 @@ class LocalTarget:
         self._stop.set()
         # Here, not on the workers' threads: the CLI may exit as soon as this returns, and they die with it.
         if self._runner is not None:
-            self._runner.stop_all("closed")
+            self._runner.stop("closed")
         if self.server_id is None or self._ended:
             return
         try:

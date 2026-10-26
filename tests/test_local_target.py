@@ -248,7 +248,7 @@ def test_stopping_a_command_stops_everything_it_started(tmp_path):
 @NEEDS_PROCESS_LIST
 def test_ctrl_c_stops_the_running_command_and_says_so(tmp_path):
     runner = ShellRunner(tmp_path, threading.Event())
-    threading.Timer(1.5, runner.stop_all, args=("interrupted",)).start()
+    threading.Timer(1.5, runner.stop, args=("interrupted",)).start()
     result = runner("sleep 53", 60)
 
     assert result["exit_code"] == local_target.STOPPED_EXIT_CODE
@@ -868,7 +868,7 @@ def test_a_runner_that_fails_still_gives_the_chat_a_result(tmp_path, monkeypatch
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
     shown = []
     target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, show=shown.append)
-    monkeypatch.setattr(ShellRunner, "__call__", lambda self, command, timeout: 1 / 0)
+    monkeypatch.setattr(ShellRunner, "__call__", lambda self, command, timeout, chat_id=None: 1 / 0)
     target.connect()
     try:
         result = _Poller.made[-1].options["run"](
@@ -1167,3 +1167,27 @@ def test_a_command_too_long_to_show_in_its_question_is_not_asked_and_never_runs(
     assert "too long for its y/N question" in result["stderr"]
     [line] = shown
     assert line.startswith("▸ not run (too long for its y/N question to show it all): echo ran > ran.txt")
+
+
+@NEEDS_BASH
+def test_ctrl_c_on_one_chats_turn_stops_only_that_chats_commands(tmp_path, monkeypatch):
+    target, run = _connected(tmp_path, monkeypatch)
+    results = {}
+
+    def lease(chat, command):
+        results[chat] = run({"id": chat, "command": command, "chat_id": chat, "turn_origin": target.instance}, 60)
+
+    workers = [threading.Thread(target=lease, args=args) for args in ((12, "sleep 37"), (34, "sleep 2; echo built"))]
+    try:
+        for worker in workers:
+            worker.start()
+        assert _eventually(lambda: len(target._runner._running) == 2)
+        assert target.interrupt(12) == 1
+        for worker in workers:
+            worker.join(15)
+    finally:
+        target.close()
+
+    assert results[12]["exit_code"] == local_target.STOPPED_EXIT_CODE
+    # A build the browser approved for another chat keeps running.
+    assert (results[34]["exit_code"], results[34]["stdout"].strip()) == (0, "built")
