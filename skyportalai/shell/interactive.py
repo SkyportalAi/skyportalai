@@ -1859,6 +1859,12 @@ class InteractiveShell:
                 and error.code == "autoapproval_policy_conflict"
             ):
                 raise _AutoapprovalPolicyConflict from error
+            if decision == "always_approved" and error.status_code == 400:
+                # A card gone stale, or a server from before "always_approved": the yes still stands, once.
+                self.console.print(
+                    "[yellow]Always allow wasn't taken ({}); approving this once.[/yellow]".format(escape(str(error)))
+                )
+                return self._submit_approval_with_recovery(chat_id, approval, "approved")
             if error.status_code is not None:
                 raise
             original_error: BaseException = error
@@ -2005,7 +2011,7 @@ class InteractiveShell:
                     self.console.print(
                         "[dim]This approval type requires an explicit decision.[/dim]"
                     )
-                decision, rejection_reason = self._ask_decision()
+                decision, rejection_reason = self._ask_decision(self._always_allow_label(approval))
             namespace: Optional[str] = None
             if decision == "approved" and self._scope_asks_for_namespace(approval):
                 namespace = self._pick_scope_namespace(approval)
@@ -2064,7 +2070,7 @@ class InteractiveShell:
                             "[yellow]Autoapprove was disabled before this action was "
                             "submitted; an explicit decision is required.[/yellow]"
                         )
-                        decision, rejection_reason = self._ask_decision()
+                        decision, rejection_reason = self._ask_decision(self._always_allow_label(approval))
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
@@ -2122,14 +2128,19 @@ class InteractiveShell:
             if added and added not in current:
                 self.selected_namespaces[server_id] = [*current, str(added)]
 
-    def _ask_decision(self) -> "tuple[str, Optional[str]]":
-        """y approves; r rejects with a reason the agent is told; anything else rejects."""
+    def _ask_decision(self, always_label: Optional[str] = None) -> "tuple[str, Optional[str]]":
+        """y approves; a, where the card offers it, also permit-lists; r rejects with a reason; anything else rejects."""
+        if always_label:
+            self.console.print(Text.assemble(("a = ", "dim"), self._server_wording(always_label)))
+        choices = "y/N/a=always/r=reject with reason" if always_label else "y/N/r=reject with reason"
         try:
-            answer = self.session.prompt("Approve this action? [y/N/r=reject with reason]: ").strip().lower()
+            answer = self.session.prompt("Approve this action? [{}]: ".format(choices)).strip().lower()
         except (KeyboardInterrupt, EOFError):
             answer = ""
         if answer in ("y", "yes"):
             return "approved", None
+        if always_label and answer in ("a", "always"):
+            return "always_approved", None
         if answer == "r":
             try:
                 # Not self.session: that saves every answer to ~/.skyportalai/history.
@@ -2146,6 +2157,16 @@ class InteractiveShell:
         for index, part in enumerate(InteractiveShell._bounded_one_line(str(text or ""), 400).split("`")):
             line.append(part, style=(style + " bold").strip() if index % 2 else style)
         return line
+
+    @staticmethod
+    def _always_allow_label(approval: Dict[str, Any]) -> Optional[str]:
+        """What the web card's ✓✓ would add, when the server offers it for this approval (skyportal-website#3665)."""
+        if approval.get("type", "bash_command") != "bash_command":
+            return None
+        context = approval.get("approval_context")
+        offer = context.get("always_allow") if isinstance(context, dict) else None
+        label = offer.get("label") if isinstance(offer, dict) else None
+        return label if isinstance(label, str) and label.strip() else None
 
     @classmethod
     def _approval_reasons(cls, approval: Dict[str, Any]) -> Optional[Text]:
