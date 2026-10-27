@@ -492,11 +492,17 @@ class SkyportalClient:
         platform: str,
         shell: str,
         repo: Optional[Dict[str, str]],
+        repo_settings: Optional[Dict[str, str]] = None,
+        local_settings: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Register this machine (on first use) and open this process's session on it."""
         body: Dict[str, Any] = {"machine_id": machine_id, "name": name, "platform": platform, "shell": shell}
         if repo is not None:
             body["repo"] = repo
+        if repo_settings is not None:
+            body["repo_settings"] = repo_settings
+        if local_settings is not None:
+            body["local_settings"] = local_settings
         return self._request(
             "POST", "/api/v1/agent/local/connect/", json_body=body, extra_headers={"X-Agent-Instance": instance},
         )

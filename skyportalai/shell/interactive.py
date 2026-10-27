@@ -35,7 +35,7 @@ from rich.text import Text
 from skyportalai import _env
 
 from . import agent_setup
-from .local_target import LocalTarget, TrustStore, is_filesystem_root, is_home_folder
+from .local_target import ALWAYS, Answer, LocalTarget, TrustStore, is_filesystem_root, is_home_folder
 from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
@@ -130,7 +130,7 @@ class _TerminalQuestion:
         self.details = details
         self.prompt = prompt
         self.deadline = deadline
-        self.answer: Optional[bool] = None
+        self.answer: Answer = None
         self._settled = threading.Event()
         self._lock = threading.Lock()
 
@@ -138,7 +138,7 @@ class _TerminalQuestion:
     def settled(self) -> bool:
         return self._settled.is_set()
 
-    def settle(self, answer: Optional[bool]) -> bool:
+    def settle(self, answer: Answer) -> bool:
         """Record the answer unless one already was; whether this one counted."""
         with self._lock:
             if self._settled.is_set():
@@ -147,11 +147,19 @@ class _TerminalQuestion:
             self._settled.set()
             return True
 
-    def wait(self, seconds: float) -> Optional[bool]:
+    def wait(self, seconds: float) -> Answer:
         """The answer given within `seconds`, else None, which then stands whatever is typed later."""
         self._settled.wait(max(0.0, seconds))
         self.settle(None)
         return self.answer
+
+
+def _terminal_answer(reply: str) -> Answer:
+    """y runs it, a also adds the rules offered; anything else is a no."""
+    reply = reply.strip().lower()
+    if reply in ("a", "always"):
+        return ALWAYS
+    return reply in ("y", "yes")
 
 
 def _flush_terminal_input() -> None:
@@ -459,8 +467,8 @@ class InteractiveShell:
         finally:
             self._at_idle_prompt = False
 
-    def _ask_from_worker(self, details: str, prompt: str, seconds: float) -> Optional[bool]:
-        """On a command thread: ask the terminal y/N; True or False as answered, None if nobody did in `seconds`."""
+    def _ask_from_worker(self, details: str, prompt: str, seconds: float) -> Answer:
+        """On a command thread: ask the terminal; True, False or ALWAYS as answered, None if nobody did in `seconds`."""
         question = _TerminalQuestion(details, prompt, time.monotonic() + seconds)
         self._questions.put(question)
         # At an idle prompt that isn't running yet, or is ending, the loop asks next: no need to say it waits.
@@ -503,7 +511,7 @@ class InteractiveShell:
                 reply = self._question_prompt(question.prompt, left)
             except (KeyboardInterrupt, EOFError):
                 reply = ""
-            answer = None if reply is None else reply.strip().lower() in ("y", "yes")
+            answer = None if reply is None else _terminal_answer(reply)
             if not question.settle(answer):
                 self.console.print("[dim]Too late: it was already reported as not run.[/dim]")
 
@@ -1638,7 +1646,10 @@ class InteractiveShell:
             "and everything inside it. Commands that change things or touch secrets ask you first, as on "
             "any host, unless your approval mode is autoapprove. A command from a turn typed anywhere but "
             "here (your browser, say) also waits for your y in this terminal. Every command is printed "
-            "here. Only trust a folder whose code you trust.\n"
+            "here. The repository's .skyportalai/settings.json rules apply to commands here: its deny "
+            "list refuses, and its allow list skips the approval card, never that y. Only an `a` you "
+            "answer here, kept for this folder under ~/.skyportalai, skips the y too. "
+            "Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
         return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")

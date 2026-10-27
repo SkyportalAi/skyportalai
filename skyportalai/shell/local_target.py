@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import requests
@@ -290,6 +291,59 @@ def repo_context(folder: Path) -> Optional[RepoContext]:
     return RepoContext(remote=remote, branch=branch, path="" if inside == "." else inside)
 
 
+# The terminal's third answer: run it, and add the rules the lease offers to this machine's own allow list.
+ALWAYS = "always"
+Answer = Optional[Union[bool, str]]
+
+# Where skyportalai looks for a repository's rules; the server parses them, never this CLI.
+REPO_SETTINGS_FILE = ".skyportalai/settings.json"
+# This machine's own rules for a folder, which only `a` at this terminal writes: the one allow list skyportalai lets
+# skip the y/N. Kept in the CLI's own directory, never the folder, so a cloned repo can't ship one.
+LOCAL_SETTINGS_FILE = "~/.skyportalai/always-allow"
+# The server refuses more: 50 rules of 500 characters per list fit many times over.
+MAX_REPO_SETTINGS_BYTES = 64 * 1024
+# The server reads a list longer than this as an unreadable file, which asks for everything.
+MAX_RULES_PER_LIST = 50
+
+
+def settings_root(folder: Path) -> Path:
+    """Where the repository's rules live: its root, or this folder outside one."""
+    top = _git(folder, "rev-parse", "--show-toplevel")
+    return Path(top) if top else folder
+
+
+def repo_settings(root: Path) -> Optional[Dict[str, str]]:
+    """The repository's settings file as read, raw, or why it couldn't be; None when there is none."""
+    return _settings_file(root / REPO_SETTINGS_FILE, REPO_SETTINGS_FILE)
+
+
+def local_settings(root: Path) -> Optional[Dict[str, str]]:
+    """This machine's own rules for the folder, as repo_settings reads the repository's."""
+    return _settings_file(local_settings_path(root), LOCAL_SETTINGS_FILE)
+
+
+def local_settings_path(root: Path) -> Path:
+    """One file per folder under the CLI's own directory, named for the folder's resolved path."""
+    key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:32]
+    return _env.config_dir() / "always-allow" / f"{key}.always-allow.json"
+
+
+def _settings_file(path: Path, name: str) -> Optional[Dict[str, str]]:
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_REPO_SETTINGS_BYTES + 1)
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return None
+    except OSError as error:
+        return {"file": name, "error": error.strerror or type(error).__name__}
+    if len(raw) > MAX_REPO_SETTINGS_BYTES:
+        return {"file": name, "error": f"larger than {MAX_REPO_SETTINGS_BYTES // 1024} KiB"}
+    try:
+        return {"file": name, "content": raw.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {"file": name, "error": "not UTF-8 text"}
+
+
 def _is_wsl_launcher(path: str) -> bool:
     """System32's bash.exe and the Store's WindowsApps alias start WSL: another filesystem, where this folder isn't."""
     lowered = path.lower().replace("\\", "/")
@@ -555,7 +609,38 @@ def _not_run(reason: str) -> Dict[str, Any]:
     return {**_result(-1, stderr=f"Not run on this machine: {_NOT_RUN_BECAUSE[reason]}."), "not_run": reason}
 
 
-def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Optional[bool]:
+def add_allow_rules(root: Path, sent: Optional[Dict[str, str]], rules: List[str]) -> Optional[str]:
+    """Append the rules skyportalai offered to this machine's own allow list for the folder; why not, if it can't."""
+    name = LOCAL_SETTINGS_FILE
+    if sent is not None and sent.get("error"):
+        return f"{name} couldn't be read ({sent['error']})"
+    data: Any = {}
+    if sent is not None and sent.get("content", "").strip():
+        try:
+            data = json.loads(sent["content"])
+        except ValueError:
+            data = None
+    # Never rewrite a file this CLI can't read as rules: skyportalai reports what is wrong with it.
+    permissions = data.setdefault("permissions", {}) if isinstance(data, dict) else None
+    allow = permissions.setdefault("allow", []) if isinstance(permissions, dict) else None
+    if not isinstance(allow, list):
+        return f"{name} isn't a settings file this CLI can add to"
+    new = [rule for rule in rules if rule not in allow]
+    if len(allow) + len(new) > MAX_RULES_PER_LIST:
+        return f"{name} would hold more than {MAX_RULES_PER_LIST} allow rules, the most skyportalai reads"
+    allow.extend(new)
+    # Which folder it is for, for whoever opens the file; skyportalai reads only `permissions`.
+    data["folder"] = str(root.resolve())
+    path = local_settings_path(root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        return f"{name} couldn't be written ({error.strerror or type(error).__name__})"
+    return None
+
+
+def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Answer:
     return None
 
 
@@ -576,13 +661,17 @@ class LocalTarget:
     server_id: Optional[int] = None
     hostname: str = ""
     repo: Optional[RepoContext] = None
+    # The rules last sent to skyportalai, which apply them to every command here; the heartbeat sends a change.
+    settings_root: Optional[Path] = None
+    sent_settings: Optional[Dict[str, str]] = None
+    sent_local_settings: Optional[Dict[str, str]] = None
     poller_factory: Optional[Callable[..., Any]] = None
     # Where each command this machine runs is shown, as it starts and as it ends: a chat this CLI started
     # can be continued from the owner's browser, so nothing may run here without a trace in the terminal.
     show: Callable[[str], None] = logger.info
     # Asks the terminal y/N about a command from a turn this CLI didn't type: True or False as answered, None when
     # nobody answered in the seconds given. With no terminal to ask, nobody answers, so no such command runs.
-    ask: Callable[[str, str, float], Optional[bool]] = _nobody_answers
+    ask: Callable[[str, str, float], Answer] = _nobody_answers
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
@@ -608,6 +697,7 @@ class LocalTarget:
         from skyportalai.agent.kubernetes.commands import CommandPoller
 
         self.repo = repo_context(self.folder)
+        self.settings_root = settings_root(self.folder)
         try:
             self._open()
             self._start(self.poller_factory or CommandPoller)
@@ -666,7 +756,8 @@ class LocalTarget:
     ) -> Optional[str]:
         """None to run it; why not when its turn wasn't typed here and nobody said yes."""
         origin = lease.get("turn_origin")
-        if origin == self.instance:
+        # skyportalai says when this machine's own allow list let it through: the user's earlier `a` here.
+        if origin == self.instance or lease.get("asks_at_terminal") is False:
             return None
         # The whole command, not the label's first line: a yes runs all of it.
         command = _whole_command(lease.get("command"))
@@ -675,11 +766,33 @@ class LocalTarget:
         where = "another skyportalai CLI session" if origin else "the browser, Slack or the API"
         details = command + _in_chat(lease.get("chat_id"))
         details += f"\nIts turn wasn't typed in this terminal: it came from {where}."
+        rules = [rule for rule in lease.get("always_allow") or [] if isinstance(rule, str)]
+        if rules:
+            details += (
+                f"\na = always: run it, and from now on run {', '.join(rules)} without asking, on this machine and in"
+                f" this folder only ({LOCAL_SETTINGS_FILE})."
+            )
+        choices = "[y/N/a=always]" if rules else "[y/N]"
         seconds = _seconds_to_answer(report_deadline, timeout)
-        answer = self.ask(details, f"Run this on {self.hostname}? [y/N] ", seconds) if seconds > 0 else None
+        answer = self.ask(details, f"Run this on {self.hostname}? {choices} ", seconds) if seconds > 0 else None
         if answer is None:
             return "no_answer"
-        return None if answer else "declined"
+        if answer == ALWAYS and rules:
+            self._allow_always(rules)
+            return None
+        return None if answer is True else "declined"
+
+    def _allow_always(self, rules: List[str]) -> None:
+        """Write the rules to this machine's allow list and send it at once: the next command mustn't ask again."""
+        refused = add_allow_rules(self.settings_root or self.folder, self.sent_local_settings, rules)
+        if refused is not None:
+            self._tell(f"▸ Couldn't add {', '.join(rules)}: {refused}. Running it this once.")
+            return
+        self._tell(f"▸ Added {', '.join(rules)} to {LOCAL_SETTINGS_FILE}.")
+        try:
+            self._reopen()
+        except Exception as error:  # noqa: BLE001 — the heartbeat sends it on its next beat
+            logger.warning("Could not send the changed settings file: %s", error)
 
     def _refusal_to_start(self, lease: Dict[str, Any], asked: bool) -> Optional[str]:
         """None once Skyportal says the command may start; else why not. Its turn may have been stopped meanwhile."""
@@ -702,6 +815,7 @@ class LocalTarget:
             logger.warning("Could not show: %s", line, exc_info=True)
 
     def _open(self) -> None:
+        settings, local = self._settings_now()
         connected = self.client.connect_local_machine(
             self.instance,
             machine_id=machine_id(),
@@ -709,12 +823,19 @@ class LocalTarget:
             platform=platform_name(),
             shell=shell_name(),
             repo=self.repo.as_payload() if self.repo else None,
+            repo_settings=settings,
+            local_settings=local,
         )
         try:
             self.server_id = int(connected["server_id"])
         except (KeyError, TypeError, ValueError) as error:
             raise PortalError("Skyportal did not return this machine's id") from error
         self.hostname = str(connected.get("hostname") or machine_name())
+        self.sent_settings, self.sent_local_settings = settings, local
+
+    def _settings_now(self) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
+        root = self.settings_root or self.folder
+        return repo_settings(root), local_settings(root)
 
     def _machine_removed(self) -> None:
         self._end("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
@@ -740,6 +861,16 @@ class LocalTarget:
                 self._beat_failed(error)
             except Exception as error:  # noqa: BLE001 — a dropped connection must not end the heartbeat
                 logger.warning("Heartbeat failed: %s", error)
+            else:
+                self._send_changed_settings()
+
+    def _send_changed_settings(self) -> None:
+        """An edited settings file reaches skyportalai within a heartbeat: connect again with it."""
+        try:
+            if self._settings_now() != (self.sent_settings, self.sent_local_settings):
+                self._reopen()
+        except Exception as error:  # noqa: BLE001 — unsent, it is tried again on the next heartbeat
+            logger.warning("Could not send the changed settings file: %s", error)
 
     def _beat_failed(self, error: PortalError) -> None:
         if error.code == "session_closed":

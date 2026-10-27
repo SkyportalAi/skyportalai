@@ -536,6 +536,67 @@ def test_connecting_registers_the_machine_and_leases_for_this_session_only(tmp_p
     assert not target.connected
 
 
+def test_connect_sends_the_folders_settings_file_raw_and_never_parses_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    (tmp_path / ".skyportalai").mkdir()
+    # Not valid rules, and not even JSON: deciding that is skyportalai's, so it goes as written.
+    (tmp_path / ".skyportalai" / "settings.json").write_text('{"permissions": {"deny": ["Bash(rm *)"]')
+    client = _Client()
+    target = LocalTarget(client, tmp_path, poller_factory=_Poller)
+
+    target.connect()
+    target.close()
+
+    [(_, payload)] = client.connects
+    assert payload["repo_settings"] == {
+        "file": ".skyportalai/settings.json", "content": '{"permissions": {"deny": ["Bash(rm *)"]',
+    }
+
+
+def test_only_skyportalai_settings_json_is_read_and_none_is_sent_without_it(tmp_path):
+    assert local_target.repo_settings(tmp_path) is None
+    (tmp_path / ".skyportal").mkdir()
+    (tmp_path / ".skyportal" / "settings.json").write_text("{}")
+
+    assert local_target.repo_settings(tmp_path) is None
+
+
+def test_a_settings_file_that_cannot_be_used_as_text_is_sent_as_unreadable_not_as_absent(tmp_path, monkeypatch):
+    (tmp_path / ".skyportalai").mkdir()
+    settings = tmp_path / ".skyportalai" / "settings.json"
+    settings.write_bytes(b"x" * (local_target.MAX_REPO_SETTINGS_BYTES + 1))
+    assert local_target.repo_settings(tmp_path) == {"file": ".skyportalai/settings.json", "error": "larger than 64 KiB"}
+
+    settings.write_bytes(b"\xff\xfe")
+    assert local_target.repo_settings(tmp_path)["error"] == "not UTF-8 text"
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", denied)
+    assert local_target.repo_settings(tmp_path) == {"file": ".skyportalai/settings.json", "error": "Permission denied"}
+
+
+def test_an_edited_settings_file_is_sent_again_by_the_next_heartbeat(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    monkeypatch.setattr(local_target, "HEARTBEAT_SECONDS", 0.05)
+    client = _Client()
+    target = LocalTarget(client, tmp_path, poller_factory=_Poller)
+    target.connect()
+    try:
+        time.sleep(0.2)
+        assert len(client.connects) == 1  # unchanged: nothing is sent again
+        (tmp_path / ".skyportalai").mkdir()
+        (tmp_path / ".skyportalai" / "settings.json").write_text('{"permissions": {"deny": ["run_command(rm *)"]}}')
+        _eventually(lambda: len(client.connects) >= 2)
+    finally:
+        target.close()
+
+    assert client.connects[0][1]["repo_settings"] is None
+    assert client.connects[1][1]["repo_settings"]["content"] == '{"permissions": {"deny": ["run_command(rm *)"]}}'
+    assert {instance for instance, _ in client.connects} == {target.instance}
+
+
 def test_a_session_skyportal_lost_is_opened_again_by_the_heartbeat(tmp_path, monkeypatch):
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
     monkeypatch.setattr(local_target, "HEARTBEAT_SECONDS", 0.05)
@@ -1065,6 +1126,9 @@ def _due_in(seconds: float) -> float:
 
 def _connected(tmp_path, monkeypatch, **options):
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    # `a` writes under the CLI's own directory: never the real one.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, **options)
     target.connect()
     return target, _Poller.made[-1].options["run"]
@@ -1285,3 +1349,97 @@ def test_ctrl_c_on_one_chats_turn_stops_only_that_chats_commands(tmp_path, monke
     assert results[12]["exit_code"] == local_target.STOPPED_EXIT_CODE
     # A build the browser approved for another chat keeps running.
     assert (results[34]["exit_code"], results[34]["stdout"].strip()) == (0, "built")
+
+
+_OFFERED = {"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": "", "always_allow": ["run_command(echo hi)"]}
+
+
+def test_always_writes_this_machines_own_file_outside_the_folder_sends_it_and_runs(tmp_path, monkeypatch):
+    (tmp_path / ".skyportalai").mkdir()
+    (tmp_path / ".skyportalai" / "settings.json").write_text('{"permissions": {"allow": []}}')
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or local_target.ALWAYS)
+    try:
+        result = run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    [(details, prompt, _seconds)] = asked
+    assert prompt.endswith("[y/N/a=always] ") and "in this folder only" in details
+    assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+    path = local_target.local_settings_path(tmp_path)
+    # In the CLI's own directory, so nothing in the folder, which a clone or the agent could write, holds it.
+    assert path.is_relative_to(tmp_path / "home" / ".skyportalai")
+    assert json.loads(path.read_text()) == {
+        "permissions": {"allow": ["run_command(echo hi)"]}, "folder": str(tmp_path.resolve()),
+    }
+    assert sorted(p.name for p in (tmp_path / ".skyportalai").iterdir()) == ["settings.json"]
+    assert (tmp_path / ".skyportalai" / "settings.json").read_text() == '{"permissions": {"allow": []}}'
+    # Sent at once, so the next command needn't wait a heartbeat to skip the question.
+    assert target.client.connects[-1][1]["local_settings"]["content"] == path.read_text()
+
+
+def test_a_settings_local_json_in_the_folder_is_never_read(tmp_path, monkeypatch):
+    # A repository can commit one, so it must count for nothing.
+    (tmp_path / ".skyportalai").mkdir()
+    (tmp_path / ".skyportalai" / "settings.local.json").write_text('{"permissions": {"allow": ["run_command(*)"]}}')
+    target, _run = _connected(tmp_path, monkeypatch)
+    target.close()
+
+    [(_, payload)] = target.client.connects
+    assert payload["local_settings"] is None
+
+
+def test_each_folder_has_its_own_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert local_target.add_allow_rules(tmp_path / "a", None, ["run_command(echo hi)"]) is None
+
+    assert local_target.local_settings(tmp_path / "b") is None
+    assert "run_command(echo hi)" in local_target.local_settings(tmp_path / "a")["content"]
+
+
+def test_always_past_the_rule_limit_writes_nothing_and_runs_it_this_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    path = local_target.local_settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    full = {"permissions": {"allow": [f"run_command(tool{n})" for n in range(local_target.MAX_RULES_PER_LIST)]}}
+    path.write_text(json.dumps(full))
+    shown = []
+    target, run = _connected(tmp_path, monkeypatch, show=shown.append, ask=lambda *_question: local_target.ALWAYS)
+    try:
+        result = run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert result["exit_code"] == 0
+    assert json.loads(path.read_text()) == full
+    assert any("more than 50 allow rules" in line for line in shown)
+
+
+def test_a_command_this_machines_own_list_allows_runs_without_asking(tmp_path, monkeypatch):
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
+    try:
+        result = run({**_OFFERED, "asks_at_terminal": False}, 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert asked == []
+    assert result["exit_code"] == 0
+
+
+def test_connect_sends_this_machines_own_file_beside_the_repositorys(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    path = local_target.local_settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text('{"permissions": {"allow": ["run_command(ls)"]}}')
+    target, _run = _connected(tmp_path, monkeypatch)
+    target.close()
+
+    [(_, payload)] = target.client.connects
+    assert payload["repo_settings"] is None
+    assert payload["local_settings"] == {
+        "file": "~/.skyportalai/always-allow", "content": '{"permissions": {"allow": ["run_command(ls)"]}}',
+    }
