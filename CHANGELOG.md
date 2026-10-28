@@ -29,13 +29,16 @@ All notable changes to this project are documented here. This project follows
   spaces counted, its chat and where the turn came from; one over 10,000
   characters isn't asked about and doesn't run). N, Ctrl-C or no answer in time
   is reported as refused by you and never runs; autoapprove doesn't answer it.
-  `a` (always), when offered, runs it and remembers exactly that command for
-  this folder, in a file under `~/.skyportalai/always-allow/` that it sends at
-  once; only that file's rules skip the question later, and a repository can't
-  ship one. The CLI sends the repository's `.skyportalai/settings.json` and that
-  file with every
-  connect, and again within a heartbeat of an edit (the legacy
-  `.skyportal/settings.json` isn't read).
+  `a` (always), when offered, runs it and saves exactly that command in
+  `.skyportalai/settings.local.json`, beside the repository's
+  `.skyportalai/settings.json` at its root (the folder's own outside a
+  repository), as Claude Code's `.claude/settings.local.json`, and sends it at
+  once; only that file's allow list skips the question later. Keep it out of
+  git: a repository can commit one, so look in `.skyportalai/` before trusting a
+  repository you didn't create. The CLI sends both files with every connect,
+  and again within a heartbeat of an edit (the legacy `.skyportal/settings.json`
+  isn't read). It reads neither through a link, and `a` adds to the file as it
+  is on disk and writes it whole.
   You have a little under five minutes, so a yes still leaves the command its
   whole timeout. Every command, even one typed here, starts only after Skyportal
   confirms it is still wanted, so a turn stopped while the question waits runs

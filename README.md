@@ -212,14 +212,18 @@ CLI started, runs only after you answer `y` at this terminal. It shows the
 command, its chat and where the turn came from, and asks `Run this on
 <machine>? [y/N]`. `N`, Ctrl-C, or no answer in time tells the agent you
 refused, and it never runs. When Skyportal offers one, a third answer, `a`
-(always), runs it and remembers exactly that command for this folder, in a
-file of its own under `~/.skyportalai/always-allow/`. It lives in the CLI's
-directory, never the folder, so a repository can't ship one. That command then
-runs without the question, from your browser too; a different one, even with
-other flags, asks again. Nothing else skips
-the question: not the host's or your permit list, and not the repository's
-committed `.skyportalai/settings.json`, whose allow list only skips the
-approval card. You have a little under five minutes: a later
+(always), runs it and saves exactly that command in
+`.skyportalai/settings.local.json`, beside the repository's
+`.skyportalai/settings.json` at its root (in the folder itself outside a
+repository), as Claude Code's `.claude/settings.local.json`. Keep it out of
+git; the CLI says so when git doesn't ignore it. That command then runs without
+the question, from your browser too; a different one, even with other flags,
+asks again. Nothing else skips the question: not the host's or your permit
+list, and not the repository's committed `.skyportalai/settings.json`, whose
+allow list only skips the approval card. A repository can commit a
+`settings.local.json` of its own, so look in `.skyportalai/` before you trust a
+repository you didn't create. The CLI reads neither file through a link, and
+`a` adds to the file as it is on disk. You have a little under five minutes: a later
 yes couldn't finish before Skyportal stops waiting for the result. That time
 is counted on Skyportal's clock, so a wrong clock on your machine doesn't
 change it. At the prompt the question interrupts what you were typing, gives it

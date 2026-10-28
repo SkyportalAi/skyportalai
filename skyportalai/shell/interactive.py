@@ -1646,10 +1646,11 @@ class InteractiveShell:
             "and everything inside it. Commands that change things or touch secrets ask you first, as on "
             "any host, unless your approval mode is autoapprove. A command from a turn typed anywhere but "
             "here (your browser, say) also waits for your y in this terminal. Every command is printed "
-            "here. The repository's .skyportalai/settings.json rules apply to commands here: its deny "
-            "list refuses, and its allow list skips the approval card, never that y. Only an `a` you "
-            "answer here, kept for this folder under ~/.skyportalai, skips the y too. "
-            "Only trust a folder whose code you trust.\n"
+            "here. The repository's .skyportalai/settings.json rules apply to commands here (this folder's, "
+            "outside a repository): its deny list refuses, and its allow list skips the approval card, never "
+            "that y. Beside it, .skyportalai/settings.local.json skips the y too: an `a` you answer here is "
+            "saved there, and a repository can commit one, so look in .skyportalai/ before you trust a "
+            "repository you didn't create. Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
         return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")

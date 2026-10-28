@@ -462,6 +462,18 @@ def test_the_agents_poller_runs_the_local_queue_with_the_cli_session():
     assert worker.name == "local-command-7"
 
 
+def _as_skyportal_reads(sent, name):
+    """What skyportalai's settings model takes: that one file name, and the content or why it couldn't be read."""
+    error = sent.get("error", "")
+    return (
+        set(sent) <= {"file", "content", "error"} and sent.get("file") == name
+        and ("content" in sent) != bool(error) and "\n" not in error and len(error) <= 300
+    )
+
+
+_SETTINGS_NAMES = {"repo_settings": ".skyportalai/settings.json", "local_settings": ".skyportalai/settings.local.json"}
+
+
 class _Client:
     base_url = BASE_URL
 
@@ -476,6 +488,10 @@ class _Client:
         return "sk_key"
 
     def connect_local_machine(self, instance, **payload):
+        # As skyportalai's LocalRepoSettings and LocalMachineSettings take them; any other name is a 400.
+        for key, name in _SETTINGS_NAMES.items():
+            if payload.get(key) is not None and not _as_skyportal_reads(payload[key], name):
+                raise PortalError(f"Invalid local machine description: Input should be {name!r}", status_code=400)
         self.connects.append((instance, payload))
         return {"server_id": 5, "hostname": "altaf-laptop"}
 
@@ -570,10 +586,10 @@ def test_a_settings_file_that_cannot_be_used_as_text_is_sent_as_unreadable_not_a
     settings.write_bytes(b"\xff\xfe")
     assert local_target.repo_settings(tmp_path)["error"] == "not UTF-8 text"
 
-    def denied(self, *args, **kwargs):
+    def denied(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "open", denied)
+    monkeypatch.setattr(local_target.os, "open", denied)
     assert local_target.repo_settings(tmp_path) == {"file": ".skyportalai/settings.json", "error": "Permission denied"}
 
 
@@ -1381,9 +1397,21 @@ def test_ctrl_c_on_one_chats_turn_stops_only_that_chats_commands(tmp_path, monke
 
 
 _OFFERED = {"id": 7, "command": "echo hi", "chat_id": 12, "turn_origin": "", "always_allow": ["run_command(echo hi)"]}
+# Creating a symbolic link takes a privilege on Windows.
+NEEDS_SYMLINKS = pytest.mark.skipif(os.name == "nt", reason="creates symbolic links")
+NEEDS_GIT = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 
-def test_always_writes_this_machines_own_file_outside_the_folder_sends_it_and_runs(tmp_path, monkeypatch):
+def _local_file(root):
+    return root / ".skyportalai" / "settings.local.json"
+
+
+def _write_local_file(root, text):
+    _local_file(root).parent.mkdir(exist_ok=True)
+    _local_file(root).write_text(text)
+
+
+def test_always_saves_the_command_in_settings_local_json_sends_it_and_runs(tmp_path, monkeypatch):
     (tmp_path / ".skyportalai").mkdir()
     (tmp_path / ".skyportalai" / "settings.json").write_text('{"permissions": {"allow": []}}')
     asked = []
@@ -1394,47 +1422,67 @@ def test_always_writes_this_machines_own_file_outside_the_folder_sends_it_and_ru
         target.close()
 
     [(details, prompt, _seconds)] = asked
-    assert prompt.endswith("[y/N/a=always] ") and "in this folder only" in details
+    assert prompt.endswith("[y/N/a=always] ")
+    assert "without asking in this folder, saved in its .skyportalai/settings.local.json." in details
     assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
-    path = local_target.local_settings_path(tmp_path)
-    # In the CLI's own directory, so nothing in the folder, which a clone or the agent could write, holds it.
-    assert path.is_relative_to(tmp_path / "home" / ".skyportalai")
-    assert json.loads(path.read_text()) == {
-        "permissions": {"allow": ["run_command(echo hi)"]}, "folder": str(tmp_path.resolve()),
-    }
-    assert sorted(p.name for p in (tmp_path / ".skyportalai").iterdir()) == ["settings.json"]
+    # Only `permissions`: no absolute path of the folder rides along in what connect uploads.
+    assert json.loads(_local_file(tmp_path).read_text()) == {"permissions": {"allow": ["run_command(echo hi)"]}}
     assert (tmp_path / ".skyportalai" / "settings.json").read_text() == '{"permissions": {"allow": []}}'
+    # Renamed into place: no temporary file is left beside it.
+    assert sorted(p.name for p in (tmp_path / ".skyportalai").iterdir()) == ["settings.json", "settings.local.json"]
     # Sent at once, so the next command needn't wait a heartbeat to skip the question.
-    assert target.client.connects[-1][1]["local_settings"]["content"] == path.read_text()
+    assert target.client.connects[-1][1]["local_settings"] == {
+        "file": ".skyportalai/settings.local.json", "content": _local_file(tmp_path).read_text(),
+    }
 
 
-def test_a_settings_local_json_in_the_folder_is_never_read(tmp_path, monkeypatch):
-    # A repository can commit one, so it must count for nothing.
-    (tmp_path / ".skyportalai").mkdir()
-    (tmp_path / ".skyportalai" / "settings.local.json").write_text('{"permissions": {"allow": ["run_command(*)"]}}')
+def test_connect_sends_the_local_file_under_the_one_name_skyportalai_accepts(tmp_path, monkeypatch):
+    # skyportalai's LocalMachineSettings.file is Literal[".skyportalai/settings.local.json"]: any other name is a 400.
+    assert local_target.LOCAL_SETTINGS_FILE == ".skyportalai/settings.local.json"
+    assert local_target.REPO_SETTINGS_FILE == ".skyportalai/settings.json"
+    _write_local_file(tmp_path, '{"permissions": {"allow": ["run_command(ls)"]}}')
     target, _run = _connected(tmp_path, monkeypatch)
     target.close()
 
     [(_, payload)] = target.client.connects
-    assert payload["local_settings"] is None
+    assert payload["repo_settings"] is None
+    assert payload["local_settings"] == {
+        "file": ".skyportalai/settings.local.json", "content": '{"permissions": {"allow": ["run_command(ls)"]}}',
+    }
 
 
-def test_each_folder_has_its_own_file(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    assert local_target.add_allow_rules(tmp_path / "a", None, ["run_command(echo hi)"]) is None
+@NEEDS_GIT
+@pytest.mark.parametrize("ignored", [True, False])
+def test_in_a_subfolder_always_saves_at_the_repository_root_and_says_if_git_tracks_it(tmp_path, monkeypatch, ignored):
+    repo = tmp_path / "shop"
+    (repo / "svc-a").mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    if ignored:
+        (repo / ".gitignore").write_text(".skyportalai/settings.local.json\n")
+    asked, shown = [], []
 
-    assert local_target.local_settings(tmp_path / "b") is None
-    assert "run_command(echo hi)" in local_target.local_settings(tmp_path / "a")["content"]
+    def always(*question):
+        asked.append(question)
+        return local_target.ALWAYS
+
+    target, run = _connected(repo / "svc-a", monkeypatch, show=shown.append, ask=always)
+    try:
+        run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    [(details, _prompt, _seconds)] = asked
+    # Beside the repository's settings.json, as Claude Code keeps .claude/ at the root: svc-b shares it.
+    assert "without asking in this repository, saved in its .skyportalai/settings.local.json." in details
+    assert json.loads(_local_file(repo).read_text()) == {"permissions": {"allow": ["run_command(echo hi)"]}}
+    assert not (repo / "svc-a" / ".skyportalai").exists()
+    [added] = [line for line in shown if line.startswith("▸ Added")]
+    assert ("add it to .gitignore" in added) is not ignored
 
 
 def test_always_past_the_rule_limit_writes_nothing_and_runs_it_this_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    path = local_target.local_settings_path(tmp_path)
-    path.parent.mkdir(parents=True)
     full = {"permissions": {"allow": [f"run_command(tool{n})" for n in range(local_target.MAX_RULES_PER_LIST)]}}
-    path.write_text(json.dumps(full))
+    _write_local_file(tmp_path, json.dumps(full))
     shown = []
     target, run = _connected(tmp_path, monkeypatch, show=shown.append, ask=lambda *_question: local_target.ALWAYS)
     try:
@@ -1443,8 +1491,96 @@ def test_always_past_the_rule_limit_writes_nothing_and_runs_it_this_once(tmp_pat
         target.close()
 
     assert result["exit_code"] == 0
-    assert json.loads(path.read_text()) == full
+    assert json.loads(_local_file(tmp_path).read_text()) == full
     assert any("more than 50 allow rules" in line for line in shown)
+
+
+def test_always_adds_to_the_file_as_it_is_on_disk_so_an_edit_since_connect_stays(tmp_path, monkeypatch):
+    _write_local_file(tmp_path, '{"permissions": {"allow": ["run_command(ls)"]}}')
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *_question: local_target.ALWAYS)
+    # Edited after connect sent it, by hand or by another CLI session in this folder.
+    edited = {"permissions": {"allow": ["run_command(ls)", "run_command(make)"], "deny": ["run_command(rm *)"]}}
+    _write_local_file(tmp_path, json.dumps(edited))
+    try:
+        run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    edited["permissions"]["allow"].append("run_command(echo hi)")
+    assert json.loads(_local_file(tmp_path).read_text()) == edited
+
+
+def test_a_write_that_fails_leaves_the_file_whole_and_no_temporary_file(tmp_path, monkeypatch):
+    _write_local_file(tmp_path, '{"permissions": {"allow": ["run_command(ls)"]}}')
+
+    def refused(*_args):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(local_target.os, "replace", refused)
+    why = local_target.add_allow_rules(tmp_path, ["run_command(echo hi)"])
+
+    assert why == ".skyportalai/settings.local.json couldn't be written (Permission denied)"
+    assert _local_file(tmp_path).read_text() == '{"permissions": {"allow": ["run_command(ls)"]}}'
+    assert [p.name for p in (tmp_path / ".skyportalai").iterdir()] == ["settings.local.json"]
+
+
+@NEEDS_SYMLINKS
+@pytest.mark.parametrize("name", [".skyportalai/settings.json", ".skyportalai/settings.local.json"])
+def test_a_settings_file_that_is_a_link_is_sent_as_unreadable_never_followed(tmp_path, name):
+    # A cloned repository could point one at /proc/self/environ, or at a token file, for connect to upload.
+    secret = tmp_path / "elsewhere" / "token.json"
+    secret.parent.mkdir()
+    secret.write_text('{"permissions": {"allow": []}, "token": "s3cret"}')
+    (tmp_path / "repo" / ".skyportalai").mkdir(parents=True)
+    (tmp_path / "repo" / name).symlink_to(secret)
+
+    read = local_target._settings_file(tmp_path / "repo", name)
+
+    assert read == {"file": name, "error": "a link, which isn't followed"}
+
+
+@NEEDS_SYMLINKS
+def test_a_skyportalai_folder_that_is_a_link_is_never_followed(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "settings.json").write_text('{"permissions": {"allow": []}, "token": "s3cret"}')
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / ".skyportalai").symlink_to(elsewhere, target_is_directory=True)
+
+    assert local_target.repo_settings(tmp_path / "repo") == {
+        "file": ".skyportalai/settings.json", "error": ".skyportalai is a link, which isn't followed",
+    }
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="makes a FIFO")
+def test_a_settings_file_that_is_no_regular_file_is_unreadable_and_read_without_waiting(tmp_path):
+    (tmp_path / ".skyportalai").mkdir()
+    os.mkfifo(tmp_path / ".skyportalai" / "settings.json")
+    read = []
+    # A FIFO with no writer blocks a plain open forever.
+    reader = threading.Thread(target=lambda: read.append(local_target.repo_settings(tmp_path)), daemon=True)
+    reader.start()
+    reader.join(5)
+
+    assert read == [{"file": ".skyportalai/settings.json", "error": "not a regular file"}]
+
+
+@NEEDS_SYMLINKS
+def test_always_never_writes_through_a_link_and_runs_the_command_this_once(tmp_path, monkeypatch):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"permissions": {"allow": []}}')
+    (tmp_path / ".skyportalai").mkdir()
+    _local_file(tmp_path).symlink_to(outside)
+    shown = []
+    target, run = _connected(tmp_path, monkeypatch, show=shown.append, ask=lambda *_question: local_target.ALWAYS)
+    try:
+        result = run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert result["exit_code"] == 0
+    assert outside.read_text() == '{"permissions": {"allow": []}}' and _local_file(tmp_path).is_symlink()
+    assert any("couldn't be read (a link, which isn't followed). Running it this once." in line for line in shown)
 
 
 def test_a_command_this_machines_own_list_allows_runs_without_asking(tmp_path, monkeypatch):
@@ -1472,11 +1608,8 @@ def test_a_command_this_machines_own_list_allows_runs_without_asking(tmp_path, m
     ],
 )
 def test_a_lease_saying_the_list_allowed_it_asks_unless_the_file_holds_that_command(tmp_path, monkeypatch, own_file):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     if own_file is not None:
-        path = local_target.local_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(own_file)
+        _write_local_file(tmp_path, own_file)
     asked = []
     target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
     # A server bug, or a key holder sending its own local_settings, could clear the flag for any command.
@@ -1488,18 +1621,3 @@ def test_a_lease_saying_the_list_allowed_it_asks_unless_the_file_holds_that_comm
 
     assert len(asked) == 1 and not (tmp_path / "ran.txt").exists()
     assert result["refused_by_user"] == "declined"
-
-
-def test_connect_sends_this_machines_own_file_beside_the_repositorys(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    path = local_target.local_settings_path(tmp_path)
-    path.parent.mkdir(parents=True)
-    path.write_text('{"permissions": {"allow": ["run_command(ls)"]}}')
-    target, _run = _connected(tmp_path, monkeypatch)
-    target.close()
-
-    [(_, payload)] = target.client.connects
-    assert payload["repo_settings"] is None
-    assert payload["local_settings"] == {
-        "file": "~/.skyportalai/always-allow", "content": '{"permissions": {"allow": ["run_command(ls)"]}}',
-    }

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
-import hashlib
+import errno
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -298,43 +300,38 @@ def repo_context(folder: Path) -> Optional[RepoContext]:
     return RepoContext(remote=remote, branch=branch, path="" if inside == "." else inside)
 
 
-# The terminal's third answer: run it, and add the rules the lease offers to this machine's own allow list.
+# The terminal's third answer: run it, and save the rules the lease offers in settings.local.json.
 ALWAYS: Literal["always"] = "always"
 # True or False as answered, ALWAYS, or None when nobody answered: `answer is True` tells a y from an `a`.
 Answer = Optional[Union[bool, Literal["always"]]]
 
 # Where skyportalai looks for a repository's rules; the server parses them, never this CLI.
 REPO_SETTINGS_FILE = ".skyportalai/settings.json"
-# This machine's own rules for a folder, which only `a` at this terminal writes: the one allow list skyportalai lets
-# skip the y/N. Kept in the CLI's own directory, never the folder, so a cloned repo can't ship one.
-LOCAL_SETTINGS_FILE = "~/.skyportalai/always-allow"
+# Beside it and gitignored, as Claude Code's .claude/settings.local.json: this machine's own rules, where `a` saves,
+# and the one allow list skyportalai lets skip the y/N. A repository could commit one; skyportalai accepts that.
+LOCAL_SETTINGS_FILE = ".skyportalai/settings.local.json"
 # The server refuses more: 50 rules of 500 characters per list fit many times over.
 MAX_REPO_SETTINGS_BYTES = 64 * 1024
 # The server reads a list longer than this as an unreadable file, which asks for everything.
 MAX_RULES_PER_LIST = 50
+# A Windows junction, which lstat doesn't call a link, carries this attribute as a symbolic link does.
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def repo_settings(root: Path) -> Optional[Dict[str, str]]:
     """The repository's settings file as read, raw, or why it couldn't be; None when there is none."""
-    return _settings_file(root / REPO_SETTINGS_FILE, REPO_SETTINGS_FILE)
+    return _settings_file(root, REPO_SETTINGS_FILE)
 
 
 def local_settings(root: Path) -> Optional[Dict[str, str]]:
-    """This machine's own rules for the folder, as repo_settings reads the repository's."""
-    return _settings_file(local_settings_path(root), LOCAL_SETTINGS_FILE)
+    """This machine's own rules beside it, read the same way."""
+    return _settings_file(root, LOCAL_SETTINGS_FILE)
 
 
-def local_settings_path(root: Path) -> Path:
-    """One file per folder under the CLI's own directory, named for the folder's resolved path."""
-    key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:32]
-    return _env.config_dir() / "always-allow" / f"{key}.always-allow.json"
-
-
-def _settings_file(path: Path, name: str) -> Optional[Dict[str, str]]:
+def _settings_file(root: Path, name: str) -> Optional[Dict[str, str]]:
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(MAX_REPO_SETTINGS_BYTES + 1)
-    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        raw = _read_plain_file(root / name, MAX_REPO_SETTINGS_BYTES + 1)
+    except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError as error:
         return {"file": name, "error": error.strerror or type(error).__name__}
@@ -344,6 +341,32 @@ def _settings_file(path: Path, name: str) -> Optional[Dict[str, str]]:
         return {"file": name, "content": raw.decode("utf-8")}
     except UnicodeDecodeError:
         return {"file": name, "error": "not UTF-8 text"}
+
+
+def _refuse_a_link(path: Path, why: str) -> None:
+    """Raise unless the path is no link: a repository could ship one to any file here, which connect would upload."""
+    found = os.lstat(path)
+    if stat.S_ISLNK(found.st_mode) or getattr(found, "st_file_attributes", 0) & _REPARSE_POINT:
+        raise OSError(errno.ELOOP, why)
+
+
+def _read_plain_file(path: Path, limit: int) -> bytes:
+    """Up to `limit` bytes of a regular file reached through no link, in its own name or its folder's."""
+    _refuse_a_link(path.parent, f"{path.parent.name} is a link, which isn't followed")
+    _refuse_a_link(path, "a link, which isn't followed")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        handle = os.open(path, flags)
+    except OSError as error:
+        # Made a link since the check: O_NOFOLLOW refuses it.
+        if error.errno == errno.ELOOP:
+            raise OSError(errno.ELOOP, "a link, which isn't followed") from error
+        raise
+    with os.fdopen(handle, "rb") as file:
+        # A FIFO or a device would hang the read or never end it; O_NONBLOCK opened it without waiting.
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        return file.read(limit)
 
 
 def _is_wsl_launcher(path: str) -> bool:
@@ -617,15 +640,16 @@ def _not_run(reason: str) -> Dict[str, Any]:
     return {**_result(-1, stderr=f"Not run on this machine: {_NOT_RUN_BECAUSE[reason]}."), "not_run": reason}
 
 
-def add_allow_rules(root: Path, sent: Optional[Dict[str, str]], rules: List[str]) -> Optional[str]:
-    """Append the rules skyportalai offered to this machine's own allow list for the folder; why not, if it can't."""
+def add_allow_rules(root: Path, rules: List[str]) -> Optional[str]:
+    """Add the rules to settings.local.json as it is on disk now, so no edit is lost; why not, if it can't."""
     name = LOCAL_SETTINGS_FILE
-    if sent is not None and sent.get("error"):
-        return f"{name} couldn't be read ({sent['error']})"
+    read = local_settings(root)
+    if read is not None and read.get("error"):
+        return f"{name} couldn't be read ({read['error']})"
     data: Any = {}
-    if sent is not None and sent.get("content", "").strip():
+    if read is not None and read["content"].strip():
         try:
-            data = json.loads(sent["content"])
+            data = json.loads(read["content"])
         except ValueError:
             data = None
     # Never rewrite a file this CLI can't read as rules: skyportalai reports what is wrong with it.
@@ -637,15 +661,26 @@ def add_allow_rules(root: Path, sent: Optional[Dict[str, str]], rules: List[str]
     if len(allow) + len(new) > MAX_RULES_PER_LIST:
         return f"{name} would hold more than {MAX_RULES_PER_LIST} allow rules, the most skyportalai reads"
     allow.extend(new)
-    # Which folder it is for, for whoever opens the file; skyportalai reads only `permissions`.
-    data["folder"] = str(root.resolve())
-    path = local_settings_path(root)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        _replace_file(root / name, json.dumps(data, indent=2) + "\n")
     except OSError as error:
         return f"{name} couldn't be written ({error.strerror or type(error).__name__})"
     return None
+
+
+def _replace_file(path: Path, text: str) -> None:
+    """Write a temporary file beside it and rename that over it: never half a file, and never through a link."""
+    path.parent.mkdir(exist_ok=True)
+    _refuse_a_link(path.parent, f"{path.parent.name} is a link, which isn't followed")
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 
 def _local_allow_rules(root: Path) -> List[str]:
@@ -664,7 +699,8 @@ def _local_allow_rules(root: Path) -> List[str]:
 class FolderRules:
     """The rules files the CLI sends for its folder: where they live, what was last sent, and what `a` adds."""
 
-    # The repository's root, or the folder itself outside a repository.
+    # The repository's root, as for Claude Code's .claude/: a subfolder shares its repository's files. Outside a
+    # repository, the folder itself.
     root: Path
     in_repository: bool = False
     # As last sent: skyportalai applies them to every command here, and the heartbeat sends a change.
@@ -674,6 +710,10 @@ class FolderRules:
     def of(cls, folder: Path) -> FolderRules:
         top = _git(folder, "rev-parse", "--show-toplevel")
         return cls(Path(top), in_repository=True) if top else cls(folder)
+
+    @property
+    def where(self) -> str:
+        return "this repository" if self.in_repository else "this folder"
 
     def read(self) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
         return repo_settings(self.root), local_settings(self.root)
@@ -687,7 +727,11 @@ class FolderRules:
 
     def add(self, rules: List[str]) -> Optional[str]:
         """Save the rules for an `a`; why not, if they can't be."""
-        return add_allow_rules(self.root, self.sent[1], rules)
+        return add_allow_rules(self.root, rules)
+
+    def kept_out_of_git(self) -> bool:
+        """False for a repository whose git doesn't ignore settings.local.json, so a commit would take it along."""
+        return not self.in_repository or bool(_git(self.root, "check-ignore", "--", LOCAL_SETTINGS_FILE))
 
 
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Answer:
@@ -819,8 +863,8 @@ class LocalTarget:
         rules = [rule for rule in lease.get("always_allow") or [] if isinstance(rule, str)]
         if rules:
             details += (
-                f"\na = always: run it, and from now on run {', '.join(rules)} without asking, on this machine and in"
-                f" this folder only ({LOCAL_SETTINGS_FILE})."
+                f"\na = always: run it, and from now on run {', '.join(rules)} without asking in {self._rules.where},"
+                f" saved in its {LOCAL_SETTINGS_FILE}."
             )
         choices = "[y/N/a=always]" if rules else "[y/N]"
         seconds = _seconds_to_answer(report_deadline, timeout)
@@ -846,7 +890,9 @@ class LocalTarget:
         if refused is not None:
             self._tell(f"▸ Couldn't add {', '.join(rules)}: {refused}. Running it this once.")
             return
-        self._tell(f"▸ Added {', '.join(rules)} to {LOCAL_SETTINGS_FILE}.")
+        # Committed, the file would skip the question for whoever clones the repository.
+        tracked = "" if self._rules.kept_out_of_git() else " git doesn't ignore it: add it to .gitignore."
+        self._tell(f"▸ Added {', '.join(rules)} to {LOCAL_SETTINGS_FILE}.{tracked}")
         try:
             self._reopen()
         except Exception as error:  # noqa: BLE001 — the heartbeat sends it on its next beat
