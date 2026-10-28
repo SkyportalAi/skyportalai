@@ -59,7 +59,8 @@ All notable changes to this project are documented here. This project follows
   continued in the browser, and during a turn only that chat's. The terminal
   prints every command it runs here, with its chat and exit code (`▸ running:
   git log  (chat #123)`), up to 500 characters of it with the rest counted and control
-  characters written out. If the machine is removed in Skyportal or the key is
+  characters, symbols such as emoji and anything a terminal draws blank written
+  out, in the y/N question too. If the machine is removed in Skyportal or the key is
   refused, the CLI says so once and stops polling; `/local on` reconnects.
   `/logout` or a new key disconnects the machine, and the next message connects
   it with the new key. Needs a Skyportal server with skyportal-website#3665.

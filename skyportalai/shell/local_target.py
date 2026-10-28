@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,6 +82,12 @@ _SHOWN_COMMAND_CHARS = 500
 _ASKED_COMMAND_CHARS = 10_000
 # In the question, a run of spaces this long is counted rather than printed: it could push the rest out of sight.
 _SPACE_RUN = re.compile(r" {5,}")
+# Outside ASCII, separators, format characters, marks and symbols are written out too, emoji with them: Python calls
+# U+2800 (a symbol) and combining marks printable, yet they draw blank or over the character before, so padding of
+# them could push the head of a command out of sight.
+_DRAWN_BLANK_CATEGORIES = frozenset({"Zs", "Cf", "Mn", "Me", "So"})
+# The Hangul fillers draw blank too but are letters, so they are named: every other letter is shown as typed.
+_FILLERS = frozenset("\u115f\u1160\u3164\uffa0")
 # How long a killed process gets to exit before it is given up on: one in uninterruptible sleep never does.
 _KILL_WAIT_SECONDS = 5
 _CREATE_SUSPENDED = 0x00000004
@@ -564,8 +571,14 @@ class ShellRunner:
 
 
 def _visible(text: str) -> str:
-    """The text with every character a terminal would act on written out, so what is shown is what runs."""
-    return "".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii") for char in text)
+    """The text with each character a terminal acts on or draws blank written out: what is shown is what runs."""
+    return "".join(char.encode("unicode_escape").decode("ascii") if _written_out(char) else char for char in text)
+
+
+def _written_out(char: str) -> bool:
+    if not char.isprintable():
+        return True
+    return not char.isascii() and (unicodedata.category(char) in _DRAWN_BLANK_CATEGORIES or char in _FILLERS)
 
 
 def _chat_of(chat_id: object) -> Optional[int]:

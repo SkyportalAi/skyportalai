@@ -243,8 +243,9 @@ with Git for Windows, and without either Windows PowerShell 5.1, which can't run
 The terminal prints every command it runs here, with the chat it came from and
 its exit code, for example `▸ running: git log  (chat #123)`. A command is shown
 as one line of up to 500 characters, with `(+N more characters)` after it when
-it is longer, and a character a terminal would act on is written out (`\x1b`,
-`\n`), so what you read is what runs. The `y/N` question shows the whole
+it is longer, and a character a terminal would act on or draws blank is written
+out (`\x1b`, `\n`, `\u2800`, and emoji and other symbols too), so what you
+read is what runs. The `y/N` question shows the whole
 command instead, with each run of five or more spaces counted (`⟨495 spaces⟩`)
 so padding can't push the rest out of sight; a command longer than 10,000
 characters isn't asked about and doesn't run. A chat this CLI started can also
