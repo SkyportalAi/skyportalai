@@ -20,7 +20,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import requests
@@ -299,8 +299,9 @@ def repo_context(folder: Path) -> Optional[RepoContext]:
 
 
 # The terminal's third answer: run it, and add the rules the lease offers to this machine's own allow list.
-ALWAYS = "always"
-Answer = Optional[Union[bool, str]]
+ALWAYS: Literal["always"] = "always"
+# True or False as answered, ALWAYS, or None when nobody answered: `answer is True` tells a y from an `a`.
+Answer = Optional[Union[bool, Literal["always"]]]
 
 # Where skyportalai looks for a repository's rules; the server parses them, never this CLI.
 REPO_SETTINGS_FILE = ".skyportalai/settings.json"
@@ -311,12 +312,6 @@ LOCAL_SETTINGS_FILE = "~/.skyportalai/always-allow"
 MAX_REPO_SETTINGS_BYTES = 64 * 1024
 # The server reads a list longer than this as an unreadable file, which asks for everything.
 MAX_RULES_PER_LIST = 50
-
-
-def settings_root(folder: Path) -> Path:
-    """Where the repository's rules live: its root, or this folder outside one."""
-    top = _git(folder, "rev-parse", "--show-toplevel")
-    return Path(top) if top else folder
 
 
 def repo_settings(root: Path) -> Optional[Dict[str, str]]:
@@ -665,6 +660,36 @@ def _local_allow_rules(root: Path) -> List[str]:
     return [rule for rule in allow if isinstance(rule, str)] if isinstance(allow, list) else []
 
 
+@dataclass
+class FolderRules:
+    """The rules files the CLI sends for its folder: where they live, what was last sent, and what `a` adds."""
+
+    # The repository's root, or the folder itself outside a repository.
+    root: Path
+    in_repository: bool = False
+    # As last sent: skyportalai applies them to every command here, and the heartbeat sends a change.
+    sent: Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]] = (None, None)
+
+    @classmethod
+    def of(cls, folder: Path) -> FolderRules:
+        top = _git(folder, "rev-parse", "--show-toplevel")
+        return cls(Path(top), in_repository=True) if top else cls(folder)
+
+    def read(self) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
+        return repo_settings(self.root), local_settings(self.root)
+
+    def changed(self) -> bool:
+        return self.read() != self.sent
+
+    def allows(self, command: object) -> bool:
+        """Whether this machine's own file, read now, holds this very command: `a` saves exact commands only."""
+        return f"run_command({str(command or '').strip()})" in _local_allow_rules(self.root)
+
+    def add(self, rules: List[str]) -> Optional[str]:
+        """Save the rules for an `a`; why not, if they can't be."""
+        return add_allow_rules(self.root, self.sent[1], rules)
+
+
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Answer:
     return None
 
@@ -686,22 +711,23 @@ class LocalTarget:
     server_id: Optional[int] = None
     hostname: str = ""
     repo: Optional[RepoContext] = None
-    # The rules last sent to skyportalai, which apply them to every command here; the heartbeat sends a change.
-    settings_root: Optional[Path] = None
-    sent_settings: Optional[Dict[str, str]] = None
-    sent_local_settings: Optional[Dict[str, str]] = None
     poller_factory: Optional[Callable[..., Any]] = None
     # Where each command this machine runs is shown, as it starts and as it ends: a chat this CLI started
     # can be continued from the owner's browser, so nothing may run here without a trace in the terminal.
     show: Callable[[str], None] = logger.info
-    # Asks the terminal y/N about a command from a turn this CLI didn't type: True or False as answered, None when
-    # nobody answered in the seconds given. With no terminal to ask, nobody answers, so no such command runs.
+    # Asks the terminal y/N about a command from a turn this CLI didn't type: True, False or ALWAYS as answered, None
+    # when nobody answered in the seconds given. With no terminal to ask, nobody answers, so no such command runs.
     ask: Callable[[str, str, float], Answer] = _nobody_answers
     _stop: threading.Event = field(default_factory=threading.Event)
     _threads: List[threading.Thread] = field(default_factory=list)
     _runner: Optional[ShellRunner] = None
     # Skyportal removed this machine or refused this CLI's key: nothing more runs here.
     _ended: bool = False
+    # The rules files skyportalai applies to every command here; connect finds the repository's root.
+    _rules: FolderRules = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._rules = FolderRules(self.folder)
 
     @property
     def connected(self) -> bool:
@@ -722,7 +748,7 @@ class LocalTarget:
         from skyportalai.agent.kubernetes.commands import CommandPoller
 
         self.repo = repo_context(self.folder)
-        self.settings_root = settings_root(self.folder)
+        self._rules = FolderRules.of(self.folder)
         try:
             self._open()
             self._start(self.poller_factory or CommandPoller)
@@ -811,13 +837,12 @@ class LocalTarget:
         if lease.get("asks_at_terminal") is not False:
             return False
         # The flag alone is the server's word, which a bug or a key holder sending its own list could clear for any
-        # command. `a` saves exact commands only, so the file must hold this one as it is.
-        rule = f"run_command({str(lease.get('command') or '').strip()})"
-        return rule in _local_allow_rules(self.settings_root or self.folder)
+        # command.
+        return self._rules.allows(lease.get("command"))
 
     def _allow_always(self, rules: List[str]) -> None:
         """Write the rules to this machine's allow list and send it at once: the next command mustn't ask again."""
-        refused = add_allow_rules(self.settings_root or self.folder, self.sent_local_settings, rules)
+        refused = self._rules.add(rules)
         if refused is not None:
             self._tell(f"▸ Couldn't add {', '.join(rules)}: {refused}. Running it this once.")
             return
@@ -848,7 +873,7 @@ class LocalTarget:
             logger.warning("Could not show: %s", line, exc_info=True)
 
     def _open(self) -> None:
-        settings, local = self._settings_now()
+        settings, local = sent = self._rules.read()
         connected = self.client.connect_local_machine(
             self.instance,
             machine_id=machine_id(),
@@ -864,11 +889,7 @@ class LocalTarget:
         except (KeyError, TypeError, ValueError) as error:
             raise PortalError("Skyportal did not return this machine's id") from error
         self.hostname = str(connected.get("hostname") or machine_name())
-        self.sent_settings, self.sent_local_settings = settings, local
-
-    def _settings_now(self) -> Tuple[Optional[Dict[str, str]], Optional[Dict[str, str]]]:
-        root = self.settings_root or self.folder
-        return repo_settings(root), local_settings(root)
+        self._rules.sent = sent
 
     def _machine_removed(self) -> None:
         self._end("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
@@ -900,7 +921,7 @@ class LocalTarget:
     def _send_changed_settings(self) -> None:
         """An edited settings file reaches skyportalai within a heartbeat: connect again with it."""
         try:
-            if self._settings_now() != (self.sent_settings, self.sent_local_settings):
+            if self._rules.changed():
                 self._reopen()
         except Exception as error:  # noqa: BLE001 — unsent, it is tried again on the next heartbeat
             logger.warning("Could not send the changed settings file: %s", error)
