@@ -624,6 +624,11 @@ def _whole_command(command: object) -> str:
     return _SPACE_RUN.sub(lambda run: f"⟨{len(run.group())} spaces⟩", text)
 
 
+def _shown(rules: List[str]) -> str:
+    """The rules a question or a line names, written out as a command is: each one repeats a command."""
+    return ", ".join(_visible(rule) for rule in rules)
+
+
 def _seconds_to_answer(report_deadline: Optional[float], timeout: float) -> float:
     """How long the terminal has to say yes: a yes must leave the command its whole timeout before report_by."""
     # The poller's deadline, on time.monotonic and read against Skyportal's clock: this machine's can't move it.
@@ -695,6 +700,43 @@ def _local_allow_rules(root: Path) -> List[str]:
     return [rule for rule in allow if isinstance(rule, str)] if isinstance(allow, list) else []
 
 
+# What splits a command into parts, redirects or runs a command inside one, quoted or not. skyportalai reads quotes;
+# this CLI doesn't, so a command holding one skips the y/N only on a rule naming it exactly. It may only ask more.
+_NOT_ONE_PLAIN_PART = re.compile(r"[;&|<>`]|\$\(")
+_RULE = re.compile(r"run_command\((?P<pattern>.*)\)", re.DOTALL)
+
+
+def _rule_allows(rule: str, command: str) -> bool:
+    """Whether an allow rule lets the whole command through, as skyportalai matches rules (#3628); if in doubt, not."""
+    if rule.strip() == f"run_command({command})":
+        return True
+    found = _RULE.fullmatch(rule.strip())
+    if found is None or _NOT_ONE_PLAIN_PART.search(command) or not command.replace("\t", " ").isprintable():
+        return False
+    # Runs of spaces match as one, and a final ` *` also matches the bare command.
+    pattern, part = " ".join(found["pattern"].split()), " ".join(command.split())
+    if pattern.endswith(" *"):
+        return _glob_matches(pattern[:-2], part) or _glob_matches(pattern, part)
+    return _glob_matches(pattern, part)
+
+
+def _glob_matches(pattern: str, text: str) -> bool:
+    """`*` matches any run of characters and the rest itself, in one scan: no rule can make it backtrack."""
+    head, *rest = pattern.split("*")
+    if not rest:
+        return text == head
+    *middle, tail = rest
+    at, end = len(head), len(text) - len(tail)
+    if end < at or not text.startswith(head) or not text.endswith(tail):
+        return False
+    for literal in middle:
+        found = text.find(literal, at, end)
+        if found < 0:
+            return False
+        at = found + len(literal)
+    return True
+
+
 @dataclass
 class FolderRules:
     """The rules files the CLI sends for its folder: where they live, what was last sent, and what `a` adds."""
@@ -722,8 +764,9 @@ class FolderRules:
         return self.read() != self.sent
 
     def allows(self, command: object) -> bool:
-        """Whether this machine's own file, read now, holds this very command: `a` saves exact commands only."""
-        return f"run_command({str(command or '').strip()})" in _local_allow_rules(self.root)
+        """Whether settings.local.json, read now, allows the whole command: this CLI's half of skipping the y/N."""
+        text = str(command or "").strip()
+        return any(_rule_allows(rule, text) for rule in _local_allow_rules(self.root))
 
     def add(self, rules: List[str]) -> Optional[str]:
         """Save the rules for an `a`; why not, if they can't be."""
@@ -832,11 +875,15 @@ class LocalTarget:
         """Run one leased command, showing it as it starts and its exit code as it ends."""
         lease = lease if isinstance(lease, dict) else {}
         label = _command_label(lease.get("command"), lease.get("chat_id"))
-        asked = lease.get("turn_origin") != self.instance
-        refused = self._refusal_at_terminal(lease, timeout, report_deadline) or self._refusal_to_start(lease, asked)
+        asked = self._asks_at_terminal(lease)
+        refused, keep = self._answer_at_terminal(lease, timeout, report_deadline) if asked else (None, [])
+        refused = refused or self._refusal_to_start(lease, asked)
         if refused is not None:
             self._tell(f"▸ not run ({_NOT_RUN_BECAUSE[refused]}): {label}")
             return _not_run(refused)
+        if keep:
+            # Only now: a command withdrawn, or too late to finish, leaves no rule behind.
+            self._allow_always(keep)
         self._tell(f"▸ running: {label}")
         try:
             result = self._runner(lease.get("command"), timeout, _chat_of(lease.get("chat_id")))
@@ -846,53 +893,49 @@ class LocalTarget:
         self._tell(f"▸ exit {result['exit_code']}: {label}")
         return result
 
-    def _refusal_at_terminal(
+    def _asks_at_terminal(self, lease: Dict[str, Any]) -> bool:
+        """A turn typed elsewhere asks unless skyportalai let it through on settings.local.json and that file agrees."""
+        if lease.get("turn_origin") == self.instance:
+            return False
+        # The flag alone is the server's word, which a bug or a key holder sending its own file could clear for any
+        # command, so the file as it is on disk must allow the command too.
+        return lease.get("asks_at_terminal") is not False or not self._rules.allows(lease.get("command"))
+
+    def _answer_at_terminal(
         self, lease: Dict[str, Any], timeout: float, report_deadline: Optional[float],
-    ) -> Optional[str]:
-        """None to run it; why not when its turn wasn't typed here and nobody said yes."""
-        origin = lease.get("turn_origin")
-        if origin == self.instance or self._allowed_here(lease):
-            return None
+    ) -> Tuple[Optional[str], List[str]]:
+        """Why not to run it when nobody said yes; or None, with the rules an `a` keeps once it may start."""
         # The whole command, not the label's first line: a yes runs all of it.
         command = _whole_command(lease.get("command"))
         if len(command) > _ASKED_COMMAND_CHARS:
-            return "too_long"
-        where = "another skyportalai CLI session" if origin else "the browser, Slack or the API"
+            return "too_long", []
+        where = "another skyportalai CLI session" if lease.get("turn_origin") else "the browser, Slack or the API"
         details = command + _in_chat(lease.get("chat_id"))
         details += f"\nIts turn wasn't typed in this terminal: it came from {where}."
         rules = [rule for rule in lease.get("always_allow") or [] if isinstance(rule, str)]
         if rules:
             details += (
-                f"\na = always: run it, and from now on run {', '.join(rules)} without asking in {self._rules.where},"
+                f"\na = always: run it, and from now on run {_shown(rules)} without asking in {self._rules.where},"
                 f" saved in its {LOCAL_SETTINGS_FILE}."
             )
         choices = "[y/N/a=always]" if rules else "[y/N]"
         seconds = _seconds_to_answer(report_deadline, timeout)
         answer = self.ask(details, f"Run this on {self.hostname}? {choices} ", seconds) if seconds > 0 else None
         if answer is None:
-            return "no_answer"
+            return "no_answer", []
         if answer == ALWAYS and rules:
-            self._allow_always(rules)
-            return None
-        return None if answer is True else "declined"
-
-    def _allowed_here(self, lease: Dict[str, Any]) -> bool:
-        """skyportalai let it through on this machine's own list, and the file `a` writes holds this very command."""
-        if lease.get("asks_at_terminal") is not False:
-            return False
-        # The flag alone is the server's word, which a bug or a key holder sending its own list could clear for any
-        # command.
-        return self._rules.allows(lease.get("command"))
+            return None, rules
+        return (None if answer is True else "declined"), []
 
     def _allow_always(self, rules: List[str]) -> None:
-        """Write the rules to this machine's allow list and send it at once: the next command mustn't ask again."""
+        """Save the rules in settings.local.json and send it at once: the next such command mustn't ask again."""
         refused = self._rules.add(rules)
         if refused is not None:
-            self._tell(f"▸ Couldn't add {', '.join(rules)}: {refused}. Running it this once.")
+            self._tell(f"▸ Couldn't add {_shown(rules)}: {refused}. Running it this once.")
             return
         # Committed, the file would skip the question for whoever clones the repository.
         tracked = "" if self._rules.kept_out_of_git() else " git doesn't ignore it: add it to .gitignore."
-        self._tell(f"▸ Added {', '.join(rules)} to {LOCAL_SETTINGS_FILE}.{tracked}")
+        self._tell(f"▸ Added {_shown(rules)} to {LOCAL_SETTINGS_FILE}.{tracked}")
         try:
             self._reopen()
         except Exception as error:  # noqa: BLE001 — the heartbeat sends it on its next beat
@@ -904,7 +947,8 @@ class LocalTarget:
             self.client.start_local_command(self.server_id, self.instance, lease.get("id"))
         except PortalError as error:
             if error.code == "too_late":
-                # After a question, a yes this late couldn't finish in time; nobody was asked about a turn typed here.
+                # After a question, a yes this late couldn't finish in time. Nobody was asked about a turn typed here,
+                # or about one settings.local.json let through.
                 return "no_answer" if asked else "too_late"
             return "withdrawn" if error.code == "withdrawn" else "unconfirmed"
         except Exception as error:  # noqa: BLE001 — what Skyportal didn't confirm never runs

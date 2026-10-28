@@ -1603,7 +1603,7 @@ def test_a_command_this_machines_own_list_allows_runs_without_asking(tmp_path, m
         None,
         "not json",
         '{"permissions": {"allow": ["run_command(echo other)"]}}',
-        # Hand-written: `a` saves exact commands only, so a wildcard skips nothing at this terminal.
+        # A pattern never reaches past a redirect, here or on skyportalai.
         '{"permissions": {"allow": ["run_command(echo *)"]}}',
     ],
 )
@@ -1621,3 +1621,122 @@ def test_a_lease_saying_the_list_allowed_it_asks_unless_the_file_holds_that_comm
 
     assert len(asked) == 1 and not (tmp_path / "ran.txt").exists()
     assert result["refused_by_user"] == "declined"
+
+
+def test_a_pattern_in_settings_local_json_skips_the_question_as_skyportalai_matched_it(tmp_path, monkeypatch):
+    _write_local_file(tmp_path, '{"permissions": {"allow": ["run_command(echo *)"]}}')
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
+    try:
+        result = run({**_OFFERED, "command": "echo  hi", "asks_at_terminal": False}, 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert asked == []
+    assert (result["exit_code"], result["stdout"].strip()) == (0, "hi")
+
+
+@pytest.mark.parametrize(
+    ("rule", "command", "allows"),
+    [
+        # skyportalai's own examples (docs/product/Repo command rules.md).
+        ("run_command(git status)", "git status", True),
+        ("run_command(git status)", "git status -s", False),
+        ("run_command(git status)", "git statusx", False),
+        ("run_command(git status *)", "git status", True),
+        ("run_command(git status *)", "git status --short", True),
+        ("run_command(git status *)", "git push", False),
+        ("run_command(git *)", "git log", True),
+        ("run_command(git *)", "gitk", False),
+        ("run_command(kubectl get *)", "kubectl get pods -A", True),
+        ("run_command(kubectl get *)", "kubectl delete pod x", False),
+        ("run_command(npm run test*)", "npm run test", True),
+        ("run_command(npm run test*)", "npm run test:unit", True),
+        ("run_command(npm run test*)", "npm run build", False),
+        ("run_command(cat /proc/*)", "cat /proc/cpuinfo", True),
+        ("run_command(kubectl get * -n staging)", "kubectl get pods -n staging", True),
+        ("run_command(kubectl get * -n staging)", "kubectl get pods -n prod", False),
+        ("run_command(*)", "anything at all", True),
+        # Runs of spaces match as one, in the rule and in the command.
+        ("run_command(git  log)", "git   log", True),
+        # Never past a part, a redirect or a command run inside one.
+        ("run_command(git *)", "git log | bash", False),
+        ("run_command(git *)", "git log; rm -rf /", False),
+        ("run_command(git *)", "git log && rm -rf /", False),
+        ("run_command(git *)", "git log > /srv/app/config.yml", False),
+        ("run_command(ls *)", "ls $(rm -rf /)", False),
+        ("run_command(ls *)", "ls `rm -rf /`", False),
+        ("run_command(git *)", "git log\nrm -rf /", False),
+        # Stricter than skyportalai, which reads quotes: here such a command needs its exact rule, as `a` saves it.
+        ("run_command(grep *)", 'grep "a|b" notes.txt', False),
+        ('run_command(grep "a|b" notes.txt)', 'grep "a|b" notes.txt', True),
+        ("run_command(ls *)", "ls\xa0-la", False),
+        ("not a rule", "ls", False),
+        ("run_command(rm *)", "ls", False),
+    ],
+)
+def test_a_rule_matches_a_command_as_skyportalai_matches_it_or_more_strictly(rule, command, allows):
+    assert local_target._rule_allows(rule, command) is allows
+
+
+def test_a_rule_full_of_wildcards_is_matched_without_backtracking():
+    started = time.monotonic()
+
+    assert not local_target._rule_allows("run_command(" + "a*" * 200 + "b)", "a" * 9000)
+    assert time.monotonic() - started < 1
+
+
+def test_too_late_for_a_command_settings_local_json_let_through_is_not_run_never_no_answer(tmp_path, monkeypatch):
+    _write_local_file(tmp_path, '{"permissions": {"allow": ["run_command(echo hi)"]}}')
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    asked = []
+    too_late = PortalError("too late", status_code=409, code="too_late")
+    target = LocalTarget(
+        _Client(start_error=too_late), tmp_path, poller_factory=_Poller, ask=lambda *question: asked.append(question),
+    )
+    target.connect()
+    try:
+        result = _Poller.made[-1].options["run"]({**_OFFERED, "asks_at_terminal": False, "always_allow": []}, 60)
+    finally:
+        target.close()
+
+    # Nobody was asked, so the chat isn't told nobody answered.
+    assert asked == []
+    assert "refused_by_user" not in result and result["not_run"] == "too_late"
+
+
+@pytest.mark.parametrize(
+    ("code", "why"), [("withdrawn", {"not_run": "withdrawn"}), ("too_late", {"refused_by_user": "no_answer"})],
+)
+def test_always_saves_nothing_for_a_command_skyportal_no_longer_lets_start(tmp_path, monkeypatch, code, why):
+    monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
+    refused = PortalError(code, status_code=409, code=code)
+    target = LocalTarget(
+        _Client(start_error=refused), tmp_path, poller_factory=_Poller, ask=lambda *_question: local_target.ALWAYS,
+    )
+    target.connect()
+    try:
+        result = _Poller.made[-1].options["run"](dict(_OFFERED), 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert {key: result[key] for key in why} == why
+    assert not _local_file(tmp_path).exists()
+
+
+def test_the_rules_an_always_names_are_written_out_as_the_command_is(tmp_path, monkeypatch):
+    sneaky = "echo \u202eevil"
+    asked, shown = [], []
+    target, run = _connected(
+        tmp_path, monkeypatch, show=shown.append, ask=lambda *question: asked.append(question) or local_target.ALWAYS,
+    )
+    try:
+        lease = {**_OFFERED, "command": sneaky, "always_allow": [f"run_command({sneaky})"]}
+        run(lease, 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    [(details, _prompt, _seconds)] = asked
+    assert "\u202e" not in details + "".join(shown)
+    assert "run_command(echo \\u202eevil) without asking" in details
+    assert any(line.startswith("▸ Added run_command(echo \\u202eevil) to ") for line in shown)

@@ -218,7 +218,11 @@ refused, and it never runs. When Skyportal offers one, a third answer, `a`
 repository), as Claude Code's `.claude/settings.local.json`. Keep it out of
 git; the CLI says so when git doesn't ignore it. That command then runs without
 the question, from your browser too; a different one, even with other flags,
-asks again. Nothing else skips the question: not the host's or your permit
+asks again. You can add rules with `*` to the file yourself; one skips the
+question only for a command with no `;`, `&`, `|`, `<`, `>`, backtick or `$(`
+in it, which otherwise needs its exact rule. The CLI checks the file as it is on
+disk before it skips the question, whatever Skyportal says. Nothing else skips
+the question: not the host's or your permit
 list, and not the repository's committed `.skyportalai/settings.json`, whose
 allow list only skips the approval card. A repository can commit a
 `settings.local.json` of its own, so look in `.skyportalai/` before you trust a

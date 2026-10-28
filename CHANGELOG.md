@@ -33,7 +33,9 @@ All notable changes to this project are documented here. This project follows
   `.skyportalai/settings.local.json`, beside the repository's
   `.skyportalai/settings.json` at its root (the folder's own outside a
   repository), as Claude Code's `.claude/settings.local.json`, and sends it at
-  once; only that file's allow list skips the question later. Keep it out of
+  once; only that file's allow list skips the question later, and the CLI
+  checks it on disk too before it does (a `*` rule only for a command with no
+  `;`, `&`, `|`, `<`, `>`, backtick or `$(`). Keep it out of
   git: a repository can commit one, so look in `.skyportalai/` before trusting a
   repository you didn't create. The CLI sends both files with every connect,
   and again within a heartbeat of an edit (the legacy `.skyportal/settings.json`
