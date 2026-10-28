@@ -640,6 +640,18 @@ def add_allow_rules(root: Path, sent: Optional[Dict[str, str]], rules: List[str]
     return None
 
 
+def _local_allow_rules(root: Path) -> List[str]:
+    """The allow rules in this machine's own file for the folder as it reads now; none if it can't be read as rules."""
+    read = local_settings(root) or {}
+    try:
+        data = json.loads(read.get("content") or "null")
+    except ValueError:
+        return []
+    permissions = data.get("permissions") if isinstance(data, dict) else None
+    allow = permissions.get("allow") if isinstance(permissions, dict) else None
+    return [rule for rule in allow if isinstance(rule, str)] if isinstance(allow, list) else []
+
+
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Answer:
     return None
 
@@ -756,8 +768,7 @@ class LocalTarget:
     ) -> Optional[str]:
         """None to run it; why not when its turn wasn't typed here and nobody said yes."""
         origin = lease.get("turn_origin")
-        # skyportalai says when this machine's own allow list let it through: the user's earlier `a` here.
-        if origin == self.instance or lease.get("asks_at_terminal") is False:
+        if origin == self.instance or self._allowed_here(lease):
             return None
         # The whole command, not the label's first line: a yes runs all of it.
         command = _whole_command(lease.get("command"))
@@ -781,6 +792,15 @@ class LocalTarget:
             self._allow_always(rules)
             return None
         return None if answer is True else "declined"
+
+    def _allowed_here(self, lease: Dict[str, Any]) -> bool:
+        """skyportalai let it through on this machine's own list, and the file `a` writes holds this very command."""
+        if lease.get("asks_at_terminal") is not False:
+            return False
+        # The flag alone is the server's word, which a bug or a key holder sending its own list could clear for any
+        # command. `a` saves exact commands only, so the file must hold this one as it is.
+        rule = f"run_command({str(lease.get('command') or '').strip()})"
+        return rule in _local_allow_rules(self.settings_root or self.folder)
 
     def _allow_always(self, rules: List[str]) -> None:
         """Write the rules to this machine's allow list and send it at once: the next command mustn't ask again."""

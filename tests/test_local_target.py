@@ -1420,14 +1420,45 @@ def test_always_past_the_rule_limit_writes_nothing_and_runs_it_this_once(tmp_pat
 
 def test_a_command_this_machines_own_list_allows_runs_without_asking(tmp_path, monkeypatch):
     asked = []
-    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or local_target.ALWAYS)
     try:
-        result = run({**_OFFERED, "asks_at_terminal": False}, 60, report_deadline=_due_in(120))
+        run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+        result = run({**_OFFERED, "asks_at_terminal": False, "always_allow": []}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
 
-    assert asked == []
+    # Asked once: the `a` wrote the command to the file the next lease is checked against.
+    assert len(asked) == 1
     assert result["exit_code"] == 0
+
+
+@pytest.mark.parametrize(
+    "own_file",
+    [
+        None,
+        "not json",
+        '{"permissions": {"allow": ["run_command(echo other)"]}}',
+        # Hand-written: `a` saves exact commands only, so a wildcard skips nothing at this terminal.
+        '{"permissions": {"allow": ["run_command(echo *)"]}}',
+    ],
+)
+def test_a_lease_saying_the_list_allowed_it_asks_unless_the_file_holds_that_command(tmp_path, monkeypatch, own_file):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    if own_file is not None:
+        path = local_target.local_settings_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_text(own_file)
+    asked = []
+    target, run = _connected(tmp_path, monkeypatch, ask=lambda *question: asked.append(question) or False)
+    # A server bug, or a key holder sending its own local_settings, could clear the flag for any command.
+    lease = {"id": 7, "command": "echo ran > ran.txt", "chat_id": 12, "turn_origin": "", "asks_at_terminal": False}
+    try:
+        result = run(lease, 60, report_deadline=_due_in(120))
+    finally:
+        target.close()
+
+    assert len(asked) == 1 and not (tmp_path / "ran.txt").exists()
+    assert result["refused_by_user"] == "declined"
 
 
 def test_connect_sends_this_machines_own_file_beside_the_repositorys(tmp_path, monkeypatch):
