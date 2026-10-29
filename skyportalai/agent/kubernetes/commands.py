@@ -4,6 +4,8 @@ Chat on a cluster reached only through this agent queues its command on the
 server. This loop (cluster role only) picks each one up over outbound HTTPS and
 runs it on a thread of its own, up to COMMAND_SLOTS at a time. The command is
 checked against the read-only allowlist here as well as on the server.
+
+The skyportalai CLI reuses this loop for the user's own machine (skyportal-website#3665).
 """
 
 from __future__ import annotations
@@ -14,9 +16,10 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -53,7 +56,8 @@ AGENT_CAPABILITIES = "command-timeouts"
 @dataclass(frozen=True)
 class _LeasedCommand:
     id: int
-    argv: object
+    # What the runner is handed: kubectl's argv here; the CLI's local machine takes the whole lease.
+    payload: object
     timeout: float
     # When the server stops taking the result, on the poller's clock; None if it didn't say.
     report_deadline: float | None
@@ -76,12 +80,40 @@ class CommandPoller:
         stop_event: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
         instance: str | None = None,
+        lease_path: str = LEASE_PATH,
+        result_path: str = RESULT_PATH,
+        # Where it says it is alive while every slot is busy, as it then polls for no lease.
+        heartbeat_path: str = HEARTBEAT_PATH,
+        extra_headers: Mapping[str, str] | None = None,
+        # The lease field the runner is handed; None hands it the whole lease.
+        command_field: str | None = "argv",
+        thread_prefix: str = "kube-command",
+        # Each is called once, and polling ends, when a lease is answered 410 (the target is gone) or
+        # 401/403 (the credential is refused). None keeps polling and logging, as the in-cluster agent does.
+        on_gone: Callable[[], None] | None = None,
+        on_refused: Callable[[], None] | None = None,
+        # After repeated failures the wait grows from POLL_SECONDS up to this, and resets on a good poll.
+        # None keeps the fixed POLL_SECONDS wait.
+        max_backoff_seconds: float | None = None,
+        # True also hands the runner the lease's report deadline, on `clock`, as `report_deadline` (None if unsaid).
+        hand_report_deadline: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         # Names this process to the server, which takes each lease poll as its heartbeat. A restarted
         # pod is a new process with a new id, so the server can give it the command the old one was
         # running instead of waiting for that one until the deadline (skyportal-website#3709).
         self.instance = instance or str(uuid.uuid4())
+        self._lease_path = lease_path
+        self._result_path = result_path
+        self._heartbeat_path = heartbeat_path
+        self._command_field = command_field
+        self._thread_prefix = thread_prefix
+        self._on_gone = on_gone
+        self._on_refused = on_refused
+        self._max_backoff = max_backoff_seconds
+        self._hand_report_deadline = hand_report_deadline
+        self._ended = False
+        self._failures = 0
         # requests doesn't promise a Session is safe to share across threads. Leases use this
         # one, on the polling thread only; each command's thread posts its result on a session
         # of its own from session_factory.
@@ -92,6 +124,7 @@ class CommandPoller:
             "User-Agent": f"skyportalai-agent/{__version__}",
             "X-Agent-Capabilities": AGENT_CAPABILITIES,
             "X-Agent-Instance": self.instance,
+            **(extra_headers or {}),
         }
         self._run = run
         self._stop = stop_event or threading.Event()
@@ -99,7 +132,7 @@ class CommandPoller:
         self._slots = threading.BoundedSemaphore(COMMAND_SLOTS)
 
     def run_forever(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop.is_set() and not self._ended:
             if not self._slots.acquire(timeout=POLL_SECONDS):
                 # Every slot is busy, so no lease poll tells the server this process is still alive.
                 # Not once shutdown has started: the request could hold up the exit for its timeout.
@@ -107,11 +140,16 @@ class CommandPoller:
                     self._heartbeat()
                 continue
             if self._start_next() is None:
-                self._stop.wait(POLL_SECONDS)
+                self._stop.wait(self._idle_wait())
+
+    def _idle_wait(self) -> float:
+        if self._max_backoff is None or not self._failures:
+            return POLL_SECONDS
+        return min(POLL_SECONDS * 2 ** min(self._failures - 1, 16), self._max_backoff)
 
     def _heartbeat(self) -> None:
         try:
-            resp = self.session.post(self.base_url + HEARTBEAT_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+            resp = self.session.post(self.base_url + self._heartbeat_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         except requests.RequestException as exc:
             failure = type(exc).__name__
         else:
@@ -131,23 +169,31 @@ class CommandPoller:
     def _start_next(self) -> threading.Thread | None:
         """Lease a command for the slot the caller holds and start it; the slot is freed here if none starts."""
         try:
-            command = None if self._stop.is_set() else self._lease()
+            command = None if self._stop.is_set() or self._ended else self._lease()
+            self._failures = 0
             if command is not None:
                 worker = threading.Thread(
-                    target=self._work, args=(command,), name=f"kube-command-{command.id}", daemon=True
+                    target=self._work, args=(command,), name=f"{self._thread_prefix}-{command.id}", daemon=True
                 )
                 worker.start()
                 return worker
         except requests.RequestException as exc:
+            self._failures += 1
             logger.warning("Command poll failed: %s", type(exc).__name__)
         except Exception:  # noqa: BLE001 — /healthz can't see this thread, so it must not die
+            self._failures += 1
             logger.exception("Command poll failed")
         self._slots.release()
         return None
 
     def _lease(self) -> _LeasedCommand | None:
-        resp = self.session.post(self.base_url + LEASE_PATH, headers=self.headers, timeout=_HTTP_TIMEOUT)
+        resp = self.session.post(self.base_url + self._lease_path, headers=self.headers, timeout=_HTTP_TIMEOUT)
         if resp.status_code == 204:
+            return None
+        hook = self._ending_hook(resp.status_code)
+        if hook is not None:
+            self._ended = True
+            hook()
             return None
         resp.raise_for_status()
         command = resp.json()
@@ -155,26 +201,33 @@ class CommandPoller:
         if command_id is None:
             logger.warning("Ignored a leased command with no usable id")
             return None
+        handed = command if self._command_field is None else command.get(self._command_field)
         return _LeasedCommand(
             command_id,
-            command.get("argv"),
+            handed,
             _command_timeout(command),
-            self._report_deadline(command),
+            self._report_deadline(command, _server_now(resp)),
             _command_attempt(command),
         )
 
-    def _report_deadline(self, command: dict) -> float | None:
+    def _ending_hook(self, status: int) -> Callable[[], None] | None:
+        if status == 410:
+            return self._on_gone
+        return self._on_refused if status in (401, 403) else None
+
+    def _report_deadline(self, command: dict, server_now: datetime) -> float | None:
         try:
-            left = datetime.fromisoformat(command.get("report_by")) - datetime.now(timezone.utc)
+            left = datetime.fromisoformat(command.get("report_by")) - server_now
         except (TypeError, ValueError):
             return None  # an older server sends none, and one without a UTC offset can't be placed
         return self._clock() + max(0.0, left.total_seconds())
 
     def _work(self, command: _LeasedCommand) -> None:
         try:
+            extra = {"report_deadline": command.report_deadline} if self._hand_report_deadline else {}
             # run_kubectl refuses an argv that isn't a read-only kubectl list, so a malformed
             # one still gets a result back and chat fails fast instead of waiting it out.
-            payload = _result_payload(self._run(command.argv, command.timeout), command.attempt)
+            payload = _result_payload(self._run(command.payload, command.timeout, **extra), command.attempt)
             with self._session_factory() as session:
                 self._post_result(session, command, payload)
         except Exception:
@@ -184,7 +237,7 @@ class CommandPoller:
 
     def _post_result(self, session: requests.Session, command: _LeasedCommand, payload: dict) -> None:
         """Post a command's result, retrying what a brief SkyPortal outage would explain."""
-        url = self.base_url + RESULT_PATH.format(id=command.id)
+        url = self.base_url + self._result_path.format(id=command.id)
         waits = self._retry_waits(command.report_deadline)
         while True:
             try:
@@ -225,7 +278,20 @@ def _result_payload(result: dict, attempt: int | None = None) -> dict:
     }
     if attempt is not None:
         payload["attempt"] = attempt
+    # The CLI's local machine: nobody at its terminal said yes, or the CLI never ran it for another reason.
+    for never_ran in ("refused_by_user", "not_run"):
+        if result.get(never_ran):
+            payload[never_ran] = result[never_ran]
     return payload
+
+
+def _server_now(resp: requests.Response) -> datetime:
+    """When the server answered, from its Date header, so report_by holds on a machine whose clock is off."""
+    try:
+        sent = parsedate_to_datetime(resp.headers["Date"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return datetime.now(timezone.utc)  # no usable Date header: this machine's clock, as before
+    return sent if sent.tzinfo is not None else sent.replace(tzinfo=timezone.utc)
 
 
 def _command_id(command) -> int | None:

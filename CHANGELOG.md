@@ -16,6 +16,59 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **The agent works on your own machine, starting in the folder you opened.**
+  Started in a folder you trust (it asks once per folder, like Claude Code, and
+  trust covers that folder and everything inside it), the shell registers this
+  machine with Skyportal and runs the commands the agent's chat queues for it.
+  The folder is only where commands start, not a boundary: a command can read or
+  change anything you can, and the CLI won't connect from a filesystem or drive
+  root (the trust prompt warns when it is your home folder). Skyportal decides
+  what runs. A command from a turn typed elsewhere, such as the browser
+  continuing a chat this CLI started, runs only after you answer y at this
+  terminal (`Run this on <machine>? [y/N]`, with the whole command, long runs of
+  spaces counted, its chat and where the turn came from; one over 10,000
+  characters isn't asked about and doesn't run). N, Ctrl-C or no answer in time
+  is reported as refused by you and never runs; autoapprove doesn't answer it.
+  `a` (always), when offered, runs it and saves exactly that command in
+  `.skyportalai/settings.local.json`, beside the repository's
+  `.skyportalai/settings.json` at its root (the folder's own outside a
+  repository), as Claude Code's `.claude/settings.local.json`, and sends it at
+  once; only that file's allow list skips the question later, and the CLI
+  checks it on disk too before it does (a `*` rule only for a command with no
+  `;`, `&`, `|`, `<`, `>`, backtick or `$(`). Keep it out of
+  git: a repository can commit one, so look in `.skyportalai/` before trusting a
+  repository you didn't create. The CLI sends both files with every connect,
+  and again within a heartbeat of an edit (the legacy `.skyportal/settings.json`
+  isn't read). It reads neither through a link, and `a` adds to the file as it
+  is on disk and writes it whole.
+  You have a little under five minutes, so a yes still leaves the command its
+  whole timeout. Every command, even one typed here, starts only after Skyportal
+  confirms it is still wanted, so a turn stopped while the question waits runs
+  nothing. Commands run in
+  bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
+  PowerShell 5.1. Chats started in the shell use this machine unless you pick
+  servers (`/server auto` doesn't change that); `/local [on|off]` shows or
+  changes it and `/server local` selects it. Commands are fetched over outbound
+  HTTPS with the in-cluster agent's command loop, which now takes its endpoints,
+  headers and the lease field as options, plus optional hooks for a lease
+  answered 410 (removed) or 401/403 (key refused), an optional growing wait
+  after failed polls, and an option to hand the runner the lease's report
+  deadline. The loop now reads a lease's `report_by` against the response's
+  `Date` header, so a machine whose clock is off keeps the time the server gave
+  it. Commands run without any `SKYPORTALAI_*` or legacy
+  `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
+  command that writes more than 64 MiB to stdout or stderr is stopped (exit code
+  153); what it leaves running in the background isn't held to that once it
+  ends. Closing the shell stops a running command and tells Skyportal; Ctrl-C at
+  the prompt stops every command running here, including ones from a chat you
+  continued in the browser, and during a turn only that chat's. The terminal
+  prints every command it runs here, with its chat and exit code (`▸ running:
+  git log  (chat #123)`), up to 500 characters of it with the rest counted and control
+  characters, symbols such as emoji and anything a terminal draws blank written
+  out, in the y/N question too. If the machine is removed in Skyportal or the key is
+  refused, the CLI says so once and stops polling; `/local on` reconnects.
+  `/logout` or a new key disconnects the machine, and the next message connects
+  it with the new key. Needs a Skyportal server with skyportal-website#3665.
 - **Scope approvals.** When the agent's command targets a host or namespace outside
   the chat's scope, a server with skyportal-website#3724 asks to add it and run the
   command, instead of ending the turn. The CLI shows the card's wording, asks y/N,

@@ -437,18 +437,20 @@ class SkyportalClient:
         active_server_id: Optional[int] = None,
         active_host_id: Optional[int] = None,
         selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+        local_session: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Create a headless chat and atomically scope its first turn."""
+        """Create a headless chat and atomically scope its first turn; `local_session` binds it to this CLI."""
         if server_id is not None and server_ids is not None:
             raise PortalError("Use server_id or server_ids, not both")
         if server_ids is None and (
             active_server_id is not None
             or active_host_id is not None
             or selected_namespaces is not None
+            or local_session is not None
         ):
             raise PortalError(
                 "server_ids is required with active_server_id, active_host_id, "
-                "or selected_namespaces"
+                "selected_namespaces or local_session"
             )
         body: Dict[str, Any] = {"message": message}
         if server_id is not None:
@@ -464,15 +466,78 @@ class SkyportalClient:
             body["active_host_id"] = active_host_id
         if selected_namespaces is not None:
             body["selected_namespaces"] = selected_namespaces
+        if local_session is not None:
+            body["local_session"] = local_session
         return self._request("POST", "/api/v1/agent/chat/", json_body=body)
 
-    def send_chat_message(self, chat_id: int, message: str) -> Dict[str, Any]:
-        """Send a follow-up message to a headless chat."""
+    def send_chat_message(
+        self, chat_id: int, message: str, local_session: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send a follow-up message to a headless chat, binding it to this CLI's session when given."""
+        body: Dict[str, Any] = {"message": message}
+        if local_session is not None:
+            body["local_session"] = local_session
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/message/".format(chat_id),
-            json_body={"message": message},
+            json_body=body,
         )
+
+    def connect_local_machine(
+        self,
+        instance: str,
+        *,
+        machine_id: str,
+        name: str,
+        platform: str,
+        shell: str,
+        repo: Optional[Dict[str, str]],
+        repo_settings: Optional[Dict[str, str]] = None,
+        local_settings: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Register this machine (on first use) and open this process's session on it."""
+        body: Dict[str, Any] = {"machine_id": machine_id, "name": name, "platform": platform, "shell": shell}
+        if repo is not None:
+            body["repo"] = repo
+        if repo_settings is not None:
+            body["repo_settings"] = repo_settings
+        if local_settings is not None:
+            body["local_settings"] = local_settings
+        return self._request(
+            "POST", "/api/v1/agent/local/connect/", json_body=body, extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def local_machine_heartbeat(self, server_id: int, instance: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Tell Skyportal this session is alive; `timeout` replaces the client's own for each socket operation."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/heartbeat/".format(server_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+            timeout=timeout,
+        )
+
+    def start_local_command(self, server_id: int, instance: str, command_id: object) -> Dict[str, Any]:
+        """Ask Skyportal whether a leased command may start now; a PortalError says it may not."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/commands/{}/start/".format(server_id, command_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def disconnect_local_machine(self, server_id: int, instance: str) -> Dict[str, Any]:
+        """Close this session; Skyportal withdraws the commands it still held."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/disconnect/".format(server_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def bearer_token(self) -> str:
+        """The credential this client sends, for a component that talks to Skyportal over its own transport."""
+        return self._access_token()
 
     def upload_chat_files(self, chat_id: int, paths: List[str]) -> Dict[str, Any]:
         """Attach files to a chat. Logs, CSV, JSON, YAML and images all work."""
@@ -767,6 +832,7 @@ class SkyportalClient:
         active_server_id: Optional[int] = None,
         active_host_id: Optional[int] = None,
         selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+        local_session: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Start or continue a chat and return its ID without waiting.
 
@@ -779,6 +845,7 @@ class SkyportalClient:
                 and active_server_id is None
                 and active_host_id is None
                 and selected_namespaces is None
+                and local_session is None
             ):
                 started = self.create_chat(message, server_id=server_id)
             else:
@@ -789,12 +856,13 @@ class SkyportalClient:
                     active_server_id=active_server_id,
                     active_host_id=active_host_id,
                     selected_namespaces=selected_namespaces,
+                    local_session=local_session,
                 )
             try:
                 return int(started["chat_id"])
             except (KeyError, TypeError, ValueError) as error:
                 raise PortalError("Skyportal did not return a valid chat ID") from error
-        self.send_chat_message(chat_id, message)
+        self.send_chat_message(chat_id, message, local_session=local_session)
         return chat_id
 
     def cancel_chat(self, chat_id: int, reason: Optional[str] = None) -> Dict[str, Any]:
@@ -908,10 +976,13 @@ class SkyportalClient:
         bearer_token: Optional[str] = None,
         body: Optional[bytes] = None,
         content_type: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
             "User-Agent": CLI_USER_AGENT,
+            **(extra_headers or {}),
         }
         data = None
         if body is not None:
@@ -932,7 +1003,7 @@ class SkyportalClient:
             method=method,
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=timeout or self.timeout) as response:
                 status = response.status
                 content = response.read()
                 if status >= 300:

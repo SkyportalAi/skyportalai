@@ -23,6 +23,7 @@ porting the Click commands to Typer; `skyportal` no longer exists.
 - `skyportalai.shell.portal`: standard-library HTTP client for credential validation and the headless agent REST API.
 - `skyportalai.shell.animation`: responsive Rich ANSI branding and startup animation.
 - `skyportalai.shell.config`: application URL and timeout configuration under `~/.skyportalai`.
+- `skyportalai.shell.local_target`: this machine as a command target: the trust store, repo context, the shell runner that executes each leased command, and the lease and heartbeat loop (reusing the in-cluster agent's `CommandPoller`, imported only when it connects).
 
 ## Authentication
 
@@ -104,6 +105,8 @@ and the one-shot `skyportalai ask` command accepts repeated `--server` options.
 - Configuration: `~/.skyportalai/config.yaml`
 - Credentials: `~/.skyportalai/credentials.json` (mode `0600`)
 - Prompt history: `~/.skyportalai/history` (mode `0600`)
+- This machine's random id, sent when it connects as a command target: `~/.skyportalai/machine_id` (mode `0600`)
+- Folders you trust to start commands in, each covering everything inside it: `~/.skyportalai/trusted_folders.json` (mode `0600`)
 
 A pre-0.2.0 `~/.skyportal` directory is renamed to `~/.skyportalai` the first
 time a path under it is resolved.
