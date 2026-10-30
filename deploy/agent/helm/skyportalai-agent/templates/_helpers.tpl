@@ -113,6 +113,18 @@ is not a plain version (a digest-style or custom tag) is trusted as-is.
 {{- end }}
 
 {{/*
+kubernetes.namespaces needs an agent that reports the list. An older image ignores it,
+so skyportalai would keep asking for the whole cluster and every read would be denied by
+the namespaced Roles. Same tag rule as above.
+*/}}
+{{- define "skyportalai-agent.requireNamespacesImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) (semverCompare "<0.3.2" $tag) -}}
+{{- fail (printf "kubernetes.namespaces needs skyportalai-agent 0.3.2 or newer; image tag %s predates it. Set image.tag." $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 True when the chart creates the token Secret itself: token.value is set and no
 existingSecret overrides it (existingSecret wins, as in the Datadog chart).
 */}}

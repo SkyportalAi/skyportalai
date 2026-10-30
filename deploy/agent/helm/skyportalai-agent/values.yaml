@@ -169,6 +169,18 @@ kubernetes:
   apiServerPorts:
     - 443
     - 6443
+  # Limit the cluster pod to these namespaces, e.g. [ml, serving]. Empty keeps the
+  # default: one ClusterRole and ClusterRoleBinding over the whole cluster. Set, the
+  # chart renders a Role and RoleBinding in each listed namespace instead, with the
+  # same pod, event, workload, crash-log and pod-metrics reads and nothing more, so a
+  # leaked token reads only those namespaces. Nodes and node metrics are cluster
+  # scoped and no Role can grant them: a small ClusterRole for those two reads stays,
+  # and skyportalai uses the nodes read to tell a reachable cluster from an unreachable
+  # one. It carries no pods, logs or namespaces. Each namespace must already exist.
+  # At most 10: skyportalai reads pods, events, workloads and pod metrics once per
+  # namespace every cycle. Needs agent 0.3.2 or newer (image.tag), which reports the
+  # list to skyportalai; an older image would be denied by these Roles.
+  namespaces: []
   cluster:
     resources:
       requests:

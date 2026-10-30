@@ -342,6 +342,44 @@ control-plane nodes included. To monitor a subset, set
 `kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`; both DaemonSets
 use them.
 
+### Limit the agent to some namespaces
+
+By default the cluster pod reads pods, events, workloads and crash logs in every
+namespace. To limit it, list the namespaces it may read:
+
+```yaml
+kubernetes:
+  namespaces: [ml, serving]
+```
+
+The chart then renders a `Role` and `RoleBinding` in each listed namespace in place of
+the ClusterRole, with the same reads and nothing more, so a leaked agent token can't
+read a log anywhere else. The namespaces must already exist, at most 10, and the agent
+image must be 0.3.2 or newer (the chart refuses an older one).
+
+Nodes and node metrics are cluster scoped, and no Role can grant them. One small
+ClusterRole stays for those two reads: node names, capacity and CPU/memory. It grants no
+pods, logs, events or namespaces. skyportalai uses the nodes read to tell a reachable
+cluster from an unreachable one, so removing it would report the cluster as down.
+
+The agent reports the list to skyportalai with its next upload, and skyportalai then reads
+and offers only those namespaces: its pod, event and workload reads go to one namespace
+at a time (`kubectl get pods -n ml`, not `-A`) and the chat's namespace picker lists them
+alone. A chat request for any other namespace is refused as "not granted" once the chat has
+reloaded its server list, which changing the chat's scope does; until then the Role's own
+"forbidden" answers it. That list is a hint skyportalai uses to shape its commands. The
+control is the Role: check it with
+
+```bash
+SA=system:serviceaccount:skyportal:skyportalai-agent-cluster
+kubectl auth can-i list pods -A --as=$SA          # no
+kubectl auth can-i list pods -n ml --as=$SA       # yes
+```
+
+To change the list, change `kubernetes.namespaces` and `helm upgrade`. An empty list is
+the whole cluster again. A skyportalai that predates this keeps asking for `-A` and gets
+"forbidden" for it, so upgrade skyportalai first or install on an instance that has it.
+
 ## Registry access
 
 The chart and image are public in GitHub Container Registry: `helm install` and

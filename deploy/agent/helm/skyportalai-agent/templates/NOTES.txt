@@ -34,6 +34,19 @@ emptyDir and are lost when the pod restarts. Enable persistence for durable
 delivery: --set persistence.enabled=true
 {{- end }}
 
+{{- if and .Values.kubernetes.enabled .Values.kubernetes.namespaces }}
+
+The cluster pod reads only these namespaces: {{ join ", " .Values.kubernetes.namespaces }}.
+Check what its ServiceAccount may do:
+
+  kubectl auth can-i list pods -A --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "skyportalai-agent.fullname" . }}-cluster
+  kubectl auth can-i list pods -n {{ first .Values.kubernetes.namespaces }} --as=system:serviceaccount:{{ .Release.Namespace }}:{{ include "skyportalai-agent.fullname" . }}-cluster
+
+The first answers "no", the second "yes". The agent reports this list to skyportalai with
+every upload, and a skyportalai that supports it reads only these namespaces. One that
+predates namespace scoping still asks for the whole cluster and gets "forbidden" for it.
+{{- end }}
+
 To scan real experiment data, mount it via extraVolumes / extraVolumeMounts and
 point config.wandbDir / config.mlflowDir at the mount paths, or set
 config.mlflowMode=rest plus config.mlflowTrackingUri for an MLflow tracking server.

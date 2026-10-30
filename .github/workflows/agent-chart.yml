@@ -61,6 +61,11 @@ jobs:
               "image.tag=20260914" \
               "persistence.size=1Gib" \
               "kubernetes.node.gpu.nodeLabel.key=" \
+              "kubernetes.namespaces={Bad}" \
+              "kubernetes.namespaces={-x}" \
+              "kubernetes.namespaces={a,a}" \
+              "kubernetes.namespaces={a,b,c,d,e,f,g,h,i,j,k}" \
+              "kubernetes.namespaces=ml" \
               "persistance.enabled=false"; do
             if helm template rel "$CHART_DIR" --set token.existingSecret=t --set "$bad" >/dev/null 2>&1; then
               echo "schema accepted --set $bad"; exit 1
@@ -98,9 +103,19 @@ jobs:
             --set kubernetes.enabled=true \
             --set image.tag=0.3.0 \
             > rendered/kubernetes-cpu.yaml
+          helm template rel "$CHART_DIR" \
+            --set token.existingSecret=t \
+            --set kubernetes.enabled=true \
+            --set image.tag=0.3.2 \
+            --set 'kubernetes.namespaces={ml,serving}' \
+            > rendered/kubernetes-namespaced.yaml
           # The Kubernetes roles are refused on an agent image that predates them.
           if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true --set-string image.tag=0.2.2 >/dev/null 2>&1; then
             echo "kubernetes.enabled rendered on an image without the Kubernetes roles"; exit 1
+          fi
+          # Namespaces are refused on an image that doesn't report them: the Roles would deny its reads.
+          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set kubernetes.enabled=true --set-string image.tag=0.3.1 --set 'kubernetes.namespaces={ml}' >/dev/null 2>&1; then
+            echo "kubernetes.namespaces rendered on an image that doesn't report them"; exit 1
           fi
 
       - name: GPU nodes get their own DaemonSet only when a RuntimeClass is set
@@ -141,6 +156,31 @@ jobs:
           expect "$f" "$node | $spool" '"/var/lib/skyportalai-agent"' "node keeps its spool"
           expect "$f" "$node | .spec.selector.matchLabels" "$selector" "node keeps its selector"
           expect "$f" "$policies" '["rel-skyportalai-agent","rel-skyportalai-agent-cluster","rel-skyportalai-agent-node"]' "no node-gpu NetworkPolicy"
+
+      - name: Namespaced install grants Roles only in the listed namespaces
+        run: |
+          expect() {  # expect <rendered file> <yq expression over all its documents> <expected JSON> <what it proves>
+            got="$(yq ea -o json -I0 "$2" "$1")"
+            if [ "$got" = "$3" ]; then echo "ok: $4"; else printf 'FAIL: %s\n  expected %s\n  got      %s\n' "$4" "$3" "$got"; exit 1; fi
+          }
+          cluster='select(.kind == "Deployment" and .metadata.name == "rel-skyportalai-agent-cluster")'
+          ns_env="$cluster | .spec.template.spec.containers[0].env[] | select(.name == \"SKYPORTALAI_AGENT_NAMESPACES\") | .value"
+
+          f=rendered/kubernetes-namespaced.yaml
+          expect "$f" '[select(.kind == "Role") | .metadata.namespace]' '["ml","serving"]' "a Role in each listed namespace"
+          expect "$f" '[select(.kind == "RoleBinding") | .metadata.namespace]' '["ml","serving"]' "a RoleBinding in each listed namespace"
+          expect "$f" '[select(.kind == "RoleBinding") | .subjects[0].namespace]' '["default","default"]' "bound to the service account in the release namespace"
+          # yq's unique keeps first-seen order (jq's sorts), so sort for a fixed answer.
+          expect "$f" '[select(.kind == "Role") | .rules[].verbs[]] | unique | sort' '["get","list","watch"]' "the Roles grant no write verb"
+          expect "$f" '[select(.kind == "Role") | .rules[].resources[]] | unique | sort' '["deployments","events","pods","pods/log","statefulsets"]' "the Roles read no secrets, configmaps or services"
+          expect "$f" '[select(.kind == "ClusterRole") | .metadata.name]' '["rel-skyportalai-agent-nodes"]' "the only ClusterRole is the nodes one"
+          expect "$f" '[select(.kind == "ClusterRole") | .rules[].resources[]] | sort' '["nodes","nodes"]' "the ClusterRole reads nodes and nothing else"
+          expect "$f" "$ns_env" '"ml,serving"' "the agent is told its namespaces"
+
+          f=rendered/kubernetes-cpu.yaml
+          expect "$f" '[select(.kind == "Role")] | length' '0' "default: no Roles"
+          expect "$f" '[select(.kind == "ClusterRole") | .metadata.name]' '["rel-skyportalai-agent-readonly"]' "default: the cluster wide ClusterRole"
+          expect "$f" "$ns_env" '' "default: no namespaces env"
 
       - name: Rendered chart and plain manifests are valid Kubernetes
         run: |
