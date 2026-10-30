@@ -712,7 +712,8 @@ def _add_exclude(path: Path, pattern: str) -> Optional[str]:
         if pattern in text.splitlines():
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as file:
+        # newline="": Windows would write CRLF into a file whose own lines end in LF, as Claude Code's does.
+        with path.open("a", encoding="utf-8", newline="") as file:
             file.write(("" if not text or text.endswith("\n") else "\n") + pattern + "\n")
     except OSError as error:
         return error.strerror or type(error).__name__

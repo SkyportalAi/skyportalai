@@ -1503,7 +1503,8 @@ def test_in_a_subfolder_always_saves_at_the_repository_root_and_has_git_ignore_i
     assert json.loads(_local_file(repo).read_text()) == {"permissions": {"allow": ["run_command(echo hi)"]}}
     assert not (repo / "svc-a" / ".skyportalai").exists()
     # As Claude Code does for its own file: git's own ignore list, never a tracked file of the repository's.
-    assert excludes.read_text() == "**/.skyportalai/settings.local.json\n"
+    # Bytes, not text: on Windows a text-mode append would end the line in CRLF.
+    assert excludes.read_bytes() == b"**/.skyportalai/settings.local.json\n"
     assert not (repo / ".gitignore").exists()
     assert _is_ignored(repo)
     assert added.endswith(f" git now ignores it: **/.skyportalai/settings.local.json is in {excludes}.")
@@ -1534,7 +1535,7 @@ def test_always_adds_to_the_excludes_file_git_is_configured_with(tmp_path, monke
     _asked, added = _always(repo, monkeypatch, tmp_path)
 
     # Their own lines stay, and the pattern starts a line of its own.
-    assert configured.read_text() == "*.log\n**/.skyportalai/settings.local.json\n"
+    assert configured.read_bytes() == b"*.log\n**/.skyportalai/settings.local.json\n"
     assert not (tmp_path / "home" / ".config").exists()
     assert f"is in {configured}." in added
 
