@@ -35,12 +35,15 @@ All notable changes to this project are documented here. This project follows
   repository), as Claude Code's `.claude/settings.local.json`, and sends it at
   once; only that file's allow list skips the question later, and the CLI
   checks it on disk too before it does (a `*` rule only for a command with no
-  `;`, `&`, `|`, `<`, `>`, backtick or `$(`). Keep it out of
-  git: a repository can commit one, so look in `.skyportalai/` before trusting a
-  repository you didn't create. The CLI sends both files with every connect,
-  and again within a heartbeat of an edit (the legacy `.skyportal/settings.json`
-  isn't read). It reads neither through a link, and `a` adds to the file as it
-  is on disk and writes it whole.
+  `;`, `&`, `|`, `<`, `>`, backtick or `$(`). In a repository whose git doesn't
+  already ignore it, the first `a` adds `**/.skyportalai/settings.local.json` to
+  your own git excludes file (`core.excludesFile`, else `~/.config/git/ignore`),
+  as Claude Code does for its file; a file git tracks stays tracked, and the CLI
+  says so. A repository can commit one, so look in `.skyportalai/` before
+  trusting a repository you didn't create. The CLI sends both files with every
+  connect, and again within a heartbeat of an edit (the legacy
+  `.skyportal/settings.json` isn't read). It reads neither through a link, and
+  `a` adds to the file as it is on disk and writes it whole.
   You have a little under five minutes, so a yes still leaves the command its
   whole timeout. Every command, even one typed here, starts only after Skyportal
   confirms it is still wanted, so a turn stopped while the question waits runs
