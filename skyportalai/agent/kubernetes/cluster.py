@@ -28,8 +28,9 @@ class ClusterRole:
 
     kind = ROLE
 
-    def __init__(self, run: Callable[[list[str]], dict] = run_kubectl):
+    def __init__(self, run: Callable[[list[str]], dict] = run_kubectl, namespaces: tuple[str, ...] = ()):
         self._run = run
+        self.namespaces = namespaces
         self.plan: list[list[str]] = []
 
     def collect(self) -> dict:
@@ -37,6 +38,9 @@ class ClusterRole:
             "schema_version": SCHEMA_VERSION,
             "role": ROLE,
             "collected_at": iso_now(),
+            # Config the server can't read from the cluster: the namespaces this install's Roles
+            # grant. Sent every cycle, so a helm upgrade that changes it reaches the server.
+            "namespaces": list(self.namespaces),
             "commands": [self._run(argv) for argv in self.plan],
         }
 

@@ -16,6 +16,14 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **The in-cluster agent can be limited to some namespaces.** Set the chart's
+  `kubernetes.namespaces: [ml, serving]` (or `SKYPORTALAI_AGENT_NAMESPACES=ml,serving`) and
+  the chart grants a `Role` and `RoleBinding` in each of them in place of the cluster wide
+  ClusterRole. A small ClusterRole for nodes and node metrics stays, because no Role can
+  grant them. The agent reports the list with every upload, and skyportalai then reads those
+  namespaces one at a time and offers only them in chat. It refuses to start on a name
+  that isn't a Kubernetes namespace name, or on more than 10. Needs a skyportalai that
+  accepts the list; an older one still asks for `-A` and is denied.
 - **The agent works on your own machine, starting in the folder you opened.**
   Started in a folder you trust (it asks once per folder, like Claude Code, and
   trust covers that folder and everything inside it), the shell registers this

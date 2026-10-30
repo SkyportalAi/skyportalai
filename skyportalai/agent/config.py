@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,11 @@ ROLE_EXPERIMENTS = "experiments"
 ROLE_CLUSTER = "cluster"
 ROLE_NODE = "node"
 ROLES = (ROLE_EXPERIMENTS, ROLE_CLUSTER, ROLE_NODE)
+
+# Matches MAX_GRANTED_NAMESPACES in skyportal-website's website/observability/k8s_agent_ingest.py,
+# and the chart's kubernetes.namespaces maxItems. skyportalai refuses an upload naming more.
+MAX_NAMESPACES = 10
+_NAMESPACE_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
@@ -75,6 +81,21 @@ def _parse_path(value: str | None) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
+def _parse_namespaces(value: str | None) -> tuple[str, ...]:
+    """The comma separated namespace list, validated; refuses to start on a name skyportalai would refuse."""
+    # A bad name can't be skipped: the server would refuse every upload for good, and the
+    # shipper drops an upload refused permanently, so the agent would run and report nothing.
+    names = tuple(name.strip() for name in (value or "").split(",") if name.strip())
+    bad = [name for name in names if len(name) > 63 or not _NAMESPACE_NAME.match(name)]
+    if bad:
+        raise SkyportalError(f"SKYPORTALAI_AGENT_NAMESPACES has invalid namespace name(s): {', '.join(bad)}")
+    if len(set(names)) != len(names) or len(names) > MAX_NAMESPACES:
+        raise SkyportalError(
+            f"SKYPORTALAI_AGENT_NAMESPACES must list at most {MAX_NAMESPACES} distinct namespaces"
+        )
+    return names
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """Typed configuration for the Skyportal observability agent."""
@@ -97,6 +118,8 @@ class AgentConfig:
     role: str = ROLE_EXPERIMENTS
     node_name: str | None = None
     host_proc: Path | None = None
+    # The cluster role's granted namespaces, reported with every upload. Empty: the whole cluster.
+    namespaces: tuple[str, ...] = ()
 
     @property
     def spool_dir(self) -> Path:
@@ -192,4 +215,5 @@ class AgentConfig:
             role=role,
             node_name=node_name,
             host_proc=_parse_path(_get("SKYPORTALAI_AGENT_HOST_PROC")),
+            namespaces=_parse_namespaces(_get("SKYPORTALAI_AGENT_NAMESPACES")),
         )

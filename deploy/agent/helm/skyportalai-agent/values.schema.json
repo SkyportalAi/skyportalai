@@ -99,6 +99,13 @@
           "minItems": 1,
           "items": {"type": "integer", "minimum": 1, "maximum": 65535}
         },
+        "namespaces": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "description": "Namespaces the cluster pod may read. Empty means the whole cluster (a ClusterRole).",
+          "items": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}
+        },
         "cluster": {
           "type": "object",
           "additionalProperties": false,
