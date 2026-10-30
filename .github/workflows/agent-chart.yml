@@ -170,8 +170,9 @@ jobs:
           expect "$f" '[select(.kind == "Role") | .metadata.namespace]' '["ml","serving"]' "a Role in each listed namespace"
           expect "$f" '[select(.kind == "RoleBinding") | .metadata.namespace]' '["ml","serving"]' "a RoleBinding in each listed namespace"
           expect "$f" '[select(.kind == "RoleBinding") | .subjects[0].namespace]' '["default","default"]' "bound to the service account in the release namespace"
-          expect "$f" '[select(.kind == "Role") | .rules[].verbs[]] | unique' '["get","list","watch"]' "the Roles grant no write verb"
-          expect "$f" '[select(.kind == "Role") | .rules[].resources[]] | unique' '["deployments","events","pods","pods/log","statefulsets"]' "the Roles read no secrets, configmaps or services"
+          # yq's unique keeps first-seen order (jq's sorts), so sort for a fixed answer.
+          expect "$f" '[select(.kind == "Role") | .rules[].verbs[]] | unique | sort' '["get","list","watch"]' "the Roles grant no write verb"
+          expect "$f" '[select(.kind == "Role") | .rules[].resources[]] | unique | sort' '["deployments","events","pods","pods/log","statefulsets"]' "the Roles read no secrets, configmaps or services"
           expect "$f" '[select(.kind == "ClusterRole") | .metadata.name]' '["rel-skyportalai-agent-nodes"]' "the only ClusterRole is the nodes one"
           expect "$f" '[select(.kind == "ClusterRole") | .rules[].resources[]] | sort' '["nodes","nodes"]' "the ClusterRole reads nodes and nothing else"
           expect "$f" "$ns_env" '"ml,serving"' "the agent is told its namespaces"
