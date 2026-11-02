@@ -26,7 +26,7 @@ import requests
 
 from skyportalai import SkyportalError
 from skyportalai.agent import __main__ as agent_main
-from skyportalai.agent.config import AgentConfig
+from skyportalai.agent.config import MAX_NAMESPACES, AgentConfig
 from skyportalai.agent.kubernetes import (
     ClusterRole,
     CommandPoller,
@@ -1092,6 +1092,10 @@ class TestConfigAndEntrypoint:
     def test_the_namespaces_value_is_split_and_trimmed(self, value, expected):
         config = AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_NAMESPACES": value})
         assert config.namespaces == expected
+
+    def test_the_namespace_cap_is_the_charts_maxitems(self):
+        schema = json.loads((Path(__file__).parent.parent / "deploy/agent/helm/skyportalai-agent/values.schema.json").read_text(encoding="utf-8"))
+        assert schema["properties"]["kubernetes"]["properties"]["namespaces"]["maxItems"] == MAX_NAMESPACES
 
     @pytest.mark.parametrize(("role", "expected"), [("cluster", ClusterRole), ("node", NodeRole)])
     def test_builds_the_runner_for_the_role(self, tmp_path, role, expected):

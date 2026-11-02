@@ -1,3 +1,4 @@
+{{- include "skyportalai-agent.requireKubernetesForNamespaces" . }}
 {{- if .Values.kubernetes.enabled }}
 {{- include "skyportalai-agent.requireKubernetesImage" . }}
 # The cluster role's identity. Read-only, cluster wide, bound below. The node

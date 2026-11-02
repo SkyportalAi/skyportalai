@@ -349,13 +349,15 @@ namespace. To limit it, list the namespaces it may read:
 
 ```yaml
 kubernetes:
+  enabled: true
   namespaces: [ml, serving]
 ```
 
 The chart then renders a `Role` and `RoleBinding` in each listed namespace in place of
 the ClusterRole, with the same reads and nothing more, so a leaked agent token can't
 read a log anywhere else. The namespaces must already exist, at most 10, and the agent
-image must be 0.3.2 or newer (the chart refuses an older one).
+image must be 0.3.2 or newer (the chart refuses an older one). `namespaces` limits the
+cluster role, so it needs `kubernetes.enabled: true`; the chart refuses it without.
 
 Nodes and node metrics are cluster scoped, and no Role can grant them. One small
 ClusterRole stays for those two reads: node names, capacity and CPU/memory. It grants no

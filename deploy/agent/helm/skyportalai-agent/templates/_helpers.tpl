@@ -125,6 +125,16 @@ the namespaced Roles. Same tag rule as above.
 {{- end }}
 
 {{/*
+kubernetes.namespaces limits the cluster role, which only exists when kubernetes.enabled is
+true. Set alone it would render no Roles and no setting and say nothing, so refuse it.
+*/}}
+{{- define "skyportalai-agent.requireKubernetesForNamespaces" -}}
+{{- if and .Values.kubernetes.namespaces (not .Values.kubernetes.enabled) -}}
+{{- fail "kubernetes.namespaces needs kubernetes.enabled=true: it limits the cluster role, which only exists when the Kubernetes roles are on." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 True when the chart creates the token Secret itself: token.value is set and no
 existingSecret overrides it (existingSecret wins, as in the Datadog chart).
 */}}

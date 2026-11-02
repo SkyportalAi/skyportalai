@@ -179,7 +179,8 @@ kubernetes:
   # one. It carries no pods, logs or namespaces. Each namespace must already exist.
   # At most 10: skyportalai reads pods, events, workloads and pod metrics once per
   # namespace every cycle. Needs agent 0.3.2 or newer (image.tag), which reports the
-  # list to skyportalai; an older image would be denied by these Roles.
+  # list to skyportalai; an older image would be denied by these Roles. Needs
+  # kubernetes.enabled=true; the chart refuses it otherwise.
   namespaces: []
   cluster:
     resources:
