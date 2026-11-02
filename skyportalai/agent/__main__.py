@@ -71,7 +71,7 @@ def build_kubernetes_runner(
     if config.role == ROLE_NODE:
         role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir)
     else:
-        role = ClusterRole()
+        role = ClusterRole(namespaces=config.namespaces)
     return KubernetesRunner(
         role=role,
         queue=SpoolQueue(config.spool_dir, max_batches=config.queue_max_batches, max_bytes=config.queue_max_bytes),

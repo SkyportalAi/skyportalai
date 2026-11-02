@@ -69,6 +69,10 @@ spec:
             - name: SKYPORTALAI_AGENT_STATE_DIR
               value: {{ .Values.config.stateDir | quote }}
             {{- include "skyportalai-agent.kubernetesEnv" . | nindent 12 }}
+            {{- with .Values.kubernetes.namespaces }}
+            - name: SKYPORTALAI_AGENT_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
           ports:
             - name: healthz
               containerPort: {{ .Values.config.healthzPort }}
