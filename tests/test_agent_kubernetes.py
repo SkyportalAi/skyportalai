@@ -26,7 +26,7 @@ import requests
 
 from skyportalai import SkyportalError
 from skyportalai.agent import __main__ as agent_main
-from skyportalai.agent.config import AgentConfig
+from skyportalai.agent.config import MAX_NAMESPACES, AgentConfig
 from skyportalai.agent.kubernetes import (
     ClusterRole,
     CommandPoller,
@@ -262,6 +262,14 @@ class TestClusterRole:
         assert ran == [GET_PODS, ["kubectl", "top", "nodes", "--no-headers"]]
         assert payload["role"] == "cluster" and payload["schema_version"] == 1
         assert role.next_delay(30) == 30
+
+    def test_reports_its_granted_namespaces_with_every_upload(self):
+        role = ClusterRole(run=lambda argv: pytest.fail("ran with no plan"), namespaces=("ml", "serving"))
+        assert role.collect()["namespaces"] == ["ml", "serving"]
+        assert role.collect()["namespaces"] == ["ml", "serving"]
+
+    def test_a_cluster_wide_agent_reports_no_namespaces(self):
+        assert ClusterRole().collect()["namespaces"] == []
 
     def test_drops_a_mutating_command_from_the_servers_plan(self):
         role = ClusterRole()
@@ -1053,6 +1061,41 @@ class TestConfigAndEntrypoint:
     def test_node_role_needs_the_node_name(self):
         with pytest.raises(SkyportalError):
             AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_ROLE": "node"})
+
+    def test_the_namespaces_env_var_reaches_the_upload(self, tmp_path):
+        config = AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": "cluster",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+            "SKYPORTALAI_AGENT_NAMESPACES": "ml, serving",
+        })
+        runner = agent_main.build_kubernetes_runner(config)
+        session = FakeSession([FakeResponse(202, {})])
+        runner.shipper = KubernetesShipper(BASE_URL, TOKEN, session=session, sleep=lambda s: None)
+        runner.run_once()
+        assert _sent_body(session.calls[0])["namespaces"] == ["ml", "serving"]
+
+    def test_no_namespaces_env_var_uploads_an_empty_list(self, tmp_path):
+        config = AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": "cluster",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+        })
+        assert agent_main.build_kubernetes_runner(config).role.collect()["namespaces"] == []
+
+    @pytest.mark.parametrize("value", ["Bad", "-x", "a_b", "a,a", "ml,,Serving", ",".join(f"ns{i}" for i in range(11)), "a" * 64])
+    def test_an_unusable_namespaces_value_stops_the_agent_starting(self, value):
+        with pytest.raises(SkyportalError, match="SKYPORTALAI_AGENT_NAMESPACES"):
+            AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_NAMESPACES": value})
+
+    @pytest.mark.parametrize(("value", "expected"), [("", ()), (" , ", ()), ("ml", ("ml",)), (" ml , serving,", ("ml", "serving"))])
+    def test_the_namespaces_value_is_split_and_trimmed(self, value, expected):
+        config = AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_NAMESPACES": value})
+        assert config.namespaces == expected
+
+    def test_the_namespace_cap_is_the_charts_maxitems(self):
+        schema = json.loads((Path(__file__).parent.parent / "deploy/agent/helm/skyportalai-agent/values.schema.json").read_text(encoding="utf-8"))
+        assert schema["properties"]["kubernetes"]["properties"]["namespaces"]["maxItems"] == MAX_NAMESPACES
 
     @pytest.mark.parametrize(("role", "expected"), [("cluster", ClusterRole), ("node", NodeRole)])
     def test_builds_the_runner_for_the_role(self, tmp_path, role, expected):
