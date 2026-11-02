@@ -1140,11 +1140,19 @@ def _due_in(seconds: float) -> float:
     return time.monotonic() + seconds
 
 
-def _connected(tmp_path, monkeypatch, **options):
+def _isolate_user(monkeypatch, home):
+    """Everything the CLI and git keep of the user's own is under `home`: a test never reads or writes the real one."""
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in ("XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _connected(tmp_path, monkeypatch, *, home=None, **options):
     monkeypatch.setenv("SKYPORTALAI_MACHINE_ID_PATH", str(tmp_path / "machine_id"))
-    # `a` writes under the CLI's own directory: never the real one.
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    # `a` writes under the CLI's own directory, and may add to git's own ignore list: never the real ones.
+    _isolate_user(monkeypatch, home or tmp_path / "home")
     target = LocalTarget(_Client(), tmp_path, poller_factory=_Poller, **options)
     target.connect()
     return target, _Poller.made[-1].options["run"]
@@ -1451,33 +1459,110 @@ def test_connect_sends_the_local_file_under_the_one_name_skyportalai_accepts(tmp
     }
 
 
-@NEEDS_GIT
-@pytest.mark.parametrize("ignored", [True, False])
-def test_in_a_subfolder_always_saves_at_the_repository_root_and_says_if_git_tracks_it(tmp_path, monkeypatch, ignored):
+def _repository(tmp_path):
     repo = tmp_path / "shop"
     (repo / "svc-a").mkdir(parents=True)
     subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
-    if ignored:
-        (repo / ".gitignore").write_text(".skyportalai/settings.local.json\n")
+    return repo
+
+
+def _always(repo, monkeypatch, tmp_path, command="echo hi"):
+    """Answer `a` to one command from svc-a, with git's global config in tmp_path/home; what was asked and shown."""
     asked, shown = [], []
 
     def always(*question):
         asked.append(question)
         return local_target.ALWAYS
 
-    target, run = _connected(repo / "svc-a", monkeypatch, show=shown.append, ask=always)
+    target, run = _connected(repo / "svc-a", monkeypatch, home=tmp_path / "home", show=shown.append, ask=always)
     try:
-        run(dict(_OFFERED), 60, report_deadline=_due_in(120))
+        run({**_OFFERED, "command": command, "always_allow": [f"run_command({command})"]}, 60, report_deadline=_due_in(120))
     finally:
         target.close()
+    [added] = [line for line in shown if line.startswith("▸ Added")]
+    return asked, added
+
+
+def _is_ignored(repo):
+    checked = subprocess.run(
+        ["git", "-C", str(repo), "check-ignore", "--", ".skyportalai/settings.local.json"], capture_output=True,
+    )
+    return checked.returncode == 0
+
+
+@NEEDS_GIT
+def test_in_a_subfolder_always_saves_at_the_repository_root_and_has_git_ignore_it(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    excludes = tmp_path / "home" / ".config" / "git" / "ignore"
+
+    asked, added = _always(repo, monkeypatch, tmp_path)
 
     [(details, _prompt, _seconds)] = asked
     # Beside the repository's settings.json, as Claude Code keeps .claude/ at the root: svc-b shares it.
     assert "without asking in this repository, saved in its .skyportalai/settings.local.json." in details
     assert json.loads(_local_file(repo).read_text()) == {"permissions": {"allow": ["run_command(echo hi)"]}}
     assert not (repo / "svc-a" / ".skyportalai").exists()
-    [added] = [line for line in shown if line.startswith("▸ Added")]
-    assert ("add it to .gitignore" in added) is not ignored
+    # As Claude Code does for its own file: git's own ignore list, never a tracked file of the repository's.
+    # Bytes, not text: on Windows a text-mode append would end the line in CRLF.
+    assert excludes.read_bytes() == b"**/.skyportalai/settings.local.json\n"
+    assert not (repo / ".gitignore").exists()
+    assert _is_ignored(repo)
+    assert added.endswith(f" git now ignores it: **/.skyportalai/settings.local.json is in {excludes}.")
+
+
+@NEEDS_GIT
+def test_always_leaves_git_alone_when_the_repository_already_ignores_the_file(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    (repo / ".gitignore").write_text(".skyportalai/settings.local.json\n")
+
+    _asked, added = _always(repo, monkeypatch, tmp_path)
+
+    assert added.endswith("to .skyportalai/settings.local.json.")
+    assert not (tmp_path / "home" / ".config").exists()
+
+
+@NEEDS_GIT
+def test_always_adds_to_the_excludes_file_git_is_configured_with(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    (tmp_path / "home").mkdir()
+    configured = tmp_path / "mine" / "excludes"
+    configured.parent.mkdir()
+    configured.write_text("*.log")
+    # Before the first `git config --global`: it would write the developer's real file otherwise.
+    _isolate_user(monkeypatch, tmp_path / "home")
+    subprocess.run(["git", "config", "--global", "core.excludesFile", str(configured)], check=True)
+
+    _asked, added = _always(repo, monkeypatch, tmp_path)
+
+    # Their own lines stay, and the pattern starts a line of its own.
+    assert configured.read_bytes() == b"*.log\n**/.skyportalai/settings.local.json\n"
+    assert not (tmp_path / "home" / ".config").exists()
+    assert f"is in {configured}." in added
+
+
+@NEEDS_GIT
+def test_a_file_git_tracks_is_said_to_be_tracked_and_the_exclude_is_added_once(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    _write_local_file(repo, '{"permissions": {"allow": ["run_command(ls)"]}}')
+    subprocess.run(["git", "-C", str(repo), "add", "-f", ".skyportalai/settings.local.json"], check=True)
+
+    _asked, first = _always(repo, monkeypatch, tmp_path)
+    _asked, second = _always(repo, monkeypatch, tmp_path, command="make")
+
+    for added in (first, second):
+        assert added.endswith(" git tracks it, so a clone of this repository gets its rules.")
+    assert (tmp_path / "home" / ".config" / "git" / "ignore").read_text() == "**/.skyportalai/settings.local.json\n"
+
+
+@NEEDS_GIT
+def test_an_excludes_file_that_cant_be_written_leaves_the_rule_saved_and_says_to_ignore_it_by_hand(tmp_path, monkeypatch):
+    repo = _repository(tmp_path)
+    (tmp_path / "home" / ".config" / "git" / "ignore").mkdir(parents=True)
+
+    _asked, added = _always(repo, monkeypatch, tmp_path)
+
+    assert added.endswith(" git doesn't ignore it: add it to .gitignore.")
+    assert json.loads(_local_file(repo).read_text()) == {"permissions": {"allow": ["run_command(echo hi)"]}}
 
 
 def test_always_past_the_rule_limit_writes_nothing_and_runs_it_this_once(tmp_path, monkeypatch):

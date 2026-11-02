@@ -215,9 +215,13 @@ refused, and it never runs. When Skyportal offers one, a third answer, `a`
 (always), runs it and saves exactly that command in
 `.skyportalai/settings.local.json`, beside the repository's
 `.skyportalai/settings.json` at its root (in the folder itself outside a
-repository), as Claude Code's `.claude/settings.local.json`. Keep it out of
-git; the CLI says so when git doesn't ignore it. That command then runs without
-the question, from your browser too; a different one, even with other flags,
+repository), as Claude Code's `.claude/settings.local.json`. In a repository
+whose git doesn't already ignore it, the first `a` adds
+`**/.skyportalai/settings.local.json` to your own git excludes file
+(`core.excludesFile`, else `~/.config/git/ignore`), as Claude Code does for its
+file, and says so. An exclude doesn't untrack a file git already tracks, and the
+CLI says that instead. That command then runs without the question, from your
+browser too; a different one, even with other flags,
 asks again. You can add rules with `*` to the file yourself; one skips the
 question only for a command with no `;`, `&`, `|`, `<`, `>`, backtick or `$(`
 in it, which otherwise needs its exact rule. The CLI checks the file as it is on

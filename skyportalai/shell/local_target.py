@@ -76,6 +76,8 @@ _STOPPED_BECAUSE = {
     "interrupted": "Stopped: interrupted with Ctrl-C in the skyportalai CLI.",
 }
 _GIT_SECONDS = 5
+# `a` runs up to four git calls on the way to starting its command, which has ANSWER_MARGIN_SECONDS for all of it.
+_KEEP_OUT_OF_GIT_SECONDS = 2
 # How often a running command is checked for its timeout, a stop and the size of its output.
 _POLL_SECONDS = 0.1
 # How much of a command the terminal shows when it starts and ends: one line, with the rest counted.
@@ -223,11 +225,11 @@ class TrustStore:
         return True
 
 
-def _git(folder: Path, *args: str) -> str:
+def _git(folder: Path, *args: str, seconds: float = _GIT_SECONDS) -> str:
     try:
         completed = subprocess.run(
             ["git", "-C", str(folder), *args],
-            capture_output=True, text=True, errors="replace", timeout=_GIT_SECONDS, check=False,
+            capture_output=True, text=True, errors="replace", timeout=seconds, check=False,
             stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
@@ -310,6 +312,8 @@ REPO_SETTINGS_FILE = ".skyportalai/settings.json"
 # Beside it and gitignored, as Claude Code's .claude/settings.local.json: this machine's own rules, where `a` saves,
 # and the one allow list skyportalai lets skip the y/N. A repository could commit one; skyportalai accepts that.
 LOCAL_SETTINGS_FILE = ".skyportalai/settings.local.json"
+# What `a` adds to the user's own git excludes file when git doesn't ignore it: Claude Code's `**/.claude/...` too.
+LOCAL_SETTINGS_EXCLUDE = f"**/{LOCAL_SETTINGS_FILE}"
 # The server refuses more: 50 rules of 500 characters per list fit many times over.
 MAX_REPO_SETTINGS_BYTES = 64 * 1024
 # The server reads a list longer than this as an unreadable file, which asks for everything.
@@ -688,6 +692,34 @@ def _replace_file(path: Path, text: str) -> None:
         raise
 
 
+def _excludes_file(folder: Path) -> Path:
+    """The user's own git ignore list: core.excludesFile when it is an absolute path, else git's default for it."""
+    configured = _git(
+        folder, "config", "--global", "--type=path", "--get", "core.excludesFile", seconds=_KEEP_OUT_OF_GIT_SECONDS,
+    )
+    if configured and Path(configured).is_absolute():
+        return Path(configured)
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or "")
+    # Git reads $HOME before the profile folder Path.home() names on Windows.
+    home = Path(os.environ.get("HOME") or Path.home())
+    return (config_home if config_home.is_absolute() else home / ".config") / "git" / "ignore"
+
+
+def _add_exclude(path: Path, pattern: str) -> Optional[str]:
+    """Append the pattern to a git ignore file unless a line of it is that already; why not, if it can't."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        if pattern in text.splitlines():
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # newline="": Windows would write CRLF into a file whose own lines end in LF, as Claude Code's does.
+        with path.open("a", encoding="utf-8", newline="") as file:
+            file.write(("" if not text or text.endswith("\n") else "\n") + pattern + "\n")
+    except OSError as error:
+        return error.strerror or type(error).__name__
+    return None
+
+
 def _local_allow_rules(root: Path) -> List[str]:
     """The allow rules in this machine's own file for the folder as it reads now; none if it can't be read as rules."""
     read = local_settings(root) or {}
@@ -772,9 +804,20 @@ class FolderRules:
         """Save the rules for an `a`; why not, if they can't be."""
         return add_allow_rules(self.root, rules)
 
-    def kept_out_of_git(self) -> bool:
-        """False for a repository whose git doesn't ignore settings.local.json, so a commit would take it along."""
-        return not self.in_repository or bool(_git(self.root, "check-ignore", "--", LOCAL_SETTINGS_FILE))
+    def _ignored(self) -> bool:
+        return bool(_git(self.root, "check-ignore", "--", LOCAL_SETTINGS_FILE, seconds=_KEEP_OUT_OF_GIT_SECONDS))
+
+    def keep_out_of_git(self) -> str:
+        """Have git ignore settings.local.json as Claude Code does its own, in the user's excludes file; what to say."""
+        if not self.in_repository or self._ignored():
+            return ""
+        excludes = _excludes_file(self.root)
+        if _add_exclude(excludes, LOCAL_SETTINGS_EXCLUDE) is None and self._ignored():
+            return f" git now ignores it: {LOCAL_SETTINGS_EXCLUDE} is in {excludes}."
+        # An exclude does nothing for a file git already tracks, and a commit would take it along.
+        if _git(self.root, "ls-files", "--error-unmatch", "--", LOCAL_SETTINGS_FILE, seconds=_KEEP_OUT_OF_GIT_SECONDS):
+            return " git tracks it, so a clone of this repository gets its rules."
+        return " git doesn't ignore it: add it to .gitignore."
 
 
 def _nobody_answers(_details: str, _prompt: str, _seconds: float) -> Answer:
@@ -934,8 +977,7 @@ class LocalTarget:
             self._tell(f"▸ Couldn't add {_shown(rules)}: {refused}. Running it this once.")
             return
         # Committed, the file would skip the question for whoever clones the repository.
-        tracked = "" if self._rules.kept_out_of_git() else " git doesn't ignore it: add it to .gitignore."
-        self._tell(f"▸ Added {_shown(rules)} to {LOCAL_SETTINGS_FILE}.{tracked}")
+        self._tell(f"▸ Added {_shown(rules)} to {LOCAL_SETTINGS_FILE}.{self._rules.keep_out_of_git()}")
         try:
             self._reopen()
         except Exception as error:  # noqa: BLE001 — the heartbeat sends it on its next beat
