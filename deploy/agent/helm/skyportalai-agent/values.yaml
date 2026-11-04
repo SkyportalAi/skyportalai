@@ -178,7 +178,7 @@ kubernetes:
   # and skyportalai uses the nodes read to tell a reachable cluster from an unreachable
   # one. It carries no pods, logs or namespaces. Each namespace must already exist.
   # At most 10: skyportalai reads pods, events, workloads and pod metrics once per
-  # namespace every cycle. Needs agent 0.3.2 or newer (image.tag), which reports the
+  # namespace every cycle. Needs agent 0.4.0 or newer (image.tag), which reports the
   # list to skyportalai; an older image would be denied by these Roles. Needs
   # kubernetes.enabled=true; the chart refuses it otherwise.
   namespaces: []

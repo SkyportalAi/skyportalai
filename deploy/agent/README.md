@@ -71,7 +71,7 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.4.0 \
+  --version 0.6.0 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
@@ -82,7 +82,7 @@ creates the Secret:
 ```bash
 read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.4.0 \
+  --version 0.6.0 \
   --set-string token.value="$AGT"
 unset AGT
 ```
@@ -356,7 +356,7 @@ kubernetes:
 The chart then renders a `Role` and `RoleBinding` in each listed namespace in place of
 the ClusterRole, with the same reads and nothing more, so a leaked agent token can't
 read a log anywhere else. The namespaces must already exist, at most 10, and the agent
-image must be 0.3.2 or newer (the chart refuses an older one). `namespaces` limits the
+image must be 0.4.0 or newer (the chart refuses an older one). `namespaces` limits the
 cluster role, so it needs `kubernetes.enabled: true`; the chart refuses it without.
 
 Nodes and node metrics are cluster scoped, and no Role can grant them. One small
@@ -391,9 +391,9 @@ To serve the image from your own registry instead (air gapped clusters, or a
 registry your nodes already trust), mirror it and point the chart at the copy:
 
 ```bash
-docker pull ghcr.io/skyportalai/skyportalai-agent:0.3.0
-docker tag ghcr.io/skyportalai/skyportalai-agent:0.3.0 registry.example.com/skyportalai-agent:0.3.0
-docker push registry.example.com/skyportalai-agent:0.3.0
+docker pull ghcr.io/skyportalai/skyportalai-agent:0.4.0
+docker tag ghcr.io/skyportalai/skyportalai-agent:0.4.0 registry.example.com/skyportalai-agent:0.4.0
+docker push registry.example.com/skyportalai-agent:0.4.0
 helm install ... --set image.repository=registry.example.com/skyportalai-agent
 ```
 
@@ -464,6 +464,7 @@ Every setting maps onto an environment variable the agent reads at startup
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `config.queueMaxBatches` | `1000` | cap on spooled batches while the API is unreachable |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BYTES` | `extraEnv` | `536870912` (512 MiB) | Kubernetes roles only: cap on the spool's size on disk; the oldest uploads are dropped first. Keep it below the spool volume's size |
 | `SKYPORTALAI_AGENT_HEALTHZ_PORT` | `config.healthzPort` | `8080` | liveness port |
+| `SKYPORTALAI_AGENT_NAMESPACES` | `kubernetes.namespaces` | none | cluster role only: read these namespaces, at most 10, not the whole cluster |
 
 The state directory keeps its pre-rename path on purpose: it is the agent's own
 default, and changing it on an existing install would orphan the spool queue.
