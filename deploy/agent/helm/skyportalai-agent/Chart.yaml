@@ -26,8 +26,9 @@ maintainers:
 # node-gpu DaemonSet runs on the labelled nodes and node on every other one.
 # 0.5.0 added kubernetes.namespaces: a Role and RoleBinding per listed namespace
 # instead of the cluster wide ClusterRole. It needs an agent that reports the list.
-version: 0.5.0
+# 0.6.0 defaults to agent 0.4.0, the first that reports it, and refuses older tags.
+version: 0.6.0
 # The agent release this chart was written against. image.tag defaults to it
 # when left empty in values.yaml. It must match SKYPORTALAI_VERSION in the Dockerfile
 # and the image tag in manifests/deployment.yaml; CI checks all three agree.
-appVersion: "0.3.0"
+appVersion: "0.4.0"

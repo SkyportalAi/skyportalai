@@ -106,7 +106,7 @@ jobs:
           helm template rel "$CHART_DIR" \
             --set token.existingSecret=t \
             --set kubernetes.enabled=true \
-            --set image.tag=0.3.2 \
+            --set image.tag=0.4.0 \
             --set 'kubernetes.namespaces={ml,serving}' \
             > rendered/kubernetes-namespaced.yaml
           # The Kubernetes roles are refused on an agent image that predates them.
@@ -118,7 +118,7 @@ jobs:
             echo "kubernetes.namespaces rendered on an image that doesn't report them"; exit 1
           fi
           # Namespaces limit the cluster role, which exists only with kubernetes.enabled: alone they would render nothing.
-          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set image.tag=0.3.2 --set 'kubernetes.namespaces={ml}' >/dev/null 2>&1; then
+          if helm template rel "$CHART_DIR" --set token.existingSecret=t --set image.tag=0.4.0 --set 'kubernetes.namespaces={ml}' >/dev/null 2>&1; then
             echo "kubernetes.namespaces rendered without kubernetes.enabled"; exit 1
           fi
 
