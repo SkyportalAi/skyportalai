@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1
+
+### Fixed
+
+- **The shell's Helm install of the agent now gets agent 0.4.0, not 0.3.0.** After
+  the shell creates the agent's Secret for a token minted in chat, it offers to
+  install the agent with Helm. That install was pinned to chart 0.3.2, which runs
+  agent 0.3.0, even in CLI 0.4.0. Agent 0.3.0 stops chat commands after 30
+  seconds, loses a result when skyportalai is briefly unavailable or the pod
+  restarts, and has no `SKYPORTALAI_AGENT_NAMESPACES`. The shell now installs
+  chart 0.6.0, which runs agent 0.4.0 (skyportal-website#3835).
+
 ## 0.4.0
 
 ### Deprecated
