@@ -1,8 +1,13 @@
 """The shell's kubectl/helm steps for an agent token minted in chat (#3575)."""
 
 import subprocess
+from pathlib import Path
+
+import yaml
 
 from skyportalai.shell import agent_setup
+
+CHART_YAML = Path(__file__).resolve().parents[1] / "deploy/agent/helm/skyportalai-agent/Chart.yaml"
 
 
 def _recorder(monkeypatch, returncodes=None):
@@ -82,6 +87,20 @@ def test_helm_install_passes_the_cluster_name_literally(monkeypatch):
     agent_setup.helm_install("kind-x", "gpu,east=1")
     argv = calls[0][0]
     assert argv[argv.index("config.clusterName=gpu,east=1") - 1] == "--set-literal"
+
+
+def test_helm_install_installs_the_chart_version_in_chart_yaml(monkeypatch):
+    chart_version = str(yaml.safe_load(CHART_YAML.read_text(encoding="utf-8"))["version"])
+    calls = _recorder(monkeypatch)
+    agent_setup.helm_install("kind-x", "prod-gpu-1")
+    argv = calls[0][0]
+    installed = argv[argv.index("--version") + 1]
+    assert installed == chart_version, (
+        "the guided setup installs chart {} but Chart.yaml is at {}: set CHART_VERSION in "
+        "skyportalai/shell/agent_setup.py to the chart's version (deploy/agent/RELEASING.md)".format(
+            installed, chart_version
+        )
+    )
 
 
 def test_manual_commands_use_the_chart_key_and_stdin():

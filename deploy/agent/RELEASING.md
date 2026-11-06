@@ -83,6 +83,15 @@ until a separately requested rebuild; the chart can use the existing image.
   republishing. Patch for fixes that change no values or defaults, minor for
   new values or a new `appVersion`, major for anything an existing install has
   to change its values for.
+- **The CLI pins the chart `version` too.** The CLI's guided agent setup (the
+  Helm install it offers after creating the Secret for a token minted in chat)
+  passes `--version` from `CHART_VERSION` in
+  [`skyportalai/shell/agent_setup.py`](../../skyportalai/shell/agent_setup.py),
+  which must equal the chart `version`. `tests/test_agent_setup.py` fails when
+  they differ, so change both in the same PR. The pin ships inside the CLI: the
+  guided setup installs the new chart only from the next `skyportalai` release
+  on PyPI ([docs/RELEASING.md](../../docs/RELEASING.md)), and until then an
+  installed CLI keeps installing the chart it pinned.
 - `SKYPORTALAI_VERSION` is an exact PyPI version, never a range. The build has
   no lockfile, so a range would make every rebuild resolve to a different
   image. PyPI releases are immutable, so a pinned version can always be rebuilt,
@@ -102,7 +111,8 @@ until a separately requested rebuild; the chart can use the existing image.
    script, `agent` extra, or environment variables, read the SDK changelog
    first; the entrypoint and the env var names in the chart follow the SDK.
 2. Open a PR that sets `ARG SKYPORTALAI_VERSION=<X.Y.Z>`, `appVersion: "<X.Y.Z>"`,
-   the manifests' image tag, and bumps the chart `version`. Update the
+   the manifests' image tag, and bumps the chart `version`, with `CHART_VERSION`
+   in `skyportalai/shell/agent_setup.py` set to the new chart version. Update the
    configuration table in `README.md` if the SDK gained or renamed settings. CI
    builds the image with the new release (without pushing), smoke tests it, and
    installs the chart with it on a kind cluster.
@@ -125,11 +135,16 @@ until a separately requested rebuild; the chart can use the existing image.
    helm show chart oci://ghcr.io/skyportalai/charts/skyportalai-agent --version <chart version>
    docker pull ghcr.io/skyportalai/skyportalai-agent:<X.Y.Z>
    ```
+6. Release the CLI as [docs/RELEASING.md](../../docs/RELEASING.md) describes.
+   Its guided setup installs the chart pinned in `CHART_VERSION`, so the new
+   chart reaches it only with the next `skyportalai` release on PyPI.
 
 ## Publishing a chart-only change
 
-Bump `version` in `Chart.yaml`, merge. The publish job packages the chart,
-checks the registry, and pushes.
+Bump `version` in `Chart.yaml` and `CHART_VERSION` in
+`skyportalai/shell/agent_setup.py` with it, merge. The publish job packages the
+chart, checks the registry, and pushes. The CLI's guided setup moves to the new
+version with the next `skyportalai` release.
 
 ## Rebuilding an existing release
 
