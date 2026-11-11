@@ -99,7 +99,7 @@ def _install_signal_handlers(runner) -> None:
 
 USAGE = """usage: skyportalai-agent
 
-Runs the SkyPortal observability agent until stopped. Configured from the
+Runs the skyportalai observability agent until stopped. Configured from the
 environment, not flags: SKYPORTALAI_AGENT_TOKEN is required, and
 SKYPORTALAI_AGENT_ROLE picks experiments, cluster or node.
 See https://github.com/SkyportalAi/skyportalai/blob/main/docs/agent.md"""

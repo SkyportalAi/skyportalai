@@ -165,7 +165,7 @@ Repointing the CLI at a different instance leaves the saved key behind, and a
 key is only valid on the instance that issued it:
 
 ```
-Error: Stored credentials belong to another Skyportal deployment
+Error: Stored credentials belong to another skyportalai deployment
 (http://localhost:8000), but the selected base URL is https://app.skyportal.ai.
 Run 'skyportalai logout' to clear them (/home/you/.skyportalai/credentials.json),
 or keep them by running 'skyportalai config set --base-url http://localhost:8000'.

@@ -16,7 +16,7 @@ from .shell_commands import run_shell
 
 app = typer.Typer(
     name="skyportalai",
-    help="Drive the Skyportal API and ops agent.",
+    help="Drive the skyportalai API and ops agent.",
     # Bare `skyportalai` drops into the interactive shell, matching the
     # behaviour the standalone `skyportal` command had before 0.2.0.
     invoke_without_command=True,
@@ -119,7 +119,7 @@ def set_config(
     state.settings = updated
     state.output.success(
         {"config_path": path, "base_url": updated.base_url, "timeout": updated.timeout},
-        human=f"Saved Skyportal CLI configuration to {path}",
+        human=f"Saved skyportalai CLI configuration to {path}",
     )
 
 

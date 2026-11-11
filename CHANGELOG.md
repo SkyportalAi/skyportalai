@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This project follows
 
 ## 0.4.1
 
+### Changed
+
+- **The CLI and the agent call the product skyportalai in what they print.** Help
+  text, prompts, the banner, spinners and errors said "Skyportal", and the agent's
+  `--help`, its kubectl refusal and one log line said "SkyPortal". The folder trust
+  prompt now asks to "let skyportalai run commands here". Names in code stay the
+  same, such as the `Skyportal` client class and the `Skyportal-CLI/` User-Agent.
+
 ### Fixed
 
 - **The shell's Helm install of the agent now gets agent 0.4.0, not 0.3.0.** After

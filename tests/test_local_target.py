@@ -830,7 +830,7 @@ def test_a_machine_removed_in_skyportal_stops_polling_and_says_how_to_reconnect(
         assert leases == 1
         assert not target.connected
         [line] = shown
-        assert "removed from Skyportal" in line and "/local on" in line
+        assert "removed from skyportalai" in line and "/local on" in line
     finally:
         target.close()
 
@@ -880,7 +880,7 @@ def test_a_removed_machine_is_also_noticed_by_its_heartbeat_and_said_once(tmp_pa
     finally:
         target.close()
 
-    assert len(shown) == 1 and "removed from Skyportal" in shown[0]
+    assert len(shown) == 1 and "removed from skyportalai" in shown[0]
 
 
 def test_every_command_run_here_is_shown_with_its_chat_and_its_exit_code(tmp_path, monkeypatch):

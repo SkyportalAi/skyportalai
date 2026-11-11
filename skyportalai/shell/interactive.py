@@ -84,7 +84,7 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/permission [autoapprove|ask]",
         "Show or change the shared account approval policy",
     ),
-    "/new": CommandInfo("/new", "Start a fresh Skyportal chat"),
+    "/new": CommandInfo("/new", "Start a fresh skyportalai chat"),
     "/resume": CommandInfo(
         "/resume [chat_id] [--verbose]",
         "Reattach to a chat (defaults to your previous one); --verbose replays its history",
@@ -93,7 +93,7 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/upload <path> [path…]",
         "Attach a log, CSV, JSON or image — or just drop the file on the terminal",
     ),
-    "/servers": CommandInfo("/servers", "List your Skyportal servers"),
+    "/servers": CommandInfo("/servers", "List your skyportalai servers"),
     "/local": CommandInfo(
         "/local [on|off]",
         "Show, connect or disconnect this machine as a place the agent runs commands",
@@ -107,9 +107,9 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Choose the namespaces the agent may use on a selected Kubernetes cluster",
     ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
-    "/about": CommandInfo("/about", "Show Skyportal CLI information"),
-    "/exit": CommandInfo("/exit", "Leave Skyportal"),
-    "/quit": CommandInfo("/quit", "Leave Skyportal"),
+    "/about": CommandInfo("/about", "Show skyportalai CLI information"),
+    "/exit": CommandInfo("/exit", "Leave skyportalai"),
+    "/quit": CommandInfo("/quit", "Leave skyportalai"),
 }
 
 
@@ -255,11 +255,11 @@ class InteractiveShell:
     """Resilient command center that remains active after request failures."""
 
     _THINKING_STATUS = (
-        "[bold cyan]Skyportal is thinking…[/bold cyan]  "
+        "[bold cyan]skyportalai is thinking…[/bold cyan]  "
         "[dim](press Ctrl-C to stop)[/dim]"
     )
     _CONTINUING_STATUS = (
-        "[bold cyan]Skyportal is continuing…[/bold cyan]  "
+        "[bold cyan]skyportalai is continuing…[/bold cyan]  "
         "[dim](press Ctrl-C to stop)[/dim]"
     )
     _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -533,7 +533,7 @@ class InteractiveShell:
                 )
             )
         else:
-            self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
+            self.console.print("[dim]Press Ctrl-D or type /exit to leave skyportalai.[/dim]")
 
     def _prompt_fragments(self) -> List[Tuple[str, str]]:
         connected = self.client.is_authenticated()
@@ -638,7 +638,7 @@ class InteractiveShell:
             "[bold cyan]/servers[/bold cyan]    List or select a server\n"
             "[bold cyan]/new[/bold cyan]        Start a fresh agent conversation\n"
             "[bold cyan]/help[/bold cyan]       See every slash command\n\n"
-            "Type naturally to talk to the Skyportal Agent.".format(
+            "Type naturally to talk to the skyportalai agent.".format(
                 status
             )
         )
@@ -724,7 +724,7 @@ class InteractiveShell:
         for info in COMMANDS.values():
             if info.usage != "/quit":
                 table.add_row(info.usage, info.description)
-        self._print_section("Skyportal commands", style="#3b82f6")
+        self._print_section("skyportalai commands", style="#3b82f6")
         self.console.print(table)
         self.console.print("[dim]Type a message to talk to the agent.[/dim]\n")
 
@@ -765,7 +765,7 @@ class InteractiveShell:
         details.append(" and approve.\n\nThis terminal finishes on its own once you approve.")
         if open_browser and not self.client.open_verification_page(handshake.verification_uri_complete):
             details.append("\nYour browser did not open; use the link above.", style="yellow")
-        self._print_section("Connect Skyportal CLI")
+        self._print_section("Connect skyportalai CLI")
         self.console.print(details)
         self.console.print()
         try:
@@ -792,13 +792,13 @@ class InteractiveShell:
         details.append(url, style="bold cyan link {}".format(url))
         details.append(
             "\n\n2. Sign in if prompted.\n"
-            "3. Create a key named Skyportal CLI and copy the sk_ value.\n"
+            "3. Create a key named skyportalai CLI and copy the sk_ value.\n"
             "4. Return here and paste it into the hidden prompt.\n\n"
             "Do not use an agt_ deployment token; those only upload observability data.",
         )
         if open_browser and not result.get("browser_opened"):
             details.append("\nYour browser did not open; use the link above.", style="yellow")
-        self._print_section("Connect Skyportal CLI")
+        self._print_section("Connect skyportalai CLI")
         self.console.print(details)
         self.console.print()
         try:
@@ -837,9 +837,9 @@ class InteractiveShell:
         self.selected_namespaces = {}
         self.kubernetes_namespaces = {}
         self._forget_chat()
-        self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
+        self.console.print("[green]✓ Local skyportalai credentials removed.[/green]")
         if disconnected:
-            self.console.print("[dim]Skyportal no longer runs commands on this machine.[/dim]")
+            self.console.print("[dim]skyportalai no longer runs commands on this machine.[/dim]")
 
     def _cmd_github_token(self, args: List[str]) -> None:
         subcommand = args[0].lower() if args else ""
@@ -891,7 +891,7 @@ class InteractiveShell:
     def _permission_mode_value(value: Any) -> str:
         mode = value.get("permission_mode") if isinstance(value, dict) else value
         if mode not in _PERMISSION_MODES:
-            raise PortalError("Skyportal returned an invalid permission mode")
+            raise PortalError("skyportalai returned an invalid permission mode")
         return str(mode)
 
     @staticmethod
@@ -901,7 +901,7 @@ class InteractiveShell:
     def _fetch_permission_mode(self) -> str:
         getter = getattr(self.client, "get_permission_mode", None)
         if getter is None:
-            raise PortalError("This Skyportal deployment does not expose permission settings")
+            raise PortalError("This skyportalai deployment does not expose permission settings")
         return self._permission_mode_value(getter())
 
     def _permission_mode_for_approval(self) -> str:
@@ -931,7 +931,7 @@ class InteractiveShell:
                 setter = getattr(self.client, "set_permission_mode", None)
                 if setter is None:
                     raise PortalError(
-                        "This Skyportal deployment does not expose permission settings"
+                        "This skyportalai deployment does not expose permission settings"
                     )
                 mode = self._permission_mode_value(setter(requested))
 
@@ -985,7 +985,7 @@ class InteractiveShell:
             if connected
             else "[yellow]not connected[/yellow]",
         )
-        rows.add_row("Agent", "Skyportal Agent")
+        rows.add_row("Agent", "skyportalai agent")
         if permission_mode is not None:
             permission_style = "yellow" if permission_mode == "autoapprove" else "green"
             rows.add_row("Permission", Text(permission_mode, style=permission_style))
@@ -1064,7 +1064,7 @@ class InteractiveShell:
     def _cmd_new(self, args: List[str]) -> None:
         self.chat_id = None
         self.last_sequence = 0
-        self.console.print("[green]✓ Started a fresh Skyportal chat.[/green]")
+        self.console.print("[green]✓ Started a fresh skyportalai chat.[/green]")
 
     def _cmd_resume(self, args: List[str]) -> None:
         verbose = "--verbose" in args
@@ -1151,12 +1151,12 @@ class InteractiveShell:
 
     def _cmd_servers(self, args: List[str]) -> None:
         self._require_api_connection()
-        with self.console.status("[cyan]Contacting Skyportal…[/cyan]", spinner="dots"):
+        with self.console.status("[cyan]Contacting skyportalai…[/cyan]", spinner="dots"):
             servers = self._items(self.client.servers())
         if not servers:
             self.console.print("[yellow]No servers found.[/yellow]")
             return
-        table = Table(title="Skyportal servers", border_style="blue", header_style="bold cyan")
+        table = Table(title="skyportalai servers", border_style="blue", header_style="bold cyan")
         table.add_column("Name", style="bold")
         table.add_column("Status")
         table.add_column("Environment")
@@ -1482,13 +1482,13 @@ class InteractiveShell:
 
     def _cmd_clear(self, args: List[str]) -> None:
         self.console.clear()
-        self.console.print("[bold #3b82f6]S[/bold #3b82f6]  [bold]Skyportal[/bold]")
+        self.console.print("[bold #3b82f6]S[/bold #3b82f6]  [bold]skyportalai[/bold]")
         self.console.print("[#3b82f6]YOUR AI COMMAND CENTER[/#3b82f6]\n")
 
     def _cmd_about(self, args: List[str]) -> None:
-        self._print_section("Skyportal CLI", style="#3b82f6")
+        self._print_section("skyportalai CLI", style="#3b82f6")
         self.console.print(
-            "A persistent command center for the Skyportal Agent and your servers.\n\n"
+            "A persistent command center for the skyportalai agent and your servers.\n\n"
             "[dim]CLI auth: account API keys from /keys/\n"
             "Prompt history: {}[/dim]\n".format(self._history_path())
         )
@@ -1607,21 +1607,21 @@ class InteractiveShell:
             folder = Path.cwd()
         except OSError:
             self.console.print(
-                "[yellow]This folder no longer exists, so Skyportal can't run commands from it. "
+                "[yellow]This folder no longer exists, so skyportalai can't run commands from it. "
                 "Move to a project folder and use /local on.[/yellow]\n"
             )
             return
         if is_filesystem_root(folder):
             self.console.print(
-                "[yellow]Skyportal won't run commands from {}: it is the root of a filesystem, so trusting it "
+                "[yellow]skyportalai won't run commands from {}: it is the root of a filesystem, so trusting it "
                 "would mean trusting everything on it. Open skyportalai in a project folder to let "
-                "Skyportal run commands on this machine.[/yellow]\n".format(escape(str(folder)))
+                "skyportalai run commands on this machine.[/yellow]\n".format(escape(str(folder)))
             )
             return
         if not self._trust_store.is_trusted(folder):
             if not self._ask_to_trust(folder):
                 self.console.print(
-                    "[dim]Skyportal won't run commands on this machine. Change that with /local on.[/dim]\n"
+                    "[dim]skyportalai won't run commands on this machine. Change that with /local on.[/dim]\n"
                 )
                 return
             if not self._trust_store.trust(folder):
@@ -1640,7 +1640,7 @@ class InteractiveShell:
                 "your documents, SSH keys and cloud logins included.[/yellow]\n"
             )
         self.console.print(
-            "Skyportal can run commands on this machine, with your access: your files, your git "
+            "skyportalai can run commands on this machine, with your access: your files, your git "
             "credentials, your cloud logins. A command starts in this folder, but that is not a limit: "
             "it can read or change anything you can, anywhere on this machine. Trust covers this folder "
             "and everything inside it. Commands that change things or touch secrets ask you first, as on "
@@ -1653,7 +1653,9 @@ class InteractiveShell:
             "repository you didn't create. Only trust a folder whose code you trust.\n"
         )
         # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
-        return self._confirm("Trust this folder and everything inside it, and let Skyportal run commands here? [y/N] ")
+        return self._confirm(
+            "Trust this folder and everything inside it, and let skyportalai run commands here? [y/N] "
+        )
 
     def _connect_local_target(self, folder: Path) -> None:
         # A target Skyportal removed is still held here; the next message binds its chat to the new one.
@@ -1716,7 +1718,7 @@ class InteractiveShell:
                 self.console.print("[dim]This machine isn't connected.[/dim]")
                 return
             self._close_local_target()
-            self.console.print("[green]✓ Disconnected.[/green] Skyportal no longer runs commands on this machine.")
+            self.console.print("[green]✓ Disconnected.[/green] skyportalai no longer runs commands on this machine.")
             return
         if action == "on":
             self._require_api_connection()
@@ -1764,7 +1766,7 @@ class InteractiveShell:
         activity = snapshot.get("activity") if isinstance(snapshot, dict) else None
         label = activity.get("label") if isinstance(activity, dict) else None
         if not label:
-            label = "Skyportal is thinking…"
+            label = "skyportalai is thinking…"
         line = Text(self._bounded_one_line(label, 180), style="bold cyan")
         line.append("  Ctrl-C to stop", style="dim")
         return line
@@ -1919,7 +1921,7 @@ class InteractiveShell:
             self.last_sequence = max(self.last_sequence, turn.latest_sequence)
             if turn.status == "error":
                 raise PortalError(
-                    "The Skyportal agent reported an error for chat #{}".format(turn.chat_id)
+                    "The skyportalai agent reported an error for chat #{}".format(turn.chat_id)
                 )
             if turn.status != "awaiting_approval":
                 if not render_state.get("rendered"):
@@ -1962,7 +1964,7 @@ class InteractiveShell:
                     or time.monotonic() >= approval_settlement_deadline
                 ):
                     raise PortalError(
-                        "Skyportal did not clear an approval that was already submitted. "
+                        "skyportalai did not clear an approval that was already submitted. "
                         "Use /status before retrying; it will not be submitted twice."
                     )
                 try:
@@ -2380,7 +2382,7 @@ class InteractiveShell:
                 if not rendered:
                     self.console.print()
                     if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                        self._print_section("[#3b82f6]skyportalai agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
             elif role == "tool":
@@ -2390,7 +2392,7 @@ class InteractiveShell:
                 if not rendered:
                     self.console.print()
                     if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                        self._print_section("[#3b82f6]skyportalai agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
         if rendered:
@@ -2611,7 +2613,7 @@ class InteractiveShell:
 
     def _show_portal_error(self, error: PortalError) -> None:
         denied = error.status_code in (401, 403)
-        title = "Access denied" if denied else "Skyportal request failed"
+        title = "Access denied" if denied else "skyportalai request failed"
         guidance = (
             "Use /login to create or paste a valid account API key."
             if denied

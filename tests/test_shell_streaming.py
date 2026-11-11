@@ -105,7 +105,7 @@ def test_shell_waits_indefinitely_and_renders_each_persisted_message_once(
     assert output.count("streamed first") == 1
     assert output.count("up 10 days") == 1
     assert output.count("streamed final") == 1
-    assert output.count("Skyportal agent") == 1
+    assert output.count("skyportalai agent") == 1
     assert client.wait_calls[0][2] is None
     assert shell.last_sequence == 3
 
@@ -146,7 +146,7 @@ class ApprovalClient:
     def submit_chat_approval(self, chat_id, approval, decision):
         self.submit_calls.append((chat_id, approval, decision))
         if not self.stale:
-            raise PortalError("Could not connect to Skyportal: timed out")
+            raise PortalError("Could not connect to skyportalai: timed out")
         return {"success": True}
 
     def chat_status(self, chat_id):

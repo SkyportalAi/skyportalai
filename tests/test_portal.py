@@ -960,7 +960,7 @@ def test_credentials_from_another_deployment_name_the_way_out(credential_path):
         client.servers()
 
     assert str(error.value) == (
-        "Stored credentials belong to another Skyportal deployment "
+        "Stored credentials belong to another skyportalai deployment "
         "(http://localhost:8000), but this session targets https://app.skyportal.ai. "
         f"Run 'skyportalai logout' to clear them ({credential_path}), "
         "or 'skyportalai login' to replace them."
@@ -992,7 +992,7 @@ def test_credentials_are_scoped_to_deployment(credential_path):
     )
     client = SkyportalClient("https://app.skyportal.ai")
 
-    with pytest.raises(PortalError, match="another Skyportal deployment"):
+    with pytest.raises(PortalError, match="another skyportalai deployment"):
         client.servers()
 
 

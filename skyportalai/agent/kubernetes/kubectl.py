@@ -43,7 +43,7 @@ def is_readonly(argv: list[str]) -> bool:
 def run_kubectl(argv: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
     """Run argv and return {argv, exit_code, stdout, stderr}; refuses anything not read-only."""
     if not is_readonly(argv):
-        return _result(argv, EXIT_REFUSED, "", "refused: the SkyPortal agent only runs read-only kubectl")
+        return _result(argv, EXIT_REFUSED, "", "refused: the skyportalai agent only runs read-only kubectl")
     return run_process(argv, timeout)
 
 
