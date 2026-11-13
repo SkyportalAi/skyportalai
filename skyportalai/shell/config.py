@@ -13,7 +13,7 @@ class PortalConfig(BaseModel):
 
     base_url: str = Field(
         default="https://app.skyportal.ai",
-        description="Skyportal application URL",
+        description="skyportalai application URL",
     )
     request_timeout: int = Field(
         default=30,

@@ -96,7 +96,7 @@ def configure(
         str | None,
         typer.Option(
             "--portal-url",
-            help=f"Skyportal application URL  [env: SKYPORTALAI_URL]  [default: {DEFAULT_BASE_URL}]",
+            help=f"skyportalai application URL  [env: SKYPORTALAI_URL]  [default: {DEFAULT_BASE_URL}]",
         ),
     ] = None,
     request_timeout: Annotated[
@@ -104,7 +104,7 @@ def configure(
         typer.Option("--request-timeout", min=1, help="HTTP request timeout in seconds"),
     ] = 30,
 ) -> None:
-    """Save Skyportal connection settings."""
+    """Save skyportalai connection settings."""
     # Resolved through _env like every other setting rather than by typer's envvar=,
     # so all environment reads go through one place.
     try:
@@ -114,7 +114,7 @@ def configure(
         raise typer.Exit(1) from None
     config = SkyportalConfig(portal=PortalConfig(base_url=resolved_url, request_timeout=request_timeout))
     ConfigManager.save_config(config)
-    console.print(f"[green]✓[/green] Skyportal configuration saved to {ConfigManager.get_config_path()}")
+    console.print(f"[green]✓[/green] skyportalai configuration saved to {ConfigManager.get_config_path()}")
 
 
 def login(
@@ -186,20 +186,20 @@ def _connect_by_pasting_a_key(client: SkyportalClient, *, show_key_page: bool, o
     if show_key_page:
         result = client.login(open_browser=open_browser)
         console.print(
-            "[bold]Create or copy a Skyportal account API key:[/bold] {}".format(result["verification_url"])
+            "[bold]Create or copy a skyportalai account API key:[/bold] {}".format(result["verification_url"])
         )
         console.print(
-            "Create a key named [bold]Skyportal CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
+            "Create a key named [bold]skyportalai CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
             "[dim]Do not use an agt_ observability-agent token.[/dim]"
         )
         if not result.get("browser_opened") and open_browser:
             console.print("[yellow]Browser did not open; use the URL above.[/yellow]")
-    access_token = typer.prompt("Skyportal API key", hide_input=True)
+    access_token = typer.prompt("skyportalai API key", hide_input=True)
     client.set_access_token(access_token)
 
 
 def logout() -> None:
-    """Remove locally stored Skyportal credentials."""
+    """Remove locally stored skyportalai credentials."""
     CredentialStore.clear()
     console.print("[green]✓[/green] Logged out")
 
@@ -215,11 +215,11 @@ def ask(
         ),
     ] = None,
 ) -> None:
-    """Send one message to the Skyportal Agent."""
+    """Send one message to the skyportalai agent."""
     prompt = message or typer.prompt("Message")
     client = _portal_client(_settings(context))
     try:
-        with console.status("[cyan]Skyportal is thinking…[/cyan]", spinner="dots12"):
+        with console.status("[cyan]skyportalai is thinking…[/cyan]", spinner="dots12"):
             selected = list(dict.fromkeys(server_ids or []))
             if len(selected) == 1:
                 # Preserve the established singular request for deployments
@@ -251,7 +251,7 @@ def servers(context: typer.Context) -> None:
     if not entries:
         console.print("[yellow]No servers found.[/yellow]")
         return
-    table = Table(title="Skyportal Servers")
+    table = Table(title="skyportalai servers")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Status", style="green")
@@ -271,7 +271,7 @@ def servers(context: typer.Context) -> None:
 
 
 def start(context: typer.Context) -> None:
-    """Launch the persistent Skyportal command center."""
+    """Launch the persistent skyportalai command center."""
     run_shell(_settings(context))
 
 
@@ -316,7 +316,7 @@ def github_token_set(
 
 @github_token_app.command("remove")
 def github_token_remove(context: typer.Context) -> None:
-    """Delete the saved GitHub PAT from Skyportal."""
+    """Delete the saved GitHub PAT from skyportalai."""
     try:
         _portal_client(_settings(context)).delete_github_token()
     except PortalError as error:

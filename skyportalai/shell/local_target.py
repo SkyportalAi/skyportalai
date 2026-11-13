@@ -67,7 +67,7 @@ _NOT_RUN_BECAUSE = {
     "declined": "you said no",
     "no_answer": "no answer in time",
     "withdrawn": "its turn was stopped",
-    "unconfirmed": "Skyportal couldn't confirm it was still wanted",
+    "unconfirmed": "skyportalai couldn't confirm it was still wanted",
     "too_long": "too long for its y/N question to show it all",
     "too_late": "it could no longer finish before its result was due",
 }
@@ -1019,15 +1019,15 @@ class LocalTarget:
         try:
             self.server_id = int(connected["server_id"])
         except (KeyError, TypeError, ValueError) as error:
-            raise PortalError("Skyportal did not return this machine's id") from error
+            raise PortalError("skyportalai did not return this machine's id") from error
         self.hostname = str(connected.get("hostname") or machine_name())
         self._rules.sent = sent
 
     def _machine_removed(self) -> None:
-        self._end("▸ This machine was removed from Skyportal; no commands will run here. Reconnect with /local on.")
+        self._end("▸ This machine was removed from skyportalai; no commands will run here. Reconnect with /local on.")
 
     def _key_refused(self) -> None:
-        self._end("▸ Skyportal refused this CLI's key, so no commands will run here. Run /login, then /local on.")
+        self._end("▸ skyportalai refused this CLI's key, so no commands will run here. Run /login, then /local on.")
 
     def _end(self, line: str) -> None:
         """Stop for good: out of the prompt, nothing more fetched, and one line saying why and what to do."""

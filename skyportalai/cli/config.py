@@ -70,7 +70,7 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
     credentials, credential_conflict = _read_credentials(credentials_path)
     portal = config.get("portal", {})
     if not isinstance(portal, dict):
-        raise SkyportalError(f"Invalid Skyportal configuration in {config_path}: 'portal' must be a mapping.")
+        raise SkyportalError(f"Invalid skyportalai configuration in {config_path}: 'portal' must be a mapping.")
 
     stored_url = credentials.get("base_url")
     effective_url, url_origin = _select_base_url(
@@ -102,7 +102,7 @@ def resolve_settings(*, base_url: str | None = None) -> CLISettings:
         stored_normalized = normalize_base_url(str(stored_url)) if stored_url else None
         if stored_normalized and stored_normalized != effective_url:
             credential_conflict = (
-                f"Stored credentials belong to another Skyportal deployment "
+                f"Stored credentials belong to another skyportalai deployment "
                 f"({stored_normalized}), but the selected base URL is {effective_url}. "
                 f"Run 'skyportalai logout' to clear them ({credentials_path}), "
                 f"or keep them by {_keep_credentials_advice(url_origin, stored_normalized)}."
@@ -161,7 +161,7 @@ def save_connection_config(*, base_url: str | None, timeout: float | None) -> Pa
     config = _read_mapping(path, "configuration", yaml.safe_load)
     portal = config.setdefault("portal", {})
     if not isinstance(portal, dict):
-        raise SkyportalError(f"Invalid Skyportal configuration in {path}: 'portal' must be a mapping.")
+        raise SkyportalError(f"Invalid skyportalai configuration in {path}: 'portal' must be a mapping.")
     if base_url is not None:
         portal["base_url"] = base_url.rstrip("/")
     if timeout is not None:
@@ -192,12 +192,12 @@ def _read_credentials(path: Path) -> tuple[dict[str, Any], str | None]:
         with path.open() as source:
             value = json.load(source) or {}
     except OSError as exc:
-        return {}, f"Could not read Skyportal credentials from {path}: {exc}. Check the file's permissions."
+        return {}, f"Could not read skyportalai credentials from {path}: {exc}. Check the file's permissions."
     except ValueError as exc:
-        return {}, f"Invalid Skyportal credentials in {path}: {exc}. Run 'skyportalai logout' to remove the file."
+        return {}, f"Invalid skyportalai credentials in {path}: {exc}. Run 'skyportalai logout' to remove the file."
     if not isinstance(value, dict):
         return {}, (
-            f"Invalid Skyportal credentials in {path}: expected a mapping. "
+            f"Invalid skyportalai credentials in {path}: expected a mapping. "
             "Run 'skyportalai logout' to remove the file."
         )
     return value, None
@@ -210,7 +210,7 @@ def _read_mapping(path: Path, label: str, loader: Any) -> dict[str, Any]:
         with path.open() as source:
             value = loader(source) or {}
     except (OSError, ValueError, yaml.YAMLError) as exc:
-        raise SkyportalError(f"Could not read Skyportal {label} from {path}: {exc}") from exc
+        raise SkyportalError(f"Could not read skyportalai {label} from {path}: {exc}") from exc
     if not isinstance(value, dict):
-        raise SkyportalError(f"Invalid Skyportal {label} in {path}: expected a mapping.")
+        raise SkyportalError(f"Invalid skyportalai {label} in {path}: expected a mapping.")
     return value

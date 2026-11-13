@@ -125,7 +125,7 @@ def test_a_failed_scope_refresh_still_follows_the_approved_turn(tmp_path, monkey
     waits = []
 
     def servers():
-        raise PortalError("Skyportal is unavailable")
+        raise PortalError("skyportalai is unavailable")
 
     def wait_for_chat(chat_id, **_kwargs):
         waits.append(chat_id)

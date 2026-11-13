@@ -121,7 +121,7 @@ def disconnect(
         typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Remove a Kubernetes cluster and its encrypted kubeconfig from Skyportal."""
+    """Remove a Kubernetes cluster and its encrypted kubeconfig from skyportalai."""
     if not yes:
         if _state(context).output.json_mode:
             _state(context).output.failure("--yes is required when using --json mode")

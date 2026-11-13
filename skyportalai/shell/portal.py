@@ -147,9 +147,9 @@ class CredentialStore:
             with path.open(encoding="utf-8") as credentials_file:
                 credentials = json.load(credentials_file)
         except (OSError, json.JSONDecodeError) as error:
-            raise PortalError(f"Could not read Skyportal credentials from {path}: {error}") from error
+            raise PortalError(f"Could not read skyportalai credentials from {path}: {error}") from error
         if not isinstance(credentials, dict):
-            raise PortalError(f"Invalid Skyportal credentials in {path}: expected an object")
+            raise PortalError(f"Invalid skyportalai credentials in {path}: expected an object")
         return credentials
 
     @classmethod
@@ -239,17 +239,17 @@ class SkyportalClient:
                 return None
             raise
         if not isinstance(payload, dict):
-            raise PortalError("Skyportal returned an unexpected login response")
+            raise PortalError("skyportalai returned an unexpected login response")
         try:
             device_code = payload["device_code"]
             user_code = payload["user_code"]
             verification_uri = payload["verification_uri"]
             if not isinstance(device_code, str) or not device_code:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             if not isinstance(user_code, str) or not user_code:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             if not isinstance(verification_uri, str) or not verification_uri:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             return DeviceLogin(
                 device_code=device_code,
                 user_code=user_code,
@@ -261,7 +261,7 @@ class SkyportalClient:
                 expires_in=int(payload.get("expires_in") or 600),
             )
         except (KeyError, TypeError, ValueError) as error:
-            raise PortalError("Skyportal returned an incomplete login response") from error
+            raise PortalError("skyportalai returned an incomplete login response") from error
 
     def await_device_login(
         self,
@@ -296,7 +296,7 @@ class SkyportalClient:
             if status == "approved":
                 key = str(payload.get("key") or "")
                 if not key:
-                    raise PortalError("Skyportal approved the login but returned no API key")
+                    raise PortalError("skyportalai approved the login but returned no API key")
                 return key
             if status == "denied":
                 raise PortalError("The login was denied in the browser. Nothing was saved.")
@@ -314,7 +314,7 @@ class SkyportalClient:
             try:
                 interval = min(max(int(payload.get("interval") or interval), _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
             except (TypeError, ValueError) as error:
-                raise PortalError("Skyportal returned an invalid poll interval") from error
+                raise PortalError("skyportalai returned an invalid poll interval") from error
             sleep(interval)
 
     def open_verification_page(self, url: str) -> bool:
@@ -417,12 +417,12 @@ class SkyportalClient:
     def _parse_permission_mode(payload: Any) -> str:
         mode = payload.get("permission_mode") if isinstance(payload, dict) else None
         if mode not in _PERMISSION_MODES:
-            raise PortalError("Skyportal returned an invalid permission mode")
+            raise PortalError("skyportalai returned an invalid permission mode")
         return str(mode)
 
     def agents(self) -> List[Dict[str, str]]:
         """Describe the single Skyportal ReAct agent."""
-        return [{"id": "skyportal", "name": "Skyportal Agent", "status": "ready"}]
+        return [{"id": "skyportal", "name": "skyportalai agent", "status": "ready"}]
 
     def servers(self) -> Any:
         """List servers owned by the authenticated user."""
@@ -742,7 +742,7 @@ class SkyportalClient:
         while True:
             if deadline is not None and time.monotonic() >= deadline:
                 raise PortalError(
-                    "Skyportal has made no progress for {} seconds. Chat #{} remains available.".format(
+                    "skyportalai has made no progress for {} seconds. Chat #{} remains available.".format(
                         f"{timeout:g}", chat_id
                     )
                 )
@@ -861,7 +861,7 @@ class SkyportalClient:
             try:
                 return int(started["chat_id"])
             except (KeyError, TypeError, ValueError) as error:
-                raise PortalError("Skyportal did not return a valid chat ID") from error
+                raise PortalError("skyportalai did not return a valid chat ID") from error
         self.send_chat_message(chat_id, message, local_session=local_session)
         return chat_id
 
@@ -941,7 +941,7 @@ class SkyportalClient:
             # deployment, and re-running login would only save it again.
             if stored_url is not None and normalize_base_url(str(stored_url)) != self.base_url:
                 raise PortalError(
-                    "Stored credentials belong to another Skyportal deployment "
+                    "Stored credentials belong to another skyportalai deployment "
                     "({}), but this session targets {}. Run 'skyportalai logout' to "
                     "clear them ({}), or 'skyportalai login' to replace them.".format(
                         stored_url, self.base_url, CredentialStore.get_path()
@@ -962,7 +962,7 @@ class SkyportalClient:
         if token.startswith("agt_"):
             raise PortalError(
                 "Agent deployment tokens (agt_) only upload observability data and cannot "
-                "authenticate the Skyportal CLI. Create an account API key (sk_) at {}.".format(
+                "authenticate the skyportalai CLI. Create an account API key (sk_) at {}.".format(
                     self.api_key_url()
                 )
             )
@@ -1008,14 +1008,14 @@ class SkyportalClient:
                 content = response.read()
                 if status >= 300:
                     raise PortalError(
-                        "Skyportal request failed ({})".format(status),
+                        "skyportalai request failed ({})".format(status),
                         status_code=status,
                     )
                 try:
                     return json.loads(content.decode()) if content else {}
                 except (json.JSONDecodeError, UnicodeDecodeError) as error:
                     raise PortalError(
-                        "Skyportal returned a non-JSON response ({})".format(status),
+                        "skyportalai returned a non-JSON response ({})".format(status),
                         status_code=status,
                     ) from error
         except HTTPError as error:
@@ -1032,11 +1032,11 @@ class SkyportalClient:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 message = None
             raise PortalError(
-                str(message) if message else "Skyportal request failed ({})".format(error.code),
+                str(message) if message else "skyportalai request failed ({})".format(error.code),
                 status_code=error.code,
                 code=str(code) if code else None,
             ) from error
         except URLError as error:
-            raise PortalError("Could not connect to Skyportal: {}".format(error.reason)) from error
+            raise PortalError("Could not connect to skyportalai: {}".format(error.reason)) from error
         except TimeoutError as error:
-            raise PortalError("Could not connect to Skyportal: request timed out") from error
+            raise PortalError("Could not connect to skyportalai: request timed out") from error
