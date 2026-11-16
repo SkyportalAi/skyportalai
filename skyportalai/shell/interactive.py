@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
@@ -61,6 +61,15 @@ ALL_NAMESPACES = "__all__"
 
 class _AutoapprovalPolicyConflict(RuntimeError):
     """The shared mode changed between its GET and marked approval POST."""
+
+
+class _Submitted(NamedTuple):
+    """How an approval went in: the decision the server took (a refused ✓✓ falls back to once),
+    its answer, and whether a timed-out POST was reconciled from /status/, which gives no answer."""
+
+    decision: str
+    answer: Optional[Dict[str, Any]]
+    recovered: bool
 
 
 @dataclass(frozen=True)
@@ -1840,32 +1849,31 @@ class InteractiveShell:
         autoapproved: bool = False,
         rejection_reason: Optional[str] = None,
         namespace: Optional[str] = None,
-    ) -> bool:
+    ) -> _Submitted:
         """Submit a decision; recover when an older synchronous server times out.
 
         Older deployments execute the resumed workflow inside the approval POST.
         The client can therefore hit its request timeout after the decision was
         durably accepted. A single status reconciliation avoids resubmitting (and
         potentially re-running) that approval. Explicit HTTP failures still fail.
-        Returns True when timeout recovery was needed.
         """
         try:
             if autoapproved:
-                self.client.submit_chat_approval(
+                answer = self.client.submit_chat_approval(
                     chat_id,
                     approval,
                     decision,
                     autoapproved=True,
                 )
             elif rejection_reason:
-                self.client.submit_chat_approval(
+                answer = self.client.submit_chat_approval(
                     chat_id, approval, decision, rejection_reason=rejection_reason,
                 )
             elif namespace:
-                self.client.submit_chat_approval(chat_id, approval, decision, namespace=namespace)
+                answer = self.client.submit_chat_approval(chat_id, approval, decision, namespace=namespace)
             else:
-                self.client.submit_chat_approval(chat_id, approval, decision)
-            return False
+                answer = self.client.submit_chat_approval(chat_id, approval, decision)
+            return _Submitted(decision, answer, recovered=False)
         except PortalError as error:
             if (
                 autoapproved
@@ -1893,7 +1901,7 @@ class InteractiveShell:
             raise original_error from reconciliation_error
         if not accepted:
             raise original_error
-        return True
+        return _Submitted(decision, None, recovered=True)
 
     def _process_turn(
         self,
@@ -2039,7 +2047,7 @@ class InteractiveShell:
                             "[dim](Ctrl-C to stop)[/dim]".format(decision),
                             spinner="dots",
                         ) as status:
-                            recovered = self._submit_approval_with_recovery(
+                            submitted = self._submit_approval_with_recovery(
                                 turn.chat_id,
                                 approval,
                                 decision,
@@ -2048,7 +2056,9 @@ class InteractiveShell:
                                 namespace=namespace,
                             )
                             handled_approvals.add(approval_id)
-                            if decision == "approved" and approval_type == "scope":
+                            if submitted.decision == "always_approved":
+                                self._report_always_allow(approval, submitted)
+                            if submitted.decision in ("approved", "always_approved") and approval_type == "scope":
                                 try:
                                     self._note_scope_added(approval, namespace)
                                 except PortalError:
@@ -2061,7 +2071,7 @@ class InteractiveShell:
                                 time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
                             )
                             status.update(self._CONTINUING_STATUS)
-                            if recovered:
+                            if submitted.recovered:
                                 self.console.print(
                                     "[dim]Approval was accepted; reattached after the older "
                                     "server's response timed out.[/dim]"
@@ -2142,6 +2152,40 @@ class InteractiveShell:
             if added and added not in current:
                 self.selected_namespaces[server_id] = [*current, str(added)]
 
+    def _report_always_allow(self, approval: Dict[str, Any], submitted: _Submitted) -> None:
+        """Say what the ✓✓ added to the host's allow list, from the server's answer to it.
+
+        Without this the shell said nothing, so nobody could tell whether the command would
+        ask again. A ✓✓ the server refused already fell back to once, saying so.
+        """
+        if submitted.recovered:
+            self.console.print(
+                "[yellow]Approved, but the server's answer timed out, so it isn't known whether "
+                "Always allow was applied.[/yellow]"
+            )
+            return
+        answer = submitted.answer if isinstance(submitted.answer, dict) else {}
+        if answer.get("decision") != "always_approved":
+            self.console.print(
+                "[yellow]Always allow wasn't applied: the server approved the command once, "
+                "so it will ask again next time.[/yellow]"
+            )
+            return
+        added = [str(prefix) for prefix in answer.get("added_prefixes") or []]
+        if not added:
+            self.console.print("[dim]Nothing new was added to the allow list.[/dim]")
+            return
+        context = approval.get("approval_context")
+        host = answer.get("host") or (context.get("host") if isinstance(context, dict) else None)
+        line = Text("Now always allowed", style="green")
+        if host:
+            line.append(" on " + self._bounded_one_line(str(host), 120), style="green")
+        line.append(": ", style="green")
+        for index, prefix in enumerate(added):
+            line.append(", " if index else "")
+            line.append(self._bounded_one_line(prefix, 200), style="bold")
+        self.console.print(line)
+
     def _ask_decision(self, always_label: Optional[str] = None) -> "tuple[str, Optional[str]]":
         """y approves; a, where the card offers it, also permit-lists; r rejects with a reason; anything else rejects."""
         if always_label:
@@ -2174,8 +2218,9 @@ class InteractiveShell:
 
     @staticmethod
     def _always_allow_label(approval: Dict[str, Any]) -> Optional[str]:
-        """What the web card's ✓✓ would add, when the server offers it for this approval (skyportal-website#3665)."""
-        if approval.get("type", "bash_command") != "bash_command":
+        """What the web card's ✓✓ would add, when the server offers it: on a bash card
+        (skyportal-website#3665) or a combined scope card (#3750)."""
+        if approval.get("type", "bash_command") not in ("bash_command", "scope"):
             return None
         context = approval.get("approval_context")
         offer = context.get("always_allow") if isinstance(context, dict) else None

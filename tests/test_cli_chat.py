@@ -59,9 +59,13 @@ class FakeChatResource:
         self.calls.append(("get_messages", chat_id, after_sequence, limit))
         return MessagesPage(messages=[Message(role="assistant", content="done", sequence=3)])
 
-    def approve(self, chat_id, approval_id, *, approval_type, command, namespace=None):
+    def approve(self, chat_id, approval_id, *, approval_type, command, namespace=None, always=False):
         call = ("approve", chat_id, approval_id, approval_type, command)
-        self.calls.append(call + (namespace,) if namespace else call)
+        if namespace:
+            call += (namespace,)
+        if always:
+            call += ("always",)
+        self.calls.append(call)
         return ApprovalResult(success=True, decision="approved")
 
     def reject(self, chat_id, approval_id, *, approval_type, reason):
@@ -312,6 +316,9 @@ def test_messages_forwards_cursor_and_limit(fake_client):
         # A scope card that asks which namespace to add (skyportal-website#3724).
         (["approve", "42", "a1", "--type", "scope", "--namespace", "e2e"],
          ("approve", 42, "a1", "scope", None, "e2e")),
+        # "Always allow" on a card that offers it (skyportal-website#3750).
+        (["approve", "42", "a1", "--always"],
+         ("approve", 42, "a1", "bash_command", None, "always")),
         (["reject", "42", "a1", "--reason", "unsafe"],
          ("reject", 42, "a1", "bash_command", "unsafe")),
         (["cancel", "42", "--reason", "done"], ("cancel", 42, "done")),

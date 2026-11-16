@@ -119,10 +119,16 @@ class ChatResource:
                         reason: str | None = None,
                         autoapproved: bool = False,
                         namespace: str | None = None) -> ApprovalResult:
-        """Submit an approval decision (``approved`` or ``rejected``).
+        """Submit an approval decision (``approved``, ``always_approved`` or ``rejected``).
 
         ``namespace`` answers a ``scope`` approval whose ``scope["namespace"]`` is
         None: one of its ``scope["namespace_choices"]``.
+
+        ``always_approved`` is the card's "Always allow" (skyportal-website#3665, and
+        #3750 for a scope card): it approves the command and adds
+        ``approval.always_allow["prefixes"]`` to the permit list of the card's host.
+        Only for a ``bash_command`` or ``scope`` approval whose ``always_allow`` is
+        set; the server refuses it anywhere else, and never as an automatic decision.
         """
         body: dict = {"decision": decision, "type": approval_type}
         if command is not None:
@@ -141,10 +147,11 @@ class ChatResource:
     def approve(self, chat_id: int, approval_id: str, *,
                 approval_type: str = "bash_command",
                 command: str | None = None,
-                namespace: str | None = None) -> ApprovalResult:
-        """Approve a pending bash command, plan or scope change."""
+                namespace: str | None = None,
+                always: bool = False) -> ApprovalResult:
+        """Approve a pending bash command, plan or scope change; ``always`` also always allows the command."""
         return self.submit_approval(
-            chat_id, approval_id, decision="approved",
+            chat_id, approval_id, decision="always_approved" if always else "approved",
             approval_type=approval_type, command=command, namespace=namespace,
         )
 

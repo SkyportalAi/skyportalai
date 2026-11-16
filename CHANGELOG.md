@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **Always allow on scope approvals, and the shell says what it added.** The
+  shell's `a` now also answers a scope approval that offers it
+  (skyportal-website#3750), not only a bash one, with the server's label ("Always
+  allow `kubectl logs` on kind-smoke"). Afterwards it prints what joined that
+  host's allow list, or that nothing new did, and when the answer timed out it
+  says it can't tell. One the server refuses is still approved once, with a
+  warning. It is never sent automatically. `PendingApproval.always_allow` carries
+  the offer, and `chat.approve(..., always=True)` and `skyportalai chat approve
+  --always` send it as `"decision": "always_approved"`. The CLI prints what was
+  added, and exits with the server's error when it refuses.
+
 ## 0.4.1
 
 ### Changed
