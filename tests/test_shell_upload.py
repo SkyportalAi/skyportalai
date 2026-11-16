@@ -309,7 +309,7 @@ class TestDroppedFiles:
 
         assert client.uploads == []
         assert sent == []
-        assert "Skyportal commands" in out.getvalue()
+        assert "skyportalai commands" in out.getvalue()
 
     def test_upload_with_an_argument_still_reaches_its_handler(self, routed):
         instance, client, _, _, log = routed

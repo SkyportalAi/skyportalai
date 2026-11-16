@@ -194,7 +194,7 @@ def _brand_wordmark() -> Text:
     """Render the compact logo and wordmark used by the command center."""
     wordmark = Text()
     wordmark.append("S", style="bold #3b82f6")
-    wordmark.append("  Skyportal", style="bold")
+    wordmark.append("  skyportalai", style="bold")
     return wordmark
 
 
@@ -206,7 +206,7 @@ def show_static_banner(console: Console) -> None:
 def show_startup_animation(console: Console, delay: float = 0.035) -> None:
     """Spin in the astronaut and materialize the Skyportal wordmark."""
     if not console.is_terminal:
-        console.print("[bold cyan]Skyportal[/bold cyan] — your AI command center")
+        console.print("[bold cyan]skyportalai[/bold cyan] — your AI command center")
         return
 
     if _env.get("SKYPORTALAI_NO_ANIMATION"):

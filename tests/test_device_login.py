@@ -214,7 +214,7 @@ def test_login_completes_without_a_prompt_once_the_browser_approves(isolated):
 
     assert result.exit_code == 0, result.output
     assert "BCDF-GHJK" in result.output
-    assert "Skyportal API key" not in result.output
+    assert "skyportalai API key" not in result.output
     browser.assert_called_once_with(STARTED["verification_uri_complete"])
     assert json.loads(isolated.read_text())["access_token"] == "sk_delivered"
 

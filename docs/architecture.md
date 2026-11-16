@@ -23,6 +23,7 @@ porting the Click commands to Typer; `skyportal` no longer exists.
 - `skyportalai.shell.portal`: standard-library HTTP client for credential validation and the headless agent REST API.
 - `skyportalai.shell.animation`: responsive Rich ANSI branding and startup animation.
 - `skyportalai.shell.config`: application URL and timeout configuration under `~/.skyportalai`.
+- `skyportalai.shell.local_target`: this machine as a command target: the trust store, repo context, the shell runner that executes each leased command, and the lease and heartbeat loop (reusing the in-cluster agent's `CommandPoller`, imported only when it connects).
 
 ## Authentication
 
@@ -71,11 +72,13 @@ gate. Its `scope` object carries the server's wording (`label`), what it adds
 (`combined`). When `namespace` is null the CLI asks which of `namespace_choices`
 to add and sends it as `namespace`. It is never autoapproved.
 
-"Always allow" (skyportal-website#3750) follows `approval_context.always_allow` on
-a bash or combined scope approval: the CLI offers `a` only when the server set it,
-with the server's label, and sends `"always": true`. The server checks the offer
-and the user's right to edit that host's allow list, and refuses it with
-`autoapproved`, so autoapprove never sends it.
+"Always allow" (skyportal-website#3665, and #3750 for scope) follows
+`approval_context.always_allow` on a bash or combined scope approval: the CLI
+offers `a` only when the server set it, with the server's label, and sends
+`"decision": "always_approved"`. The server checks the offer and the user's right
+to edit that host's allow list, and refuses it with `autoapproved`, so autoapprove
+never sends it. Its answer lists `added_prefixes`, which the shell prints. When
+the server refuses it, the shell approves the command once and says so.
 
 ## Server context
 
@@ -110,6 +113,8 @@ and the one-shot `skyportalai ask` command accepts repeated `--server` options.
 - Configuration: `~/.skyportalai/config.yaml`
 - Credentials: `~/.skyportalai/credentials.json` (mode `0600`)
 - Prompt history: `~/.skyportalai/history` (mode `0600`)
+- This machine's random id, sent when it connects as a command target: `~/.skyportalai/machine_id` (mode `0600`)
+- Folders you trust to start commands in, each covering everything inside it: `~/.skyportalai/trusted_folders.json` (mode `0600`)
 
 A pre-0.2.0 `~/.skyportal` directory is renamed to `~/.skyportalai` the first
 time a path under it is resolved.

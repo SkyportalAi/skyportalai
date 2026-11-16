@@ -13,9 +13,8 @@ NAMESPACE = "skyportal"
 SECRET_NAME = "skyportalai-agent-token"
 SECRET_KEY = "SKYPORTALAI_AGENT_TOKEN"
 CHART = "oci://ghcr.io/skyportalai/charts/skyportalai-agent"
-# Where this pin should live is still open (skyportal-website#3575, out of scope);
-# keep it on a chart version that is published on GHCR.
-CHART_VERSION = "0.3.2"
+# Must equal `version` in deploy/agent/helm/skyportalai-agent/Chart.yaml (deploy/agent/RELEASING.md).
+CHART_VERSION = "0.6.0"
 _TIMEOUT_SECONDS = 120
 
 MANUAL_COMMANDS = "\n".join([

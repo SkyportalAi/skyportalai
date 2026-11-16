@@ -27,6 +27,10 @@ from skyportalai.shell import (
     SkyportalConfig,
     show_startup_animation,
 )
+from skyportalai.shell.local_target import LocalTarget
+
+from .config import CLISettings
+from .context import get_state
 
 console = Console()
 # Errors go to stderr, as click.ClickException did before 0.2.0. Only visible to anyone
@@ -34,34 +38,31 @@ console = Console()
 err_console = Console(stderr=True)
 
 
-def _portal_client() -> SkyportalClient:
-    portal = ConfigManager.load_config().portal
-    return SkyportalClient(portal.base_url, portal.request_timeout)
+def _portal_client(settings: CLISettings) -> SkyportalClient:
+    return SkyportalClient(settings.base_url, settings.timeout)
 
 
-def _base_url_is_configured(base_url: str) -> bool:
-    """Whether ``base_url`` came from the config file rather than the default."""
-    return base_url != PortalConfig().base_url
+def _settings(context: typer.Context) -> CLISettings:
+    return get_state(context).settings
 
 
-def _announce_target() -> None:
+def _announce_target(settings: CLISettings) -> None:
     """Name the instance a secret is about to be sent to, before prompting.
 
     ``config.yaml`` outranks the shipped default forever, with no expiry, so
     the instance that issues (and scopes) a credential is otherwise invisible
     at the one moment it decides where that credential goes. A loopback target
-    gets an explicit warning naming the file: it is never a real account, and
-    with no local server running the key page does not even load.
+    gets an explicit warning naming whatever chose it: it is never a real
+    account, and with no local server running the key page does not even load.
     """
-    portal = ConfigManager.load_config().portal
-    shown, loopback = describe_base_url(portal.base_url)
+    shown, loopback = describe_base_url(settings.base_url)
     console.print(f"Connecting to [bold]{shown}[/bold]")
     if not loopback:
         return
-    origin = f" from {ConfigManager.get_config_path()}" if _base_url_is_configured(portal.base_url) else ""
+    origin = settings.base_url_origin
+    source = f" from {origin.name}" if origin.name else ""
     console.print(
-        f"[yellow]Warning:[/yellow] base_url is a local address ({shown}){origin} — "
-        "run [bold]skyportalai configure[/bold] to change it."
+        f"[yellow]Warning:[/yellow] base_url is a local address ({shown}){source} — {origin.change_advice()}."
     )
 
 
@@ -76,10 +77,12 @@ def _items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def run_shell() -> None:
+def run_shell(settings: CLISettings) -> None:
     """Launch the persistent Skyportal command center."""
     show_startup_animation(console)
-    InteractiveShell(console=console, client_factory=_portal_client).run()
+    InteractiveShell(
+        console=console, client_factory=lambda: _portal_client(settings), local_target_factory=LocalTarget,
+    ).run()
 
 
 def _fail(error: PortalError) -> typer.Exit:
@@ -93,7 +96,7 @@ def configure(
         str | None,
         typer.Option(
             "--portal-url",
-            help=f"Skyportal application URL  [env: SKYPORTALAI_URL]  [default: {DEFAULT_BASE_URL}]",
+            help=f"skyportalai application URL  [env: SKYPORTALAI_URL]  [default: {DEFAULT_BASE_URL}]",
         ),
     ] = None,
     request_timeout: Annotated[
@@ -101,7 +104,7 @@ def configure(
         typer.Option("--request-timeout", min=1, help="HTTP request timeout in seconds"),
     ] = 30,
 ) -> None:
-    """Save Skyportal connection settings."""
+    """Save skyportalai connection settings."""
     # Resolved through _env like every other setting rather than by typer's envvar=,
     # so all environment reads go through one place.
     try:
@@ -111,18 +114,20 @@ def configure(
         raise typer.Exit(1) from None
     config = SkyportalConfig(portal=PortalConfig(base_url=resolved_url, request_timeout=request_timeout))
     ConfigManager.save_config(config)
-    console.print(f"[green]✓[/green] Skyportal configuration saved to {ConfigManager.get_config_path()}")
+    console.print(f"[green]✓[/green] skyportalai configuration saved to {ConfigManager.get_config_path()}")
 
 
 def login(
+    context: typer.Context,
     no_browser: Annotated[
         bool, typer.Option("--no-browser", help="Print the login URL without opening it")
     ] = False,
     enter_token: Annotated[bool, typer.Option("--token", help="Paste an existing API key")] = False,
 ) -> None:
     """Connect the CLI by approving it in the browser, or by pasting a key."""
-    _announce_target()
-    client = _portal_client()
+    settings = _settings(context)
+    _announce_target(settings)
+    client = _portal_client(settings)
     try:
         handshake = None if enter_token else _begin_handshake(client)
         if handshake is None:
@@ -181,25 +186,26 @@ def _connect_by_pasting_a_key(client: SkyportalClient, *, show_key_page: bool, o
     if show_key_page:
         result = client.login(open_browser=open_browser)
         console.print(
-            "[bold]Create or copy a Skyportal account API key:[/bold] {}".format(result["verification_url"])
+            "[bold]Create or copy a skyportalai account API key:[/bold] {}".format(result["verification_url"])
         )
         console.print(
-            "Create a key named [bold]Skyportal CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
+            "Create a key named [bold]skyportalai CLI[/bold] and copy the [bold]sk_[/bold] value.\n"
             "[dim]Do not use an agt_ observability-agent token.[/dim]"
         )
         if not result.get("browser_opened") and open_browser:
             console.print("[yellow]Browser did not open; use the URL above.[/yellow]")
-    access_token = typer.prompt("Skyportal API key", hide_input=True)
+    access_token = typer.prompt("skyportalai API key", hide_input=True)
     client.set_access_token(access_token)
 
 
 def logout() -> None:
-    """Remove locally stored Skyportal credentials."""
+    """Remove locally stored skyportalai credentials."""
     CredentialStore.clear()
     console.print("[green]✓[/green] Logged out")
 
 
 def ask(
+    context: typer.Context,
     message: Annotated[str | None, typer.Argument(help="Message to send")] = None,
     server_ids: Annotated[
         list[int] | None,
@@ -209,11 +215,11 @@ def ask(
         ),
     ] = None,
 ) -> None:
-    """Send one message to the Skyportal Agent."""
+    """Send one message to the skyportalai agent."""
     prompt = message or typer.prompt("Message")
-    client = _portal_client()
+    client = _portal_client(_settings(context))
     try:
-        with console.status("[cyan]Skyportal is thinking…[/cyan]", spinner="dots12"):
+        with console.status("[cyan]skyportalai is thinking…[/cyan]", spinner="dots12"):
             selected = list(dict.fromkeys(server_ids or []))
             if len(selected) == 1:
                 # Preserve the established singular request for deployments
@@ -236,16 +242,16 @@ def ask(
         )
 
 
-def servers() -> None:
+def servers(context: typer.Context) -> None:
     """List servers owned by the connected account."""
     try:
-        entries = _items(_portal_client().servers())
+        entries = _items(_portal_client(_settings(context)).servers())
     except PortalError as error:
         raise _fail(error) from None
     if not entries:
         console.print("[yellow]No servers found.[/yellow]")
         return
-    table = Table(title="Skyportal Servers")
+    table = Table(title="skyportalai servers")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Status", style="green")
@@ -264,19 +270,19 @@ def servers() -> None:
     console.print(table)
 
 
-def start() -> None:
-    """Launch the persistent Skyportal command center."""
-    run_shell()
+def start(context: typer.Context) -> None:
+    """Launch the persistent skyportalai command center."""
+    run_shell(_settings(context))
 
 
 github_token_app = typer.Typer(help="Manage the GitHub Personal Access Token used for git clone.")
 
 
 @github_token_app.command("status")
-def github_token_status() -> None:
+def github_token_status(context: typer.Context) -> None:
     """Show whether a GitHub PAT is saved (token value is always masked)."""
     try:
-        result = _portal_client().get_github_token_status()
+        result = _portal_client(_settings(context)).get_github_token_status()
     except PortalError as error:
         raise _fail(error) from None
     if result.get("has_token"):
@@ -287,16 +293,18 @@ def github_token_status() -> None:
 
 @github_token_app.command("set")
 def github_token_set(
+    context: typer.Context,
     repo: Annotated[
         str | None,
         typer.Option("--repo", metavar="OWNER/NAME", help="Validate the token against a specific repository"),
     ] = None,
 ) -> None:
     """Save a GitHub PAT (prompts for the token without echoing it)."""
-    _announce_target()
+    settings = _settings(context)
+    _announce_target(settings)
     try:
         pat = typer.prompt("GitHub Personal Access Token", hide_input=True)
-        result = _portal_client().save_github_token(pat.strip(), repo=repo)
+        result = _portal_client(settings).save_github_token(pat.strip(), repo=repo)
     except PortalError as error:
         raise _fail(error) from None
     console.print(
@@ -307,10 +315,10 @@ def github_token_set(
 
 
 @github_token_app.command("remove")
-def github_token_remove() -> None:
-    """Delete the saved GitHub PAT from Skyportal."""
+def github_token_remove(context: typer.Context) -> None:
+    """Delete the saved GitHub PAT from skyportalai."""
     try:
-        _portal_client().delete_github_token()
+        _portal_client(_settings(context)).delete_github_token()
     except PortalError as error:
         raise _fail(error) from None
     console.print("[green]✓[/green] GitHub PAT removed")

@@ -118,18 +118,17 @@ class ChatResource:
                         command: str | None = None,
                         reason: str | None = None,
                         autoapproved: bool = False,
-                        namespace: str | None = None,
-                        always: bool = False) -> ApprovalResult:
-        """Submit an approval decision (``approved`` or ``rejected``).
+                        namespace: str | None = None) -> ApprovalResult:
+        """Submit an approval decision (``approved``, ``always_approved`` or ``rejected``).
 
         ``namespace`` answers a ``scope`` approval whose ``scope["namespace"]`` is
         None: one of its ``scope["namespace_choices"]``.
 
-        ``always`` is the card's "Always allow" (skyportal-website#3750): it approves
-        the command and adds ``approval.always_allow["prefixes"]`` to the permit list
-        of the card's host. Only for a ``bash_command`` or ``scope`` approval whose
-        ``always_allow`` is set; the server refuses it anywhere else, and never
-        accepts it as an automatic decision.
+        ``always_approved`` is the card's "Always allow" (skyportal-website#3665, and
+        #3750 for a scope card): it approves the command and adds
+        ``approval.always_allow["prefixes"]`` to the permit list of the card's host.
+        Only for a ``bash_command`` or ``scope`` approval whose ``always_allow`` is
+        set; the server refuses it anywhere else, and never as an automatic decision.
         """
         body: dict = {"decision": decision, "type": approval_type}
         if command is not None:
@@ -140,8 +139,6 @@ class ChatResource:
             body["autoapproved"] = True
         if namespace is not None:
             body["namespace"] = namespace
-        if always:
-            body["always"] = True
         data = self._client._request(
             "POST", self._approval_path(chat_id, approval_id), json=body,
         )
@@ -154,8 +151,8 @@ class ChatResource:
                 always: bool = False) -> ApprovalResult:
         """Approve a pending bash command, plan or scope change; ``always`` also always allows the command."""
         return self.submit_approval(
-            chat_id, approval_id, decision="approved",
-            approval_type=approval_type, command=command, namespace=namespace, always=always,
+            chat_id, approval_id, decision="always_approved" if always else "approved",
+            approval_type=approval_type, command=command, namespace=namespace,
         )
 
     def reject(self, chat_id: int, approval_id: str, *,
@@ -399,10 +396,14 @@ class ChatResource:
             params={"limit": limit},
         )
 
-    def get_plan(self, chat_id: int) -> dict:
-        """The chat's active plan, or None — a chat has at most one active
-        plan at a time; no history is kept once it's replaced or cleared."""
-        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plan/")
+    def get_plans(self, chat_id: int) -> dict:
+        """Every plan recorded for this chat, newest first: ``{"plans": [...]}``."""
+        return self._client._request("GET", f"/api/v1/agent/chat/{int(chat_id)}/plans/")
+
+    def get_plan(self, chat_id: int) -> dict | None:
+        """The chat's newest plan, or None if it has never made one."""
+        plans = self.get_plans(chat_id).get("plans") or []
+        return plans[0] if plans else None
 
     def get_evaluations(self, chat_id: int, *, evaluator_type: str | None = None) -> dict:
         """Evaluator results plus a pass/fail summary."""

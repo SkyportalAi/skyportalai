@@ -5,6 +5,41 @@ All notable changes to this project are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- **Always allow on scope approvals, and the shell says what it added.** The
+  shell's `a` now also answers a scope approval that offers it
+  (skyportal-website#3750), not only a bash one, with the server's label ("Always
+  allow `kubectl logs` on kind-smoke"). Afterwards it prints what joined that
+  host's allow list, or that nothing new did, and when the answer timed out it
+  says it can't tell. One the server refuses is still approved once, with a
+  warning. It is never sent automatically. `PendingApproval.always_allow` carries
+  the offer, and `chat.approve(..., always=True)` and `skyportalai chat approve
+  --always` send it as `"decision": "always_approved"`. The CLI prints what was
+  added, and exits with the server's error when it refuses.
+
+## 0.4.1
+
+### Changed
+
+- **The CLI and the agent call the product skyportalai in what they print.** Help
+  text, prompts, the banner, spinners and errors said "Skyportal", and the agent's
+  `--help`, its kubectl refusal and one log line said "SkyPortal". The folder trust
+  prompt now asks to "let skyportalai run commands here". Names in code stay the
+  same, such as the `Skyportal` client class and the `Skyportal-CLI/` User-Agent.
+
+### Fixed
+
+- **The shell's Helm install of the agent now gets agent 0.4.0, not 0.3.0.** After
+  the shell creates the agent's Secret for a token minted in chat, it offers to
+  install the agent with Helm. That install was pinned to chart 0.3.2, which runs
+  agent 0.3.0, even in CLI 0.4.0. Agent 0.3.0 stops chat commands after 30
+  seconds, loses a result when skyportalai is briefly unavailable or the pod
+  restarts, and has no `SKYPORTALAI_AGENT_NAMESPACES`. The shell now installs
+  chart 0.6.0, which runs agent 0.4.0 (skyportal-website#3835).
+
+## 0.4.0
+
 ### Deprecated
 
 - **Install the CLI with `pip install "skyportalai[cli]"`.** The next release
@@ -16,6 +51,70 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **The in-cluster agent can be limited to some namespaces.** Set the chart's
+  `kubernetes.namespaces: [ml, serving]` (or `SKYPORTALAI_AGENT_NAMESPACES=ml,serving`) and
+  the chart grants a `Role` and `RoleBinding` in each of them in place of the cluster wide
+  ClusterRole. A small ClusterRole for nodes and node metrics stays, because no Role can
+  grant them. The agent reports the list with every upload, and skyportalai then reads those
+  namespaces one at a time and offers only them in chat. It refuses to start on a name
+  that isn't a Kubernetes namespace name, or on more than 10. Needs a skyportalai that
+  accepts the list; an older one still asks for `-A` and is denied.
+- **The agent works on your own machine, starting in the folder you opened.**
+  Started in a folder you trust (it asks once per folder, like Claude Code, and
+  trust covers that folder and everything inside it), the shell registers this
+  machine with skyportalai and runs the commands the agent's chat queues for it.
+  The folder is only where commands start, not a boundary: a command can read or
+  change anything you can, and the CLI won't connect from a filesystem or drive
+  root (the trust prompt warns when it is your home folder). skyportalai decides
+  what runs. A command from a turn typed elsewhere, such as the browser
+  continuing a chat this CLI started, runs only after you answer y at this
+  terminal (`Run this on <machine>? [y/N]`, with the whole command, long runs of
+  spaces counted, its chat and where the turn came from; one over 10,000
+  characters isn't asked about and doesn't run). N, Ctrl-C or no answer in time
+  is reported as refused by you and never runs; autoapprove doesn't answer it.
+  `a` (always), when offered, runs it and saves exactly that command in
+  `.skyportalai/settings.local.json`, beside the repository's
+  `.skyportalai/settings.json` at its root (the folder's own outside a
+  repository), as Claude Code's `.claude/settings.local.json`, and sends it at
+  once; only that file's allow list skips the question later, and the CLI
+  checks it on disk too before it does (a `*` rule only for a command with no
+  `;`, `&`, `|`, `<`, `>`, backtick or `$(`). In a repository whose git doesn't
+  already ignore it, the first `a` adds `**/.skyportalai/settings.local.json` to
+  your own git excludes file (`core.excludesFile`, else `~/.config/git/ignore`),
+  as Claude Code does for its file; a file git tracks stays tracked, and the CLI
+  says so. A repository can commit one, so look in `.skyportalai/` before
+  trusting a repository you didn't create. The CLI sends both files with every
+  connect, and again within a heartbeat of an edit (the legacy
+  `.skyportal/settings.json` isn't read). It reads neither through a link, and
+  `a` adds to the file as it is on disk and writes it whole.
+  You have a little under five minutes, so a yes still leaves the command its
+  whole timeout. Every command, even one typed here, starts only after skyportalai
+  confirms it is still wanted, so a turn stopped while the question waits runs
+  nothing. Commands run in
+  bash, on Windows the bash on PATH unless it is WSL's, then Git Bash, else
+  PowerShell 5.1. Chats started in the shell use this machine unless you pick
+  servers (`/server auto` doesn't change that); `/local [on|off]` shows or
+  changes it and `/server local` selects it. Commands are fetched over outbound
+  HTTPS with the in-cluster agent's command loop, which now takes its endpoints,
+  headers and the lease field as options, plus optional hooks for a lease
+  answered 410 (removed) or 401/403 (key refused), an optional growing wait
+  after failed polls, and an option to hand the runner the lease's report
+  deadline. The loop now reads a lease's `report_by` against the response's
+  `Date` header, so a machine whose clock is off keeps the time the server gave
+  it. Commands run without any `SKYPORTALAI_*` or legacy
+  `SKYPORTAL_*` environment variable, so your key doesn't show in `printenv`. A
+  command that writes more than 64 MiB to stdout or stderr is stopped (exit code
+  153); what it leaves running in the background isn't held to that once it
+  ends. Closing the shell stops a running command and tells skyportalai; Ctrl-C at
+  the prompt stops every command running here, including ones from a chat you
+  continued in the browser, and during a turn only that chat's. The terminal
+  prints every command it runs here, with its chat and exit code (`▸ running:
+  git log  (chat #123)`), up to 500 characters of it with the rest counted and control
+  characters, symbols such as emoji and anything a terminal draws blank written
+  out, in the y/N question too. If the machine is removed in skyportalai or the key is
+  refused, the CLI says so once and stops polling; `/local on` reconnects.
+  `/logout` or a new key disconnects the machine, and the next message connects
+  it with the new key. Needs a skyportalai server with skyportal-website#3665.
 - **Scope approvals.** When the agent's command targets a host or namespace outside
   the chat's scope, a server with skyportal-website#3724 asks to add it and run the
   command, instead of ending the turn. The CLI shows the card's wording, asks y/N,
@@ -27,18 +126,8 @@ All notable changes to this project are documented here. This project follows
   `on_approval` callback answers it, and `PendingApproval.scope` says what it adds.
   `chat.approve(..., namespace=...)` and `skyportalai chat approve --type scope
   --namespace NAME` answer one that asks for a namespace.
-- **Always allow.** Where a bash or scope approval offers it (a server with
-  skyportal-website#3750 sets `approval_context.always_allow`), the CLI prompt adds
-  `a`, shown with the server's label ("Always allow `kubectl logs` on kind-smoke"):
-  it approves the command and adds it to that host's allow list. It is never sent
-  automatically. Afterwards the shell and `chat approve --always` say what was
-  added; a server without #3750, which approves once and ignores `always`, gets a
-  warning that the command will ask again. `PendingApproval.always_allow` carries the offer,
-  `chat.approve(..., always=True)` and `skyportalai chat approve --always` send it.
 - `skyportalai-agent --help` prints how the agent is configured and exits.
 - CI runs the agent's tests in an environment with none of the CLI's packages.
-### Added
-
 - **Approvals say why.** With a server that sends it (skyportal-website#3632), the
   approval prompt names the host and lists each reason the command asks ("Deletes
   or changes data (rm)", "Not on any allow list"). A command that ran without
@@ -52,37 +141,49 @@ All notable changes to this project are documented here. This project follows
   environment, and for each team your role and that role's ceiling per
   environment (`denied` where the role has no grant). `skyportalai --json whoami`
   prints the server's payload. It only reports: the server still decides every
-  command. It needs a SkyPortal server with
+  command. It needs a skyportalai server with
   `GET /api/v1/agent/permission/effective/`; against an older one it says so
   instead of failing. From the SDK, `Skyportal.get_effective_permissions()`
   returns the same data as `EffectivePermissions`.
 
 ### Fixed
 
+- **`Chat.plan()` no longer 404s.** It called `/plan/`, a route the server never had.
+  It now reads `/plans/` and returns the newest plan, or `None` if there are none.
+  The new `Chat.plans()` / `client.chat.get_plans()` return the full history,
+  newest first (skyportal-website#3738).
 - **A `kubectl` command from chat is no longer stopped after 30 seconds.** The
-  cluster agent runs each chat command for the timeout SkyPortal sends with it.
-  A server that sends none gets the old 30 seconds. The agent tells SkyPortal it
+  cluster agent runs each chat command for the timeout skyportalai sends with it.
+  A server that sends none gets the old 30 seconds. The agent tells skyportalai it
   does this with an `X-Agent-Capabilities: command-timeouts` header, and an agent
   without it, such as 0.3.1 or older, gets 30 seconds per command
   (skyportal-website#3709).
 - **A long chat command no longer holds up the others.** The cluster agent runs
-  up to 4 chat commands at once. It takes the next command from SkyPortal only
+  up to 4 chat commands at once. It takes the next command from skyportalai only
   when one of those 4 is free, so no command waits inside the agent behind
   another.
-- **A chat command's result is no longer lost when SkyPortal is briefly
+- **A chat command's result is no longer lost when skyportalai is briefly
   unavailable.** The agent used to post it once and drop it if a deploy or a
   network blip got in the way. It now keeps trying until the `report_by`
-  deadline SkyPortal sends with the command. An older server sends no deadline,
+  deadline skyportalai sends with the command. An older server sends no deadline,
   and against it the agent keeps trying for about 77 seconds.
 - **A chat command survives an agent restart.** Each agent process now names
-  itself to SkyPortal with an `X-Agent-Instance` header, a random id made when
+  itself to skyportalai with an `X-Agent-Instance` header, a random id made when
   it starts, and says which lease a result answers. When the pod restarts in the
   middle of a command, a server that supports it gives the command to the new
   process to run once more, instead of waiting for the old one until the
   deadline, and refuses a late result from the old one (skyportal-website#3709).
-  While all 4 command slots are busy the agent asks SkyPortal for no new command,
+  While all 4 command slots are busy the agent asks skyportalai for no new command,
   so it sends a heartbeat instead to show it is still alive. An older server
   ignores the header and the heartbeat.
+- **`--base-url` and `SKYPORTALAI_BASE_URL` now reach `login`, `ask`, `servers`,
+  `start`, `github-token` and the bare shell.** Those commands read
+  `config.yaml` directly, so the flag and variable were silently ignored and
+  `skyportalai --base-url https://staging… login` still sent the new key to
+  whatever `config.yaml` named. They now use the same resolution as every other
+  command: flag, then environment, then `config.yaml`, then the URL saved with
+  your credentials. A local-address warning names the setting that chose it and
+  how to undo that (drop the flag, unset the variable, or run `configure`).
 
 ## 0.3.1
 

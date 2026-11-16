@@ -5,7 +5,7 @@ from io import StringIO
 from rich.console import Console
 
 from skyportalai.shell.interactive import InteractiveShell
-from skyportalai.shell.portal import ChatTurnResult, SkyportalClient
+from skyportalai.shell.portal import ChatTurnResult, PortalError, SkyportalClient
 from skyportalai.types import PendingApproval
 
 CONTEXT = {
@@ -205,3 +205,48 @@ def test_the_sdk_exposes_the_reasons():
     assert (approval.rule, approval.can_change, approval.host) == ("destructive", "you", "prod-db-1")
     assert approval.why == ("Deletes or changes data (`rm`)", "Not on any allow list")
     assert PendingApproval.from_dict(_approval()).why == ()
+
+
+OFFERS_ALWAYS = {
+    **CONTEXT, "rule": "permit_list", "title": "Needs your approval", "why": ["Not on any allow list"],
+    "always_allow": {"prefixes": ["npm test"], "label": "Always allow `npm test` on altaf-laptop"},
+}
+
+
+def test_a_answers_always_where_the_card_offers_it(tmp_path, monkeypatch):
+    client = _Client()
+    shell, console, session = _shell(client, tmp_path, monkeypatch, answers=["a"])
+
+    shell._process_turn(_turn("awaiting_approval", [_approval(command="npm test", approval_context=OFFERS_ALWAYS)]))
+
+    assert "a=always" in session.prompts[0]
+    assert "Always allow npm test on altaf-laptop" in console.file.getvalue()
+    assert client.submit_calls == [("a1", "always_approved", None)]
+
+
+def test_a_is_no_answer_where_the_card_offers_no_always(tmp_path, monkeypatch):
+    # Sensitive or destructive commands, and fan-outs, get no ✓✓ on the web card either.
+    client = _Client()
+    shell, _console, session = _shell(client, tmp_path, monkeypatch, answers=["a"])
+
+    shell._process_turn(_turn("awaiting_approval", [_approval(approval_context=CONTEXT)]))
+
+    assert "a=always" not in session.prompts[0]
+    assert client.submit_calls == [("a1", "rejected", None)]
+
+
+def test_an_always_the_server_refuses_still_approves_once(tmp_path, monkeypatch):
+    class _OlderServer(_Client):
+        def submit_chat_approval(self, chat_id, approval, decision, *, autoapproved=False, rejection_reason=None):
+            if decision == "always_approved":
+                self.submit_calls.append((approval["approval_id"], decision, None))
+                raise PortalError('decision must be "approved" or "rejected"', status_code=400)
+            return super().submit_chat_approval(chat_id, approval, decision)
+
+    client = _OlderServer()
+    shell, console, _session = _shell(client, tmp_path, monkeypatch, answers=["a"])
+
+    shell._process_turn(_turn("awaiting_approval", [_approval(command="npm test", approval_context=OFFERS_ALWAYS)]))
+
+    assert client.submit_calls == [("a1", "always_approved", None), ("a1", "approved", None)]
+    assert "approving this once" in console.file.getvalue()

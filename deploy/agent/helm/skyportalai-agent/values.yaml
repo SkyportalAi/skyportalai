@@ -169,6 +169,19 @@ kubernetes:
   apiServerPorts:
     - 443
     - 6443
+  # Limit the cluster pod to these namespaces, e.g. [ml, serving]. Empty keeps the
+  # default: one ClusterRole and ClusterRoleBinding over the whole cluster. Set, the
+  # chart renders a Role and RoleBinding in each listed namespace instead, with the
+  # same pod, event, workload, crash-log and pod-metrics reads and nothing more, so a
+  # leaked token reads only those namespaces. Nodes and node metrics are cluster
+  # scoped and no Role can grant them: a small ClusterRole for those two reads stays,
+  # and skyportalai uses the nodes read to tell a reachable cluster from an unreachable
+  # one. It carries no pods, logs or namespaces. Each namespace must already exist.
+  # At most 10: skyportalai reads pods, events, workloads and pod metrics once per
+  # namespace every cycle. Needs agent 0.4.0 or newer (image.tag), which reports the
+  # list to skyportalai; an older image would be denied by these Roles. Needs
+  # kubernetes.enabled=true; the chart refuses it otherwise.
+  namespaces: []
   cluster:
     resources:
       requests:
@@ -179,17 +192,31 @@ kubernetes:
         memory: 512Mi
   node:
     # Host directory for each node's upload spool. Its filesystem is also the disk
-    # the node reports.
+    # the node reports. The node-gpu DaemonSet (gpu below) uses this path with a
+    # "-gpu" suffix, so the two never share a spool.
     spoolHostPath: /var/lib/skyportalai-agent
     # Tolerate every taint, so the agent runs on every node, GPU nodes included.
-    # Narrow it (or set nodeSelector) to monitor a subset.
+    # Narrow it (or set nodeSelector) to monitor a subset. Both node DaemonSets
+    # use these.
     tolerations:
       - operator: Exists
     nodeSelector: {}
     gpu:
       # RuntimeClass that exposes the NVIDIA driver to a pod without a GPU request,
-      # usually "nvidia" with the GPU operator. Empty: no GPU metrics.
+      # usually "nvidia" with the GPU operator. Empty: one "node" DaemonSet on every
+      # node, CPU only, no GPU metrics. Set: a "node-gpu" DaemonSet with this
+      # RuntimeClass runs on the nodes carrying nodeLabel, and "node" keeps every
+      # other node, without it. A node whose runtime lacks the class's handler
+      # can't start a pod that names it, so one DaemonSet can't serve both.
       runtimeClassName: ""
+      # The label that marks a GPU node, set by the NVIDIA GPU operator's feature
+      # discovery. A GPU node without it is monitored as CPU only; check with
+      #   kubectl get nodes -L nvidia.com/gpu.present
+      # Pass the value with --set-string: --set turns "true" into a boolean, which
+      # the schema rejects.
+      nodeLabel:
+        key: nvidia.com/gpu.present
+        value: "true"
     resources:
       requests:
         cpu: 20m

@@ -81,6 +81,18 @@ app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end }}
 
 {{/*
+The node DaemonSets, as a YAML list for fromYamlArray (#3625). "node" always. With
+kubernetes.node.gpu.runtimeClassName set, also "node-gpu" for the nodes carrying
+kubernetes.node.gpu.nodeLabel; "node" then keeps every other node.
+*/}}
+{{- define "skyportalai-agent.nodeComponents" -}}
+- node
+{{- if .Values.kubernetes.node.gpu.runtimeClassName }}
+- node-gpu
+{{- end }}
+{{- end }}
+
+{{/*
 Image reference, shared by every workload in the chart.
 */}}
 {{- define "skyportalai-agent.image" -}}
@@ -97,6 +109,28 @@ is not a plain version (a digest-style or custom tag) is trusted as-is.
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) (semverCompare "<0.3.0" $tag) -}}
 {{- fail (printf "kubernetes.enabled needs skyportalai-agent 0.3.0 or newer; image tag %s predates it. Set image.tag." $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+kubernetes.namespaces needs an agent that reports the list. An older image ignores it,
+so skyportalai would keep asking for the whole cluster and every read would be denied by
+the namespaced Roles. Same tag rule as above.
+*/}}
+{{- define "skyportalai-agent.requireNamespacesImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+$" $tag) (semverCompare "<0.4.0" $tag) -}}
+{{- fail (printf "kubernetes.namespaces needs skyportalai-agent 0.4.0 or newer; image tag %s predates it. Set image.tag." $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+kubernetes.namespaces limits the cluster role, which only exists when kubernetes.enabled is
+true. Set alone it would render no Roles and no setting and say nothing, so refuse it.
+*/}}
+{{- define "skyportalai-agent.requireKubernetesForNamespaces" -}}
+{{- if and .Values.kubernetes.namespaces (not .Values.kubernetes.enabled) -}}
+{{- fail "kubernetes.namespaces needs kubernetes.enabled=true: it limits the cluster role, which only exists when the Kubernetes roles are on." -}}
 {{- end -}}
 {{- end }}
 

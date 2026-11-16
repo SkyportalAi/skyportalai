@@ -1,18 +1,27 @@
 """Persistent conversational Skyportal terminal shell."""
 
+import asyncio
 import json
+import os
+import queue
 import re
 import shlex
+import signal
+import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.typeahead import clear_typeahead
 from prompt_toolkit.shortcuts import prompt as secure_prompt
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -26,6 +35,7 @@ from rich.text import Text
 from skyportalai import _env
 
 from . import agent_setup
+from .local_target import ALWAYS, Answer, LocalTarget, TrustStore, is_filesystem_root, is_home_folder
 from .portal import (
     PRODUCTION_APP_URL,
     ChatTurnResult,
@@ -34,6 +44,11 @@ from .portal import (
     PortalError,
     SkyportalClient,
 )
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import termios
 
 _PERMISSION_MODES = frozenset({"ask", "autoapprove"})
 _AUTOAPPROVE_TYPES = frozenset({"", "bash_command", "plan"})
@@ -46,6 +61,15 @@ ALL_NAMESPACES = "__all__"
 
 class _AutoapprovalPolicyConflict(RuntimeError):
     """The shared mode changed between its GET and marked approval POST."""
+
+
+class _Submitted(NamedTuple):
+    """How an approval went in: the decision the server took (a refused ✓✓ falls back to once),
+    its answer, and whether a timed-out POST was reconciled from /status/, which gives no answer."""
+
+    decision: str
+    answer: Optional[Dict[str, Any]]
+    recovered: bool
 
 
 @dataclass(frozen=True)
@@ -69,7 +93,7 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/permission [autoapprove|ask]",
         "Show or change the shared account approval policy",
     ),
-    "/new": CommandInfo("/new", "Start a fresh Skyportal chat"),
+    "/new": CommandInfo("/new", "Start a fresh skyportalai chat"),
     "/resume": CommandInfo(
         "/resume [chat_id] [--verbose]",
         "Reattach to a chat (defaults to your previous one); --verbose replays its history",
@@ -78,7 +102,11 @@ COMMANDS: Dict[str, CommandInfo] = {
         "/upload <path> [path…]",
         "Attach a log, CSV, JSON or image — or just drop the file on the terminal",
     ),
-    "/servers": CommandInfo("/servers", "List your Skyportal servers"),
+    "/servers": CommandInfo("/servers", "List your skyportalai servers"),
+    "/local": CommandInfo(
+        "/local [on|off]",
+        "Show, connect or disconnect this machine as a place the agent runs commands",
+    ),
     "/server": CommandInfo(
         "/server <name> [name ...] | auto",
         "Select one or more servers by name for agent execution",
@@ -88,10 +116,92 @@ COMMANDS: Dict[str, CommandInfo] = {
         "Choose the namespaces the agent may use on a selected Kubernetes cluster",
     ),
     "/clear": CommandInfo("/clear", "Clear the terminal"),
-    "/about": CommandInfo("/about", "Show Skyportal CLI information"),
-    "/exit": CommandInfo("/exit", "Leave Skyportal"),
-    "/quit": CommandInfo("/quit", "Leave Skyportal"),
+    "/about": CommandInfo("/about", "Show skyportalai CLI information"),
+    "/exit": CommandInfo("/exit", "Leave skyportalai"),
+    "/quit": CommandInfo("/quit", "Leave skyportalai"),
 }
+
+
+_QUESTION_WAITING = "▸ A command from outside this terminal is waiting for your y/N; it is asked when this finishes."
+
+
+@dataclass(frozen=True)
+class _HeldInput:
+    """What was typed at the idle prompt when a question for this terminal took it over."""
+
+    text: str
+
+
+class _TerminalQuestion:
+    """A y/N a command thread asks the terminal, settled once: by the answer, or by its deadline with none."""
+
+    def __init__(self, details: str, prompt: str, deadline: float):
+        self.details = details
+        self.prompt = prompt
+        self.deadline = deadline
+        self.answer: Answer = None
+        self._settled = threading.Event()
+        self._lock = threading.Lock()
+
+    @property
+    def settled(self) -> bool:
+        return self._settled.is_set()
+
+    def settle(self, answer: Answer) -> bool:
+        """Record the answer unless one already was; whether this one counted."""
+        with self._lock:
+            if self._settled.is_set():
+                return False
+            self.answer = answer
+            self._settled.set()
+            return True
+
+    def wait(self, seconds: float) -> Answer:
+        """The answer given within `seconds`, else None, which then stands whatever is typed later."""
+        self._settled.wait(max(0.0, seconds))
+        self.settle(None)
+        return self.answer
+
+
+def _terminal_answer(reply: str) -> Answer:
+    """y runs it, a also adds the rules offered; anything else is a no."""
+    reply = reply.strip().lower()
+    if reply in ("a", "always"):
+        return ALWAYS
+    return reply in ("y", "yes")
+
+
+def _flush_terminal_input() -> None:
+    """Drop what was typed at the terminal that no prompt has read yet."""
+    try:
+        if os.name == "nt":
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        else:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:  # noqa: BLE001 — stdin isn't a terminal, so nothing was typed ahead
+        pass
+
+
+@contextmanager
+def _ending_on_hangup() -> Iterator[None]:
+    """Closing the terminal window (SIGHUP) or a kill (SIGTERM) ends the shell the way /exit does."""
+    # Otherwise the process dies without its cleanup, and a command it was running on this machine
+    # keeps going in a session of its own. Windows needs none of this: the job each command runs in
+    # dies with the CLI.
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def end(signum: int, frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, end) for sig in (signal.SIGHUP, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 class SkyportalCompleter(Completer):
@@ -117,7 +227,15 @@ class SkyportalCompleter(Completer):
         if command == "/login":
             options = (("--no-browser", "print the API-key URL"),)
         elif command == "/server":
-            options = (("auto", "let the agent choose a server"),)
+            options = (
+                ("auto", "let the agent choose a server"),
+                ("local", "this machine (commands start in this folder)"),
+            )
+        elif command == "/local":
+            options = (
+                ("on", "let the agent run approved commands here"),
+                ("off", "stop running commands on this machine"),
+            )
         elif command == "/namespace":
             options = (
                 ("all", "every namespace in the cluster"),
@@ -146,11 +264,11 @@ class InteractiveShell:
     """Resilient command center that remains active after request failures."""
 
     _THINKING_STATUS = (
-        "[bold cyan]Skyportal is thinking…[/bold cyan]  "
+        "[bold cyan]skyportalai is thinking…[/bold cyan]  "
         "[dim](press Ctrl-C to stop)[/dim]"
     )
     _CONTINUING_STATUS = (
-        "[bold cyan]Skyportal is continuing…[/bold cyan]  "
+        "[bold cyan]skyportalai is continuing…[/bold cyan]  "
         "[dim](press Ctrl-C to stop)[/dim]"
     )
     _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -173,9 +291,22 @@ class InteractiveShell:
         session: Optional[Any] = None,
         token_prompt: Optional[Callable[[str], str]] = None,
         confirm_prompt: Optional[Callable[[str], str]] = None,
+        local_target_factory: Optional[Callable[[SkyportalClient, Path], LocalTarget]] = None,
+        trust_store: Optional[TrustStore] = None,
+        question_prompt: Optional[Callable[[str, float], Optional[str]]] = None,
     ):
         self.console = console
         self.client = client_factory()
+        # This machine as a command target (skyportal-website#3665). Off unless the entry
+        # point wires a factory: run_shell does, so `skyportalai` in a trusted folder connects.
+        self._local_target_factory = local_target_factory
+        self._trust_store = trust_store or TrustStore()
+        self.local_target: Optional[LocalTarget] = None
+        self._local_offered = False
+        # y/N questions from command threads about turns this CLI didn't type, asked one at a time between prompts.
+        self._questions: "queue.Queue[_TerminalQuestion]" = queue.Queue()
+        self._question_prompt = question_prompt or self._default_question_prompt
+        self._at_idle_prompt = False
         self.running = True
         self.browser_login_started = False
         self.chat_id: Optional[int] = None
@@ -203,6 +334,7 @@ class InteractiveShell:
             "/resume": self._cmd_resume,
             "/upload": self._cmd_upload,
             "/servers": self._cmd_servers,
+            "/local": self._cmd_local,
             "/server": self._cmd_server,
             "/namespace": self._cmd_namespace,
             "/clear": self._cmd_clear,
@@ -273,18 +405,47 @@ class InteractiveShell:
         # answer to ~/.skyportalai/history.
         return secure_prompt(message)
 
+    @staticmethod
+    def _default_question_prompt(message: str, seconds: float) -> Optional[str]:
+        """A fresh prompt, like the confirm prompt, that gives up after `seconds` and then returns None."""
+
+        async def ask() -> str:
+            return await PromptSession().prompt_async(message)
+
+        try:
+            return asyncio.run(asyncio.wait_for(ask(), timeout=seconds))
+        except asyncio.TimeoutError:
+            return None
+
     def run(self) -> None:
         """Run until `/exit` or Ctrl-D, preserving the prompt after errors."""
         self._show_onboarding()
+        try:
+            with _ending_on_hangup():
+                self._offer_local_target()
+                self._loop()
+        finally:
+            self._close_local_target()
+
+    def _loop(self) -> None:
+        held = ""
         while self.running:
+            self._answer_questions()
             try:
-                line = self.session.prompt(self._prompt_fragments())
+                line = self._idle_prompt(held)
             except KeyboardInterrupt:
-                self.console.print("[dim]Press Ctrl-D or type /exit to leave Skyportal.[/dim]")
+                self._interrupt_at_prompt()
                 continue
             except EOFError:
                 self.console.print("\n[dim]Session closed. See you in orbit.[/dim]")
                 break
+            held = ""
+            if isinstance(line, _HeldInput):
+                # A question for this terminal took the prompt over; it is asked at the top, then the text comes back.
+                held = line.text
+                continue
+            # One that came as Enter was pressed found the prompt ending: it is asked before this line runs.
+            self._answer_questions()
 
             line = line.strip()
             if not line:
@@ -299,6 +460,89 @@ class InteractiveShell:
                 self._print_section("Command failed", style="red")
                 self.console.print(error)
                 self.console.print("[dim]The shell is still running. Try /help or retry.[/dim]\n")
+
+    def _idle_prompt(self, held: str) -> Any:
+        """The prompt between turns, which a question for this terminal may take over; `held` is typed back in."""
+        self._at_idle_prompt = True
+        app = getattr(self.session, "app", None)
+        if app is not None:
+            # A question put while this prompt was starting found nothing to take over yet: it does so as it starts.
+            app.pre_run_callables.append(self._take_the_prompt_if_asked)
+        try:
+            # A callable, so a redraw (a notice printed while the prompt waits) shows the current context.
+            if held:
+                return self.session.prompt(self._prompt_fragments, default=held)
+            return self.session.prompt(self._prompt_fragments)
+        finally:
+            self._at_idle_prompt = False
+
+    def _ask_from_worker(self, details: str, prompt: str, seconds: float) -> Answer:
+        """On a command thread: ask the terminal; True, False or ALWAYS as answered, None if nobody did in `seconds`."""
+        question = _TerminalQuestion(details, prompt, time.monotonic() + seconds)
+        self._questions.put(question)
+        # At an idle prompt that isn't running yet, or is ending, the loop asks next: no need to say it waits.
+        if not self._on_prompt_loop(self._take_the_prompt_for_a_question) and not self._at_idle_prompt:
+            # In a turn: asked as soon as it ends, if that is in time.
+            self._print_from_worker(_QUESTION_WAITING)
+        return question.wait(seconds)
+
+    def _take_the_prompt_if_asked(self) -> None:
+        """As the idle prompt starts: take it over for a question that is already waiting."""
+        if not self._questions.empty():
+            # Soon, not now: the prompt has yet to take in what was typed ahead, which stays in its buffer.
+            asyncio.get_running_loop().call_soon(self._take_the_prompt_for_a_question)
+
+    def _take_the_prompt_for_a_question(self) -> None:
+        """On the prompt's loop: leave the idle prompt so the loop asks; any other prompt is answered first."""
+        app = self.session.app
+        if not app.is_running or app.is_done:
+            # An Enter got there first: the loop asks before that line runs, or once the turn it is in ends.
+            return
+        if self._at_idle_prompt:
+            app.exit(result=_HeldInput(app.current_buffer.text))
+        else:
+            run_in_terminal(lambda: self.console.print(Text(_QUESTION_WAITING, style="cyan")))
+
+    def _answer_questions(self) -> None:
+        """Ask each waiting question for this terminal in turn, each until its deadline; Ctrl-C is a no."""
+        while True:
+            try:
+                question = self._questions.get_nowait()
+            except queue.Empty:
+                return
+            left = question.deadline - time.monotonic()
+            if question.settled or left <= 0:
+                continue  # its command thread already reported that nobody answered
+            self._print_section("A command from outside this terminal", style="yellow")
+            self.console.print(Text(self._clean_terminal_text(question.details)))
+            self._discard_typed_ahead()
+            try:
+                reply = self._question_prompt(question.prompt, left)
+            except (KeyboardInterrupt, EOFError):
+                reply = ""
+            answer = None if reply is None else _terminal_answer(reply)
+            if not question.settle(answer):
+                self.console.print("[dim]Too late: it was already reported as not run.[/dim]")
+
+    def _discard_typed_ahead(self) -> None:
+        """Drop keys typed before a question showed: meant for the prompt it took over, a "yes⏎" there isn't its y."""
+        session_input = getattr(self.session, "input", None)
+        if session_input is not None:
+            clear_typeahead(session_input)
+        _flush_terminal_input()
+
+    def _interrupt_at_prompt(self) -> None:
+        """Ctrl-C at the idle prompt stops what runs on this machine; with nothing running it says how to leave."""
+        local = self._local_connected()
+        stopped = local.interrupt() if local is not None else 0
+        if stopped:
+            self.console.print(
+                "[yellow]■ Stopped {} command{} running on this machine.[/yellow]".format(
+                    stopped, "" if stopped == 1 else "s"
+                )
+            )
+        else:
+            self.console.print("[dim]Press Ctrl-D or type /exit to leave skyportalai.[/dim]")
 
     def _prompt_fragments(self) -> List[Tuple[str, str]]:
         connected = self.client.is_authenticated()
@@ -323,6 +567,8 @@ class InteractiveShell:
             fragments.append(("class:context", " server#{}".format(labels[0])))
         elif self.selected_server_id is not None:
             fragments.append(("class:context", " server#{}".format(self.selected_server_id)))
+        elif self._local_connected() is not None:
+            fragments.append(("class:context", " local#{}".format(self.local_target.hostname)))
         if self.selected_namespaces:
             fragments.append(("class:context", " ns#{}".format(self._namespace_label(all_label="all"))))
         fragments.append(("class:arrow", "  > "))
@@ -401,7 +647,7 @@ class InteractiveShell:
             "[bold cyan]/servers[/bold cyan]    List or select a server\n"
             "[bold cyan]/new[/bold cyan]        Start a fresh agent conversation\n"
             "[bold cyan]/help[/bold cyan]       See every slash command\n\n"
-            "Type naturally to talk to the Skyportal Agent.".format(
+            "Type naturally to talk to the skyportalai agent.".format(
                 status
             )
         )
@@ -487,7 +733,7 @@ class InteractiveShell:
         for info in COMMANDS.values():
             if info.usage != "/quit":
                 table.add_row(info.usage, info.description)
-        self._print_section("Skyportal commands", style="#3b82f6")
+        self._print_section("skyportalai commands", style="#3b82f6")
         self.console.print(table)
         self.console.print("[dim]Type a message to talk to the agent.[/dim]\n")
 
@@ -528,7 +774,7 @@ class InteractiveShell:
         details.append(" and approve.\n\nThis terminal finishes on its own once you approve.")
         if open_browser and not self.client.open_verification_page(handshake.verification_uri_complete):
             details.append("\nYour browser did not open; use the link above.", style="yellow")
-        self._print_section("Connect Skyportal CLI")
+        self._print_section("Connect skyportalai CLI")
         self.console.print(details)
         self.console.print()
         try:
@@ -540,8 +786,7 @@ class InteractiveShell:
                     "[yellow]Login cancelled.[/yellow] Run [bold]/token[/bold] to paste a key instead."
                 )
                 return
-            with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
-                self.client.set_access_token(token)
+            self._save_credential(token)
             self.console.print("[green]✓ Credential validated and saved securely.[/green]")
         finally:
             self.browser_login_started = False
@@ -556,13 +801,13 @@ class InteractiveShell:
         details.append(url, style="bold cyan link {}".format(url))
         details.append(
             "\n\n2. Sign in if prompted.\n"
-            "3. Create a key named Skyportal CLI and copy the sk_ value.\n"
+            "3. Create a key named skyportalai CLI and copy the sk_ value.\n"
             "4. Return here and paste it into the hidden prompt.\n\n"
             "Do not use an agt_ deployment token; those only upload observability data.",
         )
         if open_browser and not result.get("browser_opened"):
             details.append("\nYour browser did not open; use the link above.", style="yellow")
-        self._print_section("Connect Skyportal CLI")
+        self._print_section("Connect skyportalai CLI")
         self.console.print(details)
         self.console.print()
         try:
@@ -577,12 +822,20 @@ class InteractiveShell:
                 "[yellow]Connection paused.[/yellow] Run [bold]/token[/bold] when the key is ready."
             )
             return
-        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
-            self.client.set_access_token(token)
+        self._save_credential(token)
         self.browser_login_started = False
         self.console.print("[green]✓ Credential validated and saved securely.[/green]")
 
+    def _save_credential(self, token: str) -> None:
+        # First, with the key it connected with: this machine's session keeps that key, and the new one may be
+        # another account's. The next message connects it again with the new key.
+        self._end_local_session()
+        with self.console.status("[cyan]Validating API credential…[/cyan]", spinner="dots"):
+            self.client.set_access_token(token)
+
     def _cmd_logout(self, args: List[str]) -> None:
+        # Before the key is removed, so Skyportal hears this session close and withdraws what it held.
+        disconnected = self._end_local_session()
         self.client.logout()
         self.browser_login_started = False
         self.chat_id = None
@@ -593,7 +846,9 @@ class InteractiveShell:
         self.selected_namespaces = {}
         self.kubernetes_namespaces = {}
         self._forget_chat()
-        self.console.print("[green]✓ Local Skyportal credentials removed.[/green]")
+        self.console.print("[green]✓ Local skyportalai credentials removed.[/green]")
+        if disconnected:
+            self.console.print("[dim]skyportalai no longer runs commands on this machine.[/dim]")
 
     def _cmd_github_token(self, args: List[str]) -> None:
         subcommand = args[0].lower() if args else ""
@@ -645,7 +900,7 @@ class InteractiveShell:
     def _permission_mode_value(value: Any) -> str:
         mode = value.get("permission_mode") if isinstance(value, dict) else value
         if mode not in _PERMISSION_MODES:
-            raise PortalError("Skyportal returned an invalid permission mode")
+            raise PortalError("skyportalai returned an invalid permission mode")
         return str(mode)
 
     @staticmethod
@@ -655,7 +910,7 @@ class InteractiveShell:
     def _fetch_permission_mode(self) -> str:
         getter = getattr(self.client, "get_permission_mode", None)
         if getter is None:
-            raise PortalError("This Skyportal deployment does not expose permission settings")
+            raise PortalError("This skyportalai deployment does not expose permission settings")
         return self._permission_mode_value(getter())
 
     def _permission_mode_for_approval(self) -> str:
@@ -685,7 +940,7 @@ class InteractiveShell:
                 setter = getattr(self.client, "set_permission_mode", None)
                 if setter is None:
                     raise PortalError(
-                        "This Skyportal deployment does not expose permission settings"
+                        "This skyportalai deployment does not expose permission settings"
                     )
                 mode = self._permission_mode_value(setter(requested))
 
@@ -739,7 +994,7 @@ class InteractiveShell:
             if connected
             else "[yellow]not connected[/yellow]",
         )
-        rows.add_row("Agent", "Skyportal Agent")
+        rows.add_row("Agent", "skyportalai agent")
         if permission_mode is not None:
             permission_style = "yellow" if permission_mode == "autoapprove" else "green"
             rows.add_row("Permission", Text(permission_mode, style=permission_style))
@@ -759,6 +1014,12 @@ class InteractiveShell:
             "Servers",
             ", ".join(labels) if labels else "[dim]automatic[/dim]",
         )
+        if self._local_target_factory is not None:
+            local = self._local_connected()
+            rows.add_row(
+                "This machine",
+                escape(local.describe()) if local else "[dim]not connected (/local on)[/dim]",
+            )
         if len(labels) > 1:
             rows.add_row("Default", labels[0])
         if self.kubernetes_namespaces:
@@ -812,7 +1073,7 @@ class InteractiveShell:
     def _cmd_new(self, args: List[str]) -> None:
         self.chat_id = None
         self.last_sequence = 0
-        self.console.print("[green]✓ Started a fresh Skyportal chat.[/green]")
+        self.console.print("[green]✓ Started a fresh skyportalai chat.[/green]")
 
     def _cmd_resume(self, args: List[str]) -> None:
         verbose = "--verbose" in args
@@ -899,12 +1160,12 @@ class InteractiveShell:
 
     def _cmd_servers(self, args: List[str]) -> None:
         self._require_api_connection()
-        with self.console.status("[cyan]Contacting Skyportal…[/cyan]", spinner="dots"):
+        with self.console.status("[cyan]Contacting skyportalai…[/cyan]", spinner="dots"):
             servers = self._items(self.client.servers())
         if not servers:
             self.console.print("[yellow]No servers found.[/yellow]")
             return
-        table = Table(title="Skyportal servers", border_style="blue", header_style="bold cyan")
+        table = Table(title="skyportalai servers", border_style="blue", header_style="bold cyan")
         table.add_column("Name", style="bold")
         table.add_column("Status")
         table.add_column("Environment")
@@ -942,12 +1203,20 @@ class InteractiveShell:
             self.selected_namespaces = {}
             self.kubernetes_namespaces = {}
             self.console.print("[green]✓ Server selection set to automatic.[/green]")
+            if self._local_connected() is not None:
+                self.console.print(
+                    "[dim]New chats still start on this machine while it is connected; /local off stops that.[/dim]"
+                )
             return
         if any(argument.lower() == "auto" for argument in args):
             self.console.print("[yellow]Use 'auto' by itself, or provide server names.[/yellow]")
             return
         self._require_api_connection()
         tokens = [part.strip() for argument in args for part in argument.split(",") if part.strip()]
+        local = self._local_connected()
+        if local is not None:
+            # "local" names this machine, whatever it is called on the account.
+            tokens = [str(local.server_id) if token.lower() == "local" else token for token in tokens]
         with self.console.status("[cyan]Resolving servers…[/cyan]", spinner="dots"):
             servers = self._items(self.client.servers())
         resolved, unknown = self._resolve_server_tokens(tokens, servers)
@@ -1222,13 +1491,13 @@ class InteractiveShell:
 
     def _cmd_clear(self, args: List[str]) -> None:
         self.console.clear()
-        self.console.print("[bold #3b82f6]S[/bold #3b82f6]  [bold]Skyportal[/bold]")
+        self.console.print("[bold #3b82f6]S[/bold #3b82f6]  [bold]skyportalai[/bold]")
         self.console.print("[#3b82f6]YOUR AI COMMAND CENTER[/#3b82f6]\n")
 
     def _cmd_about(self, args: List[str]) -> None:
-        self._print_section("Skyportal CLI", style="#3b82f6")
+        self._print_section("skyportalai CLI", style="#3b82f6")
         self.console.print(
-            "A persistent command center for the Skyportal Agent and your servers.\n\n"
+            "A persistent command center for the skyportalai agent and your servers.\n\n"
             "[dim]CLI auth: account API keys from /keys/\n"
             "Prompt history: {}[/dim]\n".format(self._history_path())
         )
@@ -1254,10 +1523,16 @@ class InteractiveShell:
                 )
             )
             return
+        self._offer_local_target()
         # Grab the chat ID before waiting so a Ctrl-C can cancel the turn
         # server-side, not just stop the shell from listening.
         namespaces = self._namespace_payload(self.selected_namespaces)
-        if len(self.selected_server_ids) > 1 or namespaces:
+        local = self._local_connected()
+        # Every message names this session, so Skyportal knows its turn was typed here and this CLI runs its
+        # commands without asking; a turn typed anywhere else waits for a y here.
+        if local is not None:
+            chat_id = self._begin_turn_here(message, local, namespaces)
+        elif len(self.selected_server_ids) > 1 or namespaces:
             # Namespaces only travel on the plural create, so a single
             # Kubernetes cluster with a namespace choice takes this path too.
             scope: Dict[str, Any] = {
@@ -1298,6 +1573,181 @@ class InteractiveShell:
                 self._deliver_agent_tokens(render_state)
         self._process_turn(turn, render_state=render_state)
 
+    def _begin_turn_here(self, message: str, local: LocalTarget, namespaces: Optional[Dict[str, Any]]) -> int:
+        """Start or continue a chat bound to this CLI, its turn typed here, so its commands on this machine run here."""
+        if self.chat_id is not None:
+            # A chat started elsewhere keeps its scope; binding only lets it reach this machine.
+            chat_id = self.client.begin_chat_turn(message, chat_id=self.chat_id, local_session=local.session)
+        else:
+            # Unless servers were chosen, a new chat's scope is this machine.
+            server_ids = list(self.selected_server_ids) or [self.selected_server_id or local.server_id]
+            scope: Dict[str, Any] = {
+                "server_ids": server_ids,
+                "active_server_id": self.selected_server_id or server_ids[0],
+                "local_session": local.session,
+            }
+            if namespaces:
+                scope["selected_namespaces"] = namespaces
+            chat_id = self.client.begin_chat_turn(message, **scope)
+        return chat_id
+
+    def _local_connected(self) -> Optional[LocalTarget]:
+        target = self.local_target
+        return target if target is not None and target.connected else None
+
+    def _offer_local_target(self) -> None:
+        """Once per shell: connect this machine if the user trusts this folder, asking the first time."""
+        if self._local_target_factory is None or self._local_offered or not self.client.is_authenticated():
+            return
+        self._local_offered = True
+        try:
+            self._offer_in_current_folder()
+        except KeyboardInterrupt:
+            # The target closed whatever session it had opened; the shell goes on without this machine.
+            self.console.print(
+                "\n[yellow]Stopped connecting this machine.[/yellow] Commands won't run here; "
+                "connect it with /local on.\n"
+            )
+        except Exception as error:  # the shell works without this machine, whatever went wrong
+            self._local_unavailable(error)
+
+    def _offer_in_current_folder(self) -> None:
+        try:
+            folder = Path.cwd()
+        except OSError:
+            self.console.print(
+                "[yellow]This folder no longer exists, so skyportalai can't run commands from it. "
+                "Move to a project folder and use /local on.[/yellow]\n"
+            )
+            return
+        if is_filesystem_root(folder):
+            self.console.print(
+                "[yellow]skyportalai won't run commands from {}: it is the root of a filesystem, so trusting it "
+                "would mean trusting everything on it. Open skyportalai in a project folder to let "
+                "skyportalai run commands on this machine.[/yellow]\n".format(escape(str(folder)))
+            )
+            return
+        if not self._trust_store.is_trusted(folder):
+            if not self._ask_to_trust(folder):
+                self.console.print(
+                    "[dim]skyportalai won't run commands on this machine. Change that with /local on.[/dim]\n"
+                )
+                return
+            if not self._trust_store.trust(folder):
+                self.console.print(
+                    "[yellow]Could not save this choice, so the folder is trusted only until you leave the shell."
+                    "[/yellow]\n"
+                )
+        self._connect_local_target(folder)
+
+    def _ask_to_trust(self, folder: Path) -> bool:
+        self._print_section("Do you trust the files in this folder?", style="yellow")
+        self.console.print("[bold]{}[/bold]\n".format(escape(str(folder))))
+        if is_home_folder(folder):
+            self.console.print(
+                "[yellow]This is your home folder. Trusting it covers every folder inside it, "
+                "your documents, SSH keys and cloud logins included.[/yellow]\n"
+            )
+        self.console.print(
+            "skyportalai can run commands on this machine, with your access: your files, your git "
+            "credentials, your cloud logins. A command starts in this folder, but that is not a limit: "
+            "it can read or change anything you can, anywhere on this machine. Trust covers this folder "
+            "and everything inside it. Commands that change things or touch secrets ask you first, as on "
+            "any host, unless your approval mode is autoapprove. A command from a turn typed anywhere but "
+            "here (your browser, say) also waits for your y in this terminal. Every command is printed "
+            "here. The repository's .skyportalai/settings.json rules apply to commands here (this folder's, "
+            "outside a repository): its deny list refuses, and its allow list skips the approval card, never "
+            "that y. Beside it, .skyportalai/settings.local.json skips the y too: an `a` you answer here is "
+            "saved there, and a repository can commit one, so look in .skyportalai/ before you trust a "
+            "repository you didn't create. Only trust a folder whose code you trust.\n"
+        )
+        # Ctrl-C or Ctrl-D here is a no, not a crash before the prompt has even started.
+        return self._confirm(
+            "Trust this folder and everything inside it, and let skyportalai run commands here? [y/N] "
+        )
+
+    def _connect_local_target(self, folder: Path) -> None:
+        # A target Skyportal removed is still held here; the next message binds its chat to the new one.
+        self._close_local_target()
+        target = self._local_target_factory(self.client, folder)
+        target.show = self._print_from_worker
+        target.ask = self._ask_from_worker
+        with self.console.status("[cyan]Connecting this machine…[/cyan]", spinner="dots"):
+            target.connect()
+        self.local_target = target
+        self.console.print(
+            "[green]✓ This machine is connected:[/green] {}. "
+            "Commands start in this folder, but can reach anything you can.\n".format(escape(target.describe()))
+        )
+
+    def _local_unavailable(self, error: Exception) -> None:
+        reason = str(error) if isinstance(error, PortalError) else "{}: {}".format(type(error).__name__, error)
+        self.console.print(
+            "[yellow]Could not connect this machine: {}[/yellow] "
+            "Commands won't run here; retry with /local on.\n".format(escape(reason))
+        )
+
+    def _print_from_worker(self, line: str) -> None:
+        """Print a line from a background thread, above the prompt when the user is at it, so it can't garble it."""
+        text = Text(self._clean_terminal_text(line), style="cyan")
+        if not self._on_prompt_loop(lambda: run_in_terminal(lambda: self.console.print(text))):
+            self.console.print(text)
+
+    def _on_prompt_loop(self, callback: Callable[[], None]) -> bool:
+        """Run `callback` on the running prompt's event loop; False when no prompt is running."""
+        app = getattr(self.session, "app", None)
+        loop = getattr(app, "loop", None) if app is not None and app.is_running else None
+        if loop is None:
+            return False
+        try:
+            loop.call_soon_threadsafe(callback)
+            return True
+        except RuntimeError:
+            return False  # the prompt's loop closed between looking and scheduling
+
+    def _close_local_target(self) -> None:
+        target, self.local_target = self.local_target, None
+        if target is not None:
+            target.close()
+
+    def _end_local_session(self) -> bool:
+        """Disconnect this machine for a sign-out or new key, until the next message; whether it was connected."""
+        connected = self._local_connected() is not None
+        self._close_local_target()
+        self._local_offered = False
+        return connected
+
+    def _cmd_local(self, args: List[str]) -> None:
+        if self._local_target_factory is None:
+            self.console.print("[yellow]Running commands on this machine isn't available here.[/yellow]")
+            return
+        action = args[0].lower() if args else ""
+        if action == "off":
+            if self._local_connected() is None:
+                self.console.print("[dim]This machine isn't connected.[/dim]")
+                return
+            self._close_local_target()
+            self.console.print("[green]✓ Disconnected.[/green] skyportalai no longer runs commands on this machine.")
+            return
+        if action == "on":
+            self._require_api_connection()
+            if self._local_connected() is None:
+                self._local_offered = False
+                self._offer_local_target()
+                return
+        elif action:
+            self.console.print("[yellow]Usage:[/yellow] /local [on|off]")
+            return
+        local = self._local_connected()
+        if local is None:
+            self.console.print("[dim]This machine isn't connected. Connect it with /local on.[/dim]")
+        else:
+            self.console.print(
+                "[green]● Connected:[/green] {}. Select it in another chat with /server local.".format(
+                    escape(local.describe())
+                )
+            )
+
     def _cancel_active_turn(self, chat_id: int) -> None:
         """Stop the running agent turn after a Ctrl-C, then keep the prompt."""
         self.console.print()
@@ -1307,6 +1757,11 @@ class InteractiveShell:
         except PortalError:
             self.console.print("[dim]Nothing to stop; the turn had already finished.[/dim]")
             return
+        # After the cancel, so the stopped command's result doesn't resume the turn first. Skyportal only
+        # withdraws a command that hasn't started; this chat's running here stop here, and other chats' keep going.
+        local = self._local_connected()
+        if local is not None and local.interrupt(chat_id):
+            self.console.print("[yellow]■ Stopped the command running on this machine.[/yellow]")
         self.console.print(
             "[yellow]■ Stopped.[/yellow] Chat #{} is still open; type to continue.".format(chat_id)
         )
@@ -1320,7 +1775,7 @@ class InteractiveShell:
         activity = snapshot.get("activity") if isinstance(snapshot, dict) else None
         label = activity.get("label") if isinstance(activity, dict) else None
         if not label:
-            label = "Skyportal is thinking…"
+            label = "skyportalai is thinking…"
         line = Text(self._bounded_one_line(label, 180), style="bold cyan")
         line.append("  Ctrl-C to stop", style="dim")
         return line
@@ -1394,30 +1849,31 @@ class InteractiveShell:
         autoapproved: bool = False,
         rejection_reason: Optional[str] = None,
         namespace: Optional[str] = None,
-        always: bool = False,
-    ) -> "tuple[bool, Optional[Dict[str, Any]]]":
+    ) -> _Submitted:
         """Submit a decision; recover when an older synchronous server times out.
 
         Older deployments execute the resumed workflow inside the approval POST.
         The client can therefore hit its request timeout after the decision was
         durably accepted. A single status reconciliation avoids resubmitting (and
         potentially re-running) that approval. Explicit HTTP failures still fail.
-        Returns whether timeout recovery was needed, and the server's answer
-        (None after a recovery, which has none).
         """
-        # Only the options this decision uses, so a client without one still takes it.
-        options: Dict[str, Any] = {}
-        if autoapproved:
-            options["autoapproved"] = True
-        elif rejection_reason:
-            options["rejection_reason"] = rejection_reason
-        else:
-            if namespace:
-                options["namespace"] = namespace
-            if always:
-                options["always"] = True
         try:
-            return False, self.client.submit_chat_approval(chat_id, approval, decision, **options)
+            if autoapproved:
+                answer = self.client.submit_chat_approval(
+                    chat_id,
+                    approval,
+                    decision,
+                    autoapproved=True,
+                )
+            elif rejection_reason:
+                answer = self.client.submit_chat_approval(
+                    chat_id, approval, decision, rejection_reason=rejection_reason,
+                )
+            elif namespace:
+                answer = self.client.submit_chat_approval(chat_id, approval, decision, namespace=namespace)
+            else:
+                answer = self.client.submit_chat_approval(chat_id, approval, decision)
+            return _Submitted(decision, answer, recovered=False)
         except PortalError as error:
             if (
                 autoapproved
@@ -1425,6 +1881,12 @@ class InteractiveShell:
                 and error.code == "autoapproval_policy_conflict"
             ):
                 raise _AutoapprovalPolicyConflict from error
+            if decision == "always_approved" and error.status_code == 400:
+                # A card gone stale, or a server from before "always_approved": the yes still stands, once.
+                self.console.print(
+                    "[yellow]Always allow wasn't taken ({}); approving this once.[/yellow]".format(escape(str(error)))
+                )
+                return self._submit_approval_with_recovery(chat_id, approval, "approved")
             if error.status_code is not None:
                 raise
             original_error: BaseException = error
@@ -1439,7 +1901,7 @@ class InteractiveShell:
             raise original_error from reconciliation_error
         if not accepted:
             raise original_error
-        return True, None
+        return _Submitted(decision, None, recovered=True)
 
     def _process_turn(
         self,
@@ -1467,7 +1929,7 @@ class InteractiveShell:
             self.last_sequence = max(self.last_sequence, turn.latest_sequence)
             if turn.status == "error":
                 raise PortalError(
-                    "The Skyportal agent reported an error for chat #{}".format(turn.chat_id)
+                    "The skyportalai agent reported an error for chat #{}".format(turn.chat_id)
                 )
             if turn.status != "awaiting_approval":
                 if not render_state.get("rendered"):
@@ -1510,7 +1972,7 @@ class InteractiveShell:
                     or time.monotonic() >= approval_settlement_deadline
                 ):
                     raise PortalError(
-                        "Skyportal did not clear an approval that was already submitted. "
+                        "skyportalai did not clear an approval that was already submitted. "
                         "Use /status before retrying; it will not be submitted twice."
                     )
                 try:
@@ -1561,9 +2023,6 @@ class InteractiveShell:
                 and self._permission_mode_for_approval() == "autoapprove"
             )
             rejection_reason: Optional[str] = None
-            # Never automatic: it writes a standing permit-list entry (skyportal-website#3750).
-            always = False
-            always_label = self._always_allow_offer(approval)
             if autoapprove:
                 decision = "approved"
                 self.console.print(
@@ -1574,12 +2033,12 @@ class InteractiveShell:
                     self.console.print(
                         "[dim]This approval type requires an explicit decision.[/dim]"
                     )
-                decision, rejection_reason, always = self._ask_decision(always_label)
+                decision, rejection_reason = self._ask_decision(self._always_allow_label(approval))
             namespace: Optional[str] = None
             if decision == "approved" and self._scope_asks_for_namespace(approval):
                 namespace = self._pick_scope_namespace(approval)
                 if namespace is None:
-                    decision, always = "rejected", False
+                    decision = "rejected"
             try:
                 while True:
                     try:
@@ -1588,20 +2047,18 @@ class InteractiveShell:
                             "[dim](Ctrl-C to stop)[/dim]".format(decision),
                             spinner="dots",
                         ) as status:
-                            sent_always = always and not autoapprove
-                            recovered, answer = self._submit_approval_with_recovery(
+                            submitted = self._submit_approval_with_recovery(
                                 turn.chat_id,
                                 approval,
                                 decision,
                                 autoapproved=autoapprove,
                                 rejection_reason=None if autoapprove else rejection_reason,
                                 namespace=namespace,
-                                always=sent_always,
                             )
                             handled_approvals.add(approval_id)
-                            if sent_always and decision == "approved":
-                                self._report_always_allow(approval, answer, recovered)
-                            if decision == "approved" and approval_type == "scope":
+                            if submitted.decision == "always_approved":
+                                self._report_always_allow(approval, submitted)
+                            if submitted.decision in ("approved", "always_approved") and approval_type == "scope":
                                 try:
                                     self._note_scope_added(approval, namespace)
                                 except PortalError:
@@ -1614,7 +2071,7 @@ class InteractiveShell:
                                 time.monotonic() + _APPROVAL_SETTLEMENT_TIMEOUT
                             )
                             status.update(self._CONTINUING_STATUS)
-                            if recovered:
+                            if submitted.recovered:
                                 self.console.print(
                                     "[dim]Approval was accepted; reattached after the older "
                                     "server's response timed out.[/dim]"
@@ -1637,7 +2094,7 @@ class InteractiveShell:
                             "[yellow]Autoapprove was disabled before this action was "
                             "submitted; an explicit decision is required.[/yellow]"
                         )
-                        decision, rejection_reason, always = self._ask_decision(always_label)
+                        decision, rejection_reason = self._ask_decision(self._always_allow_label(approval))
             except KeyboardInterrupt:
                 self._cancel_active_turn(turn.chat_id)
                 return
@@ -1695,40 +2152,22 @@ class InteractiveShell:
             if added and added not in current:
                 self.selected_namespaces[server_id] = [*current, str(added)]
 
-    @staticmethod
-    def _always_allow_offer(approval: Dict[str, Any]) -> Optional[str]:
-        """The "Always allow" the server offers on this card, worded by it; None where it offers none.
+    def _report_always_allow(self, approval: Dict[str, Any], submitted: _Submitted) -> None:
+        """Say what the ✓✓ added to the host's allow list, from the server's answer to it.
 
-        A bash or combined scope card carries it in approval_context.always_allow
-        (skyportal-website#3632, #3750); it is withheld for a sensitive command, a
-        broadcast or batch, and a scope-only card, and the server refuses it there.
+        Without this the shell said nothing, so nobody could tell whether the command would
+        ask again. A ✓✓ the server refused already fell back to once, saying so.
         """
-        if approval.get("type") not in ("bash_command", "scope"):
-            return None
-        context = approval.get("approval_context")
-        offer = context.get("always_allow") if isinstance(context, dict) else None
-        if not isinstance(offer, dict) or not offer.get("prefixes"):
-            return None
-        return str(offer.get("label") or "Always allow " + ", ".join("`{}`".format(p) for p in offer["prefixes"]))
-
-    def _report_always_allow(
-        self, approval: Dict[str, Any], answer: Optional[Dict[str, Any]], recovered: bool,
-    ) -> None:
-        """Say what "Always allow" did, from the server's answer to it.
-
-        A server without skyportal-website#3750 approves once and ignores ``always``;
-        saying nothing would leave the user thinking the command won't ask again.
-        """
-        if recovered:
+        if submitted.recovered:
             self.console.print(
                 "[yellow]Approved, but the server's answer timed out, so it isn't known whether "
                 "Always allow was applied.[/yellow]"
             )
             return
-        answer = answer if isinstance(answer, dict) else {}
-        if answer.get("always") is not True:
+        answer = submitted.answer if isinstance(submitted.answer, dict) else {}
+        if answer.get("decision") != "always_approved":
             self.console.print(
-                "[yellow]Always allow wasn't applied: this Skyportal server approved the command once, "
+                "[yellow]Always allow wasn't applied: the server approved the command once, "
                 "so it will ask again next time.[/yellow]"
             )
             return
@@ -1747,30 +2186,27 @@ class InteractiveShell:
             line.append(self._bounded_one_line(prefix, 200), style="bold")
         self.console.print(line)
 
-    def _ask_decision(self, always_label: Optional[str] = None) -> "tuple[str, Optional[str], bool]":
-        """y approves; a approves and always allows, when offered; r rejects with a reason; anything else rejects."""
-        question = "Approve this action? [y/N/r=reject with reason]: "
+    def _ask_decision(self, always_label: Optional[str] = None) -> "tuple[str, Optional[str]]":
+        """y approves; a, where the card offers it, also permit-lists; r rejects with a reason; anything else rejects."""
         if always_label:
-            line = Text("a = ", style="dim")
-            line.append_text(self._server_wording(always_label))
-            self.console.print(line)
-            question = "Approve this action? [y/N/a=always allow/r=reject with reason]: "
+            self.console.print(Text.assemble(("a = ", "dim"), self._server_wording(always_label)))
+        choices = "y/N/a=always/r=reject with reason" if always_label else "y/N/r=reject with reason"
         try:
-            answer = self.session.prompt(question).strip().lower()
+            answer = self.session.prompt("Approve this action? [{}]: ".format(choices)).strip().lower()
         except (KeyboardInterrupt, EOFError):
             answer = ""
         if answer in ("y", "yes"):
-            return "approved", None, False
-        if answer == "a" and always_label:
-            return "approved", None, True
+            return "approved", None
+        if always_label and answer in ("a", "always"):
+            return "always_approved", None
         if answer == "r":
             try:
                 # Not self.session: that saves every answer to ~/.skyportalai/history.
                 reason = self._confirm_prompt("Reason: ").strip()
             except (KeyboardInterrupt, EOFError):
                 reason = ""
-            return "rejected", self._bounded_one_line(reason, 500) or None, False
-        return "rejected", None, False
+            return "rejected", self._bounded_one_line(reason, 500) or None
+        return "rejected", None
 
     @staticmethod
     def _server_wording(text: Any, style: str = "") -> Text:
@@ -1779,6 +2215,17 @@ class InteractiveShell:
         for index, part in enumerate(InteractiveShell._bounded_one_line(str(text or ""), 400).split("`")):
             line.append(part, style=(style + " bold").strip() if index % 2 else style)
         return line
+
+    @staticmethod
+    def _always_allow_label(approval: Dict[str, Any]) -> Optional[str]:
+        """What the web card's ✓✓ would add, when the server offers it: on a bash card
+        (skyportal-website#3665) or a combined scope card (#3750)."""
+        if approval.get("type", "bash_command") not in ("bash_command", "scope"):
+            return None
+        context = approval.get("approval_context")
+        offer = context.get("always_allow") if isinstance(context, dict) else None
+        label = offer.get("label") if isinstance(offer, dict) else None
+        return label if isinstance(label, str) and label.strip() else None
 
     @classmethod
     def _approval_reasons(cls, approval: Dict[str, Any]) -> Optional[Text]:
@@ -1980,7 +2427,7 @@ class InteractiveShell:
                 if not rendered:
                     self.console.print()
                     if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                        self._print_section("[#3b82f6]skyportalai agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
             elif role == "tool":
@@ -1990,7 +2437,7 @@ class InteractiveShell:
                 if not rendered:
                     self.console.print()
                     if show_section:
-                        self._print_section("[#3b82f6]Skyportal agent[/#3b82f6]")
+                        self._print_section("[#3b82f6]skyportalai agent[/#3b82f6]")
                 self.console.print(line)
                 rendered = True
         if rendered:
@@ -2211,7 +2658,7 @@ class InteractiveShell:
 
     def _show_portal_error(self, error: PortalError) -> None:
         denied = error.status_code in (401, 403)
-        title = "Access denied" if denied else "Skyportal request failed"
+        title = "Access denied" if denied else "skyportalai request failed"
         guidance = (
             "Use /login to create or paste a valid account API key."
             if denied

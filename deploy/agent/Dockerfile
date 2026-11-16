@@ -23,7 +23,7 @@ FROM python:3.11-slim AS builder
 # so a range would make every rebuild resolve to a different image. Must match
 # appVersion in the chart and the image tag in manifests/deployment.yaml; CI
 # checks the three agree.
-ARG SKYPORTALAI_VERSION=0.3.0
+ARG SKYPORTALAI_VERSION=0.4.0
 
 ENV VENV=/opt/venv
 RUN python -m venv "$VENV"

@@ -102,10 +102,20 @@ def test_bare_invocation_starts_the_shell(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
     monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
     started = []
-    monkeypatch.setattr("skyportalai.cli.main.run_shell", lambda: started.append(True))
+    monkeypatch.setattr("skyportalai.cli.main.run_shell", lambda settings: started.append(settings.base_url))
     result = invoke()
     assert result.exit_code == 0, result.output
-    assert started == [True]
+    assert started == ["https://app.skyportal.ai"]
+
+
+def test_bare_invocation_starts_the_shell_against_the_base_url_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("SKYPORTALAI_CONFIG_PATH", str(tmp_path / "config.yaml"))
+    monkeypatch.setenv("SKYPORTALAI_CREDENTIALS_PATH", str(tmp_path / "credentials.json"))
+    started = []
+    monkeypatch.setattr("skyportalai.cli.main.run_shell", lambda settings: started.append(settings.base_url))
+    result = invoke("--base-url", "https://staging.example")
+    assert result.exit_code == 0, result.output
+    assert started == ["https://staging.example"]
 
 
 def test_unknown_command_exits_nonzero() -> None:
@@ -157,7 +167,7 @@ def test_console_script_bare_invocation_is_not_an_error(monkeypatch) -> None:
     """Bare invocation must reach the shell rather than exiting non-zero."""
     probe = (
         "import skyportalai.cli.main as m;"
-        "m.run_shell = lambda: print('SHELL STARTED');"
+        "m.run_shell = lambda settings: print('SHELL STARTED');"
         "m.main()"
     )
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)

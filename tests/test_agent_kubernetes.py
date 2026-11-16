@@ -17,6 +17,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,7 @@ import requests
 
 from skyportalai import SkyportalError
 from skyportalai.agent import __main__ as agent_main
-from skyportalai.agent.config import AgentConfig
+from skyportalai.agent.config import MAX_NAMESPACES, AgentConfig
 from skyportalai.agent.kubernetes import (
     ClusterRole,
     CommandPoller,
@@ -46,6 +47,7 @@ GET_PODS = ["kubectl", "get", "pods", "-A", "-o", "json"]
 class FakeResponse:
     status_code: int
     body: dict | None = None
+    headers: dict = field(default_factory=dict)
 
     def json(self):
         if self.body is None:
@@ -260,6 +262,14 @@ class TestClusterRole:
         assert ran == [GET_PODS, ["kubectl", "top", "nodes", "--no-headers"]]
         assert payload["role"] == "cluster" and payload["schema_version"] == 1
         assert role.next_delay(30) == 30
+
+    def test_reports_its_granted_namespaces_with_every_upload(self):
+        role = ClusterRole(run=lambda argv: pytest.fail("ran with no plan"), namespaces=("ml", "serving"))
+        assert role.collect()["namespaces"] == ["ml", "serving"]
+        assert role.collect()["namespaces"] == ["ml", "serving"]
+
+    def test_a_cluster_wide_agent_reports_no_namespaces(self):
+        assert ClusterRole().collect()["namespaces"] == []
 
     def test_drops_a_mutating_command_from_the_servers_plan(self):
         role = ClusterRole()
@@ -740,6 +750,45 @@ class TestCommandPoller:
         assert stop.waits == list(commands.RESULT_RETRY_DELAYS[:2])
         assert any("command 7" in record.getMessage() for record in caplog.records)
 
+    def test_report_by_is_read_against_the_servers_date_not_this_machines_clock(self):
+        # A machine whose clock runs five minutes fast still keeps the whole window the server gave it.
+        server_now = datetime.now(timezone.utc) - timedelta(minutes=5)
+        lease = {"id": 7, "argv": GET_PODS, "report_by": (server_now + timedelta(seconds=330)).isoformat()}
+        session = FakeSession([FakeResponse(200, lease, headers={"Date": format_datetime(server_now, usegmt=True)})])
+        stop = RecordingStop()
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, run=lambda argv, timeout: pytest.fail("ran"),
+            stop_event=stop, clock=stop.clock,
+        )
+
+        command = poller._lease()
+
+        # Date counts whole seconds, so up to one more.
+        assert 330 <= command.report_deadline - stop.now < 331.5
+
+    @pytest.mark.parametrize("hand", [False, True], ids=["in-cluster agent", "CLI's local machine"])
+    def test_the_runner_gets_the_report_deadline_only_when_the_poller_is_told_to_hand_it(self, hand):
+        handed = []
+
+        def run(argv, timeout, **extra):
+            handed.append(extra)
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+        stop = RecordingStop()
+        session = FakeSession([FakeResponse(200, {"id": 7, "argv": GET_PODS, "report_by": _report_by(400)})])
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session, run=run,
+            stop_event=stop, clock=stop.clock, hand_report_deadline=hand,
+        )
+
+        assert self._handle(poller) is True
+
+        [extra] = handed
+        if hand:
+            assert 398 < extra["report_deadline"] - stop.now <= 400
+        else:
+            assert extra == {}
+
     def test_poll_once_asks_for_nothing_while_every_slot_is_busy(self):
         release = threading.Event()
 
@@ -839,6 +888,12 @@ class TestCommandPoller:
         assert [record.getMessage() for record in records] == logged
         assert all(record.levelno == logging.DEBUG for record in records)
 
+    def test_a_heartbeat_goes_to_the_path_the_poller_was_given(self):
+        # The CLI's local machine beats on its own route, not the in-cluster agent's.
+        session = FakeSession([FakeResponse(204)])
+        CommandPoller(BASE_URL, TOKEN, session=session, heartbeat_path="/api/v1/agent/local/5/heartbeat/")._heartbeat()
+        assert [call["url"] for call in session.calls] == [BASE_URL + "/api/v1/agent/local/5/heartbeat/"]
+
     def test_a_shutdown_while_every_slot_is_busy_sends_no_heartbeat(self):
         server = FakeCommandServer()
         stop = threading.Event()
@@ -910,6 +965,90 @@ class TestCommandPoller:
         thread.join(5)
         assert alive
 
+    @pytest.mark.parametrize("status", [404, 401, 403, 410])
+    def test_a_refused_or_gone_lease_is_a_failed_poll_the_in_cluster_agent_keeps_retrying(self, status):
+        session = FakeSession([FakeResponse(status)] * 3)
+        poller = self._poller(session, run=lambda argv, timeout: pytest.fail("ran"))
+
+        assert [poller.poll_once() for _ in range(3)] == [None, None, None]
+        assert len(session.calls) == 3
+
+    def _hooked(self, session, monkeypatch, **hooks):
+        monkeypatch.setattr("skyportalai.agent.kubernetes.commands.POLL_SECONDS", 0.01)
+        return CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=threading.Event(), **hooks,
+        )
+
+    def _runs_to_its_end(self, poller):
+        thread = threading.Thread(target=poller.run_forever, daemon=True)
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive()
+
+    def test_a_410_lease_calls_on_gone_once_and_ends_polling(self, monkeypatch):
+        called = []
+        session = FakeSession([FakeResponse(410, {"code": "machine_removed"})] * 5)
+        poller = self._hooked(
+            session, monkeypatch, on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        self._runs_to_its_end(poller)
+
+        assert called == ["gone"]
+        assert len(session.calls) == 1
+        assert poller.poll_once() is None and len(session.calls) == 1
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_lease_calls_on_refused_once_and_ends_polling(self, monkeypatch, status):
+        called = []
+        session = FakeSession([FakeResponse(status)] * 5)
+        poller = self._hooked(
+            session, monkeypatch, on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        self._runs_to_its_end(poller)
+
+        assert called == ["refused"]
+        assert len(session.calls) == 1
+
+    def test_a_404_lease_never_reads_as_gone_even_with_the_hooks_set(self):
+        session = FakeSession([FakeResponse(404)] * 3)
+        called = []
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=threading.Event(),
+            on_gone=lambda: called.append("gone"), on_refused=lambda: called.append("refused"),
+        )
+
+        assert [poller.poll_once() for _ in range(3)] == [None, None, None]
+        assert called == [] and len(session.calls) == 3
+
+    @staticmethod
+    def _waits_between_polls(responses, **options):
+        """The delays the poller asks for between polls that find nothing, one per response."""
+        session = FakeSession(list(responses))
+        stop = RecordingStop(stop_on=len(responses))
+        poller = CommandPoller(
+            BASE_URL, TOKEN, session=session, session_factory=lambda: session,
+            run=lambda argv, timeout: pytest.fail("ran"), stop_event=stop, **options,
+        )
+        poller.run_forever()
+        return stop.waits
+
+    def test_failed_polls_back_off_up_to_the_cap_and_a_good_one_resets_it(self):
+        responses = [FakeResponse(503)] * 6 + [FakeResponse(204), FakeResponse(503)]
+        connection_lost = requests.ConnectionError("reset")
+
+        waits = self._waits_between_polls(responses + [connection_lost], max_backoff_seconds=30)
+
+        assert waits == [2, 4, 8, 16, 30, 30, 2, 2, 4]
+
+    def test_without_a_backoff_the_wait_between_polls_is_always_the_same(self):
+        waits = self._waits_between_polls([FakeResponse(503)] * 4 + [FakeResponse(204)])
+
+        assert waits == [2] * 5
+
 
 class TestConfigAndEntrypoint:
     def test_role_defaults_to_the_experiment_scanners(self):
@@ -922,6 +1061,41 @@ class TestConfigAndEntrypoint:
     def test_node_role_needs_the_node_name(self):
         with pytest.raises(SkyportalError):
             AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_ROLE": "node"})
+
+    def test_the_namespaces_env_var_reaches_the_upload(self, tmp_path):
+        config = AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": "cluster",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+            "SKYPORTALAI_AGENT_NAMESPACES": "ml, serving",
+        })
+        runner = agent_main.build_kubernetes_runner(config)
+        session = FakeSession([FakeResponse(202, {})])
+        runner.shipper = KubernetesShipper(BASE_URL, TOKEN, session=session, sleep=lambda s: None)
+        runner.run_once()
+        assert _sent_body(session.calls[0])["namespaces"] == ["ml", "serving"]
+
+    def test_no_namespaces_env_var_uploads_an_empty_list(self, tmp_path):
+        config = AgentConfig.from_env({
+            "SKYPORTALAI_AGENT_TOKEN": TOKEN,
+            "SKYPORTALAI_AGENT_ROLE": "cluster",
+            "SKYPORTALAI_AGENT_STATE_DIR": str(tmp_path),
+        })
+        assert agent_main.build_kubernetes_runner(config).role.collect()["namespaces"] == []
+
+    @pytest.mark.parametrize("value", ["Bad", "-x", "a_b", "a,a", "ml,,Serving", ",".join(f"ns{i}" for i in range(11)), "a" * 64])
+    def test_an_unusable_namespaces_value_stops_the_agent_starting(self, value):
+        with pytest.raises(SkyportalError, match="SKYPORTALAI_AGENT_NAMESPACES"):
+            AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_NAMESPACES": value})
+
+    @pytest.mark.parametrize(("value", "expected"), [("", ()), (" , ", ()), ("ml", ("ml",)), (" ml , serving,", ("ml", "serving"))])
+    def test_the_namespaces_value_is_split_and_trimmed(self, value, expected):
+        config = AgentConfig.from_env({"SKYPORTALAI_AGENT_TOKEN": TOKEN, "SKYPORTALAI_AGENT_NAMESPACES": value})
+        assert config.namespaces == expected
+
+    def test_the_namespace_cap_is_the_charts_maxitems(self):
+        schema = json.loads((Path(__file__).parent.parent / "deploy/agent/helm/skyportalai-agent/values.schema.json").read_text(encoding="utf-8"))
+        assert schema["properties"]["kubernetes"]["properties"]["namespaces"]["maxItems"] == MAX_NAMESPACES
 
     @pytest.mark.parametrize(("role", "expected"), [("cluster", ClusterRole), ("node", NodeRole)])
     def test_builds_the_runner_for_the_role(self, tmp_path, role, expected):

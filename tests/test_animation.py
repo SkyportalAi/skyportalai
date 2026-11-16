@@ -39,7 +39,7 @@ def test_compact_banner_fits_narrow_terminal():
     console.print(_final_banner(console.width))
 
     assert max(len(line) for line in output.getvalue().splitlines()) <= 70
-    assert "S  Skyportal" in output.getvalue()
+    assert "S  skyportalai" in output.getvalue()
     assert "YOUR AI COMMAND CENTER" in output.getvalue()
 
 
@@ -49,4 +49,4 @@ def test_non_terminal_startup_uses_plain_banner():
 
     show_startup_animation(console)
 
-    assert output.getvalue() == "Skyportal — your AI command center\n"
+    assert output.getvalue() == "skyportalai — your AI command center\n"

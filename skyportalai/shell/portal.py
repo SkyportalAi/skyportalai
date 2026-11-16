@@ -147,9 +147,9 @@ class CredentialStore:
             with path.open(encoding="utf-8") as credentials_file:
                 credentials = json.load(credentials_file)
         except (OSError, json.JSONDecodeError) as error:
-            raise PortalError(f"Could not read Skyportal credentials from {path}: {error}") from error
+            raise PortalError(f"Could not read skyportalai credentials from {path}: {error}") from error
         if not isinstance(credentials, dict):
-            raise PortalError(f"Invalid Skyportal credentials in {path}: expected an object")
+            raise PortalError(f"Invalid skyportalai credentials in {path}: expected an object")
         return credentials
 
     @classmethod
@@ -239,17 +239,17 @@ class SkyportalClient:
                 return None
             raise
         if not isinstance(payload, dict):
-            raise PortalError("Skyportal returned an unexpected login response")
+            raise PortalError("skyportalai returned an unexpected login response")
         try:
             device_code = payload["device_code"]
             user_code = payload["user_code"]
             verification_uri = payload["verification_uri"]
             if not isinstance(device_code, str) or not device_code:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             if not isinstance(user_code, str) or not user_code:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             if not isinstance(verification_uri, str) or not verification_uri:
-                raise PortalError("Skyportal returned an incomplete login response")
+                raise PortalError("skyportalai returned an incomplete login response")
             return DeviceLogin(
                 device_code=device_code,
                 user_code=user_code,
@@ -261,7 +261,7 @@ class SkyportalClient:
                 expires_in=int(payload.get("expires_in") or 600),
             )
         except (KeyError, TypeError, ValueError) as error:
-            raise PortalError("Skyportal returned an incomplete login response") from error
+            raise PortalError("skyportalai returned an incomplete login response") from error
 
     def await_device_login(
         self,
@@ -296,7 +296,7 @@ class SkyportalClient:
             if status == "approved":
                 key = str(payload.get("key") or "")
                 if not key:
-                    raise PortalError("Skyportal approved the login but returned no API key")
+                    raise PortalError("skyportalai approved the login but returned no API key")
                 return key
             if status == "denied":
                 raise PortalError("The login was denied in the browser. Nothing was saved.")
@@ -314,7 +314,7 @@ class SkyportalClient:
             try:
                 interval = min(max(int(payload.get("interval") or interval), _MIN_POLL_INTERVAL), _MAX_POLL_INTERVAL)
             except (TypeError, ValueError) as error:
-                raise PortalError("Skyportal returned an invalid poll interval") from error
+                raise PortalError("skyportalai returned an invalid poll interval") from error
             sleep(interval)
 
     def open_verification_page(self, url: str) -> bool:
@@ -417,12 +417,12 @@ class SkyportalClient:
     def _parse_permission_mode(payload: Any) -> str:
         mode = payload.get("permission_mode") if isinstance(payload, dict) else None
         if mode not in _PERMISSION_MODES:
-            raise PortalError("Skyportal returned an invalid permission mode")
+            raise PortalError("skyportalai returned an invalid permission mode")
         return str(mode)
 
     def agents(self) -> List[Dict[str, str]]:
         """Describe the single Skyportal ReAct agent."""
-        return [{"id": "skyportal", "name": "Skyportal Agent", "status": "ready"}]
+        return [{"id": "skyportal", "name": "skyportalai agent", "status": "ready"}]
 
     def servers(self) -> Any:
         """List servers owned by the authenticated user."""
@@ -437,18 +437,20 @@ class SkyportalClient:
         active_server_id: Optional[int] = None,
         active_host_id: Optional[int] = None,
         selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+        local_session: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Create a headless chat and atomically scope its first turn."""
+        """Create a headless chat and atomically scope its first turn; `local_session` binds it to this CLI."""
         if server_id is not None and server_ids is not None:
             raise PortalError("Use server_id or server_ids, not both")
         if server_ids is None and (
             active_server_id is not None
             or active_host_id is not None
             or selected_namespaces is not None
+            or local_session is not None
         ):
             raise PortalError(
                 "server_ids is required with active_server_id, active_host_id, "
-                "or selected_namespaces"
+                "selected_namespaces or local_session"
             )
         body: Dict[str, Any] = {"message": message}
         if server_id is not None:
@@ -464,15 +466,78 @@ class SkyportalClient:
             body["active_host_id"] = active_host_id
         if selected_namespaces is not None:
             body["selected_namespaces"] = selected_namespaces
+        if local_session is not None:
+            body["local_session"] = local_session
         return self._request("POST", "/api/v1/agent/chat/", json_body=body)
 
-    def send_chat_message(self, chat_id: int, message: str) -> Dict[str, Any]:
-        """Send a follow-up message to a headless chat."""
+    def send_chat_message(
+        self, chat_id: int, message: str, local_session: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send a follow-up message to a headless chat, binding it to this CLI's session when given."""
+        body: Dict[str, Any] = {"message": message}
+        if local_session is not None:
+            body["local_session"] = local_session
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/message/".format(chat_id),
-            json_body={"message": message},
+            json_body=body,
         )
+
+    def connect_local_machine(
+        self,
+        instance: str,
+        *,
+        machine_id: str,
+        name: str,
+        platform: str,
+        shell: str,
+        repo: Optional[Dict[str, str]],
+        repo_settings: Optional[Dict[str, str]] = None,
+        local_settings: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Register this machine (on first use) and open this process's session on it."""
+        body: Dict[str, Any] = {"machine_id": machine_id, "name": name, "platform": platform, "shell": shell}
+        if repo is not None:
+            body["repo"] = repo
+        if repo_settings is not None:
+            body["repo_settings"] = repo_settings
+        if local_settings is not None:
+            body["local_settings"] = local_settings
+        return self._request(
+            "POST", "/api/v1/agent/local/connect/", json_body=body, extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def local_machine_heartbeat(self, server_id: int, instance: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Tell Skyportal this session is alive; `timeout` replaces the client's own for each socket operation."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/heartbeat/".format(server_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+            timeout=timeout,
+        )
+
+    def start_local_command(self, server_id: int, instance: str, command_id: object) -> Dict[str, Any]:
+        """Ask Skyportal whether a leased command may start now; a PortalError says it may not."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/commands/{}/start/".format(server_id, command_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def disconnect_local_machine(self, server_id: int, instance: str) -> Dict[str, Any]:
+        """Close this session; Skyportal withdraws the commands it still held."""
+        return self._request(
+            "POST",
+            "/api/v1/agent/local/{}/disconnect/".format(server_id),
+            json_body={},
+            extra_headers={"X-Agent-Instance": instance},
+        )
+
+    def bearer_token(self) -> str:
+        """The credential this client sends, for a component that talks to Skyportal over its own transport."""
+        return self._access_token()
 
     def upload_chat_files(self, chat_id: int, paths: List[str]) -> Dict[str, Any]:
         """Attach files to a chat. Logs, CSV, JSON, YAML and images all work."""
@@ -539,13 +604,11 @@ class SkyportalClient:
         autoapproved: bool = False,
         rejection_reason: Optional[str] = None,
         namespace: Optional[str] = None,
-        always: bool = False,
     ) -> Dict[str, Any]:
         """Approve or reject one pending headless-agent action.
 
         ``namespace`` is the pick for a scope approval that asks for one
-        (skyportal-website#3724). ``always`` approves and always allows the
-        command on the card's host, where the card offers it (#3750).
+        (skyportal-website#3724).
         """
         approval_id = quote(str(approval.get("approval_id", "")), safe="")
         body: Dict[str, Any] = {
@@ -560,8 +623,6 @@ class SkyportalClient:
             body["rejection_reason"] = rejection_reason
         if namespace and decision == "approved":
             body["namespace"] = namespace
-        if always and decision == "approved":
-            body["always"] = True
         return self._request(
             "POST",
             "/api/v1/agent/chat/{}/approve/{}/".format(chat_id, approval_id),
@@ -681,7 +742,7 @@ class SkyportalClient:
         while True:
             if deadline is not None and time.monotonic() >= deadline:
                 raise PortalError(
-                    "Skyportal has made no progress for {} seconds. Chat #{} remains available.".format(
+                    "skyportalai has made no progress for {} seconds. Chat #{} remains available.".format(
                         f"{timeout:g}", chat_id
                     )
                 )
@@ -771,6 +832,7 @@ class SkyportalClient:
         active_server_id: Optional[int] = None,
         active_host_id: Optional[int] = None,
         selected_namespaces: Optional[Dict[Any, List[str]]] = None,
+        local_session: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Start or continue a chat and return its ID without waiting.
 
@@ -783,6 +845,7 @@ class SkyportalClient:
                 and active_server_id is None
                 and active_host_id is None
                 and selected_namespaces is None
+                and local_session is None
             ):
                 started = self.create_chat(message, server_id=server_id)
             else:
@@ -793,12 +856,13 @@ class SkyportalClient:
                     active_server_id=active_server_id,
                     active_host_id=active_host_id,
                     selected_namespaces=selected_namespaces,
+                    local_session=local_session,
                 )
             try:
                 return int(started["chat_id"])
             except (KeyError, TypeError, ValueError) as error:
-                raise PortalError("Skyportal did not return a valid chat ID") from error
-        self.send_chat_message(chat_id, message)
+                raise PortalError("skyportalai did not return a valid chat ID") from error
+        self.send_chat_message(chat_id, message, local_session=local_session)
         return chat_id
 
     def cancel_chat(self, chat_id: int, reason: Optional[str] = None) -> Dict[str, Any]:
@@ -877,7 +941,7 @@ class SkyportalClient:
             # deployment, and re-running login would only save it again.
             if stored_url is not None and normalize_base_url(str(stored_url)) != self.base_url:
                 raise PortalError(
-                    "Stored credentials belong to another Skyportal deployment "
+                    "Stored credentials belong to another skyportalai deployment "
                     "({}), but this session targets {}. Run 'skyportalai logout' to "
                     "clear them ({}), or 'skyportalai login' to replace them.".format(
                         stored_url, self.base_url, CredentialStore.get_path()
@@ -898,7 +962,7 @@ class SkyportalClient:
         if token.startswith("agt_"):
             raise PortalError(
                 "Agent deployment tokens (agt_) only upload observability data and cannot "
-                "authenticate the Skyportal CLI. Create an account API key (sk_) at {}.".format(
+                "authenticate the skyportalai CLI. Create an account API key (sk_) at {}.".format(
                     self.api_key_url()
                 )
             )
@@ -912,10 +976,13 @@ class SkyportalClient:
         bearer_token: Optional[str] = None,
         body: Optional[bytes] = None,
         content_type: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
             "User-Agent": CLI_USER_AGENT,
+            **(extra_headers or {}),
         }
         data = None
         if body is not None:
@@ -936,19 +1003,19 @@ class SkyportalClient:
             method=method,
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=timeout or self.timeout) as response:
                 status = response.status
                 content = response.read()
                 if status >= 300:
                     raise PortalError(
-                        "Skyportal request failed ({})".format(status),
+                        "skyportalai request failed ({})".format(status),
                         status_code=status,
                     )
                 try:
                     return json.loads(content.decode()) if content else {}
                 except (json.JSONDecodeError, UnicodeDecodeError) as error:
                     raise PortalError(
-                        "Skyportal returned a non-JSON response ({})".format(status),
+                        "skyportalai returned a non-JSON response ({})".format(status),
                         status_code=status,
                     ) from error
         except HTTPError as error:
@@ -965,11 +1032,11 @@ class SkyportalClient:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 message = None
             raise PortalError(
-                str(message) if message else "Skyportal request failed ({})".format(error.code),
+                str(message) if message else "skyportalai request failed ({})".format(error.code),
                 status_code=error.code,
                 code=str(code) if code else None,
             ) from error
         except URLError as error:
-            raise PortalError("Could not connect to Skyportal: {}".format(error.reason)) from error
+            raise PortalError("Could not connect to skyportalai: {}".format(error.reason)) from error
         except TimeoutError as error:
-            raise PortalError("Could not connect to Skyportal: request timed out") from error
+            raise PortalError("Could not connect to skyportalai: request timed out") from error

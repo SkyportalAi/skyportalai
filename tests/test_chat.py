@@ -572,7 +572,7 @@ def test_bound_chat_wait_defaults_to_indefinite():
         ("get_execution_status", "/api/v1/agent/chat/5/execution-status/"),
         ("get_tool_calls", "/api/v1/agent/chat/5/tool-calls/"),
         ("get_reasoning", "/api/v1/agent/chat/5/reasoning/"),
-        ("get_plan", "/api/v1/agent/chat/5/plan/"),
+        ("get_plans", "/api/v1/agent/chat/5/plans/"),
         ("get_evaluations", "/api/v1/agent/chat/5/evaluations/"),
         ("get_environment", "/api/v1/agent/chat/5/environment/"),
     ],
@@ -582,6 +582,27 @@ def test_observability_endpoints_hit_expected_paths(requests_mock, method, path)
     result = getattr(_client().chat, method)(5)
     assert result == {"ok": True}
     assert requests_mock.last_request.path == path
+
+
+def test_get_plan_returns_newest_plan(requests_mock):
+    # The server only has /plans/ (newest first); there is no /plan/ route.
+    requests_mock.get(f"{BASE}/api/v1/agent/chat/5/plans/",
+                      json={"plans": [{"plan_id": "p2"}, {"plan_id": "p1"}]})
+    assert _client().chat.get_plan(5) == {"plan_id": "p2"}
+    assert requests_mock.last_request.path == "/api/v1/agent/chat/5/plans/"
+
+
+def test_get_plan_is_none_without_plans(requests_mock):
+    requests_mock.get(f"{BASE}/api/v1/agent/chat/5/plans/", json={"plans": []})
+    assert _client().chat.get_plan(5) is None
+
+
+def test_bound_chat_plan_and_plans(requests_mock):
+    requests_mock.get(f"{BASE}/api/v1/agent/chat/5/plans/",
+                      json={"plans": [{"plan_id": "p2"}, {"plan_id": "p1"}]})
+    chat = Chat(_client(), 5)
+    assert chat.plan() == {"plan_id": "p2"}
+    assert chat.plans() == {"plans": [{"plan_id": "p2"}, {"plan_id": "p1"}]}
 
 
 def test_get_events_sends_filters(requests_mock):

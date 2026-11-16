@@ -71,7 +71,7 @@ def build_kubernetes_runner(
     if config.role == ROLE_NODE:
         role = NodeRole(config.node_name, host_proc=config.host_proc, disk_path=config.state_dir)
     else:
-        role = ClusterRole()
+        role = ClusterRole(namespaces=config.namespaces)
     return KubernetesRunner(
         role=role,
         queue=SpoolQueue(config.spool_dir, max_batches=config.queue_max_batches, max_bytes=config.queue_max_bytes),
@@ -99,7 +99,7 @@ def _install_signal_handlers(runner) -> None:
 
 USAGE = """usage: skyportalai-agent
 
-Runs the SkyPortal observability agent until stopped. Configured from the
+Runs the skyportalai observability agent until stopped. Configured from the
 environment, not flags: SKYPORTALAI_AGENT_TOKEN is required, and
 SKYPORTALAI_AGENT_ROLE picks experiments, cluster or node.
 See https://github.com/SkyportalAi/skyportalai/blob/main/docs/agent.md"""

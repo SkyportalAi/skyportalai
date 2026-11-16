@@ -421,8 +421,8 @@ def _approval_text(approval_id: str, result: ApprovalResult, always: bool) -> st
     text = f"Approval {approval_id}: {result.decision or 'approved'}"
     if not always:
         return text
-    if result.raw.get("always") is not True:
-        # A server without skyportal-website#3750 ignores "always" and approves once.
+    if result.decision != "always_approved":
+        # A server that can't do it refuses "always_approved"; any other answer was an approval once.
         return text + "; Always allow wasn't applied, so this approved the command once"
     added = result.raw.get("added_prefixes") or []
     if not added:

@@ -71,7 +71,7 @@ but keep it out of git.
 
 ```bash
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.3 \
+  --version 0.6.0 \
   --set token.existingSecret=skyportalai-agent-token \
   --set config.baseUrl=https://skyportal.example.com
 ```
@@ -82,7 +82,7 @@ creates the Secret:
 ```bash
 read -rs AGT   # paste the agt_ token; it is not echoed or kept in shell history
 helm install skyportalai-agent oci://ghcr.io/skyportalai/charts/skyportalai-agent \
-  --version 0.3.3 \
+  --version 0.6.0 \
   --set-string token.value="$AGT"
 unset AGT
 ```
@@ -229,12 +229,23 @@ read the package; see the next section.
 
 ## Kubernetes monitoring
 
-Set `kubernetes.enabled=true` and the chart adds two workloads from the same image:
+Set `kubernetes.enabled=true` and the chart adds two workloads from the same image,
+or three with `kubernetes.node.gpu.runtimeClassName` set:
 
 | Workload | Runs | Reads | Access |
 |---|---|---|---|
 | `<release>-cluster` Deployment | 1 pod | pods, events, nodes, namespaces, deployments/statefulsets, crash logs of failing pods, `kubectl top` | a read-only ClusterRole: `get`/`list`/`watch`, no secrets, no writes |
-| `<release>-node` DaemonSet | 1 pod on every node | the node's CPU, memory, disk, load (host `/proc`, read only) and GPUs (NVML) | no Kubernetes API token at all |
+| `<release>-node` DaemonSet | 1 pod on every node; with `kubernetes.node.gpu.runtimeClassName` set, on every node without the GPU label | the node's CPU, memory, disk, load (host `/proc`, read only) | no Kubernetes API token at all |
+| `<release>-node-gpu` DaemonSet | only with `kubernetes.node.gpu.runtimeClassName` set: 1 pod on every node with the GPU label | the same, plus GPUs (NVML) through that RuntimeClass | no Kubernetes API token at all |
+
+The GPU label is `kubernetes.node.gpu.nodeLabel`, by default
+`nvidia.com/gpu.present=true`, which the NVIDIA GPU operator's feature discovery
+sets. There are two DaemonSets because a node whose container runtime lacks the
+RuntimeClass's handler can't start a pod that names it, so one DaemonSet with the
+RuntimeClass would lose the CPU-only nodes. A mixed CPU and GPU cluster reports
+both. Each DaemonSet has its own host spool (`kubernetes.node.spoolHostPath`, with
+`-gpu` appended for `-node-gpu`), so uploads a node buffered before moving from
+one to the other stay in the old spool.
 
 GPU utilisation comes from the node agent (NVML), so no DCGM exporter is needed.
 vLLM serving metrics are not collected through the agent yet.
@@ -251,6 +262,8 @@ The agent refuses any other command itself, whatever the server sends.
 kubectl get endpoints kubernetes -n default
 # GPU clusters: the RuntimeClass that exposes the NVIDIA driver, usually "nvidia".
 kubectl get runtimeclass
+# GPU clusters: which nodes carry the GPU label.
+kubectl get nodes -L nvidia.com/gpu.present
 ```
 
 - **Egress:** outbound TCP 443 to your SkyPortal host (`app.skyportal.ai`), plus
@@ -306,16 +319,68 @@ older agent would run and send nothing.
 ### Verify
 
 ```bash
-kubectl -n skyportal get pods -o wide   # one -node- pod per node, one -cluster- pod
+kubectl -n skyportal get pods -o wide   # one -node- or -node-gpu- pod per node, one -cluster- pod
 kubectl -n skyportal logs deploy/skyportalai-agent-cluster | head   # "role=cluster"
+# GPU clusters: the nodes labelled true run the -node-gpu- pods.
+kubectl get nodes -L nvidia.com/gpu.present
 ```
 
 Within a minute the cluster shows as Connected in SkyPortal, with its pods and
 per-node metrics.
 
-The node DaemonSet tolerates every taint so that it reaches every node, GPU and
+A GPU node without the label is monitored as CPU only: it runs a `-node` pod,
+without the RuntimeClass, and reports no GPUs. Fix the label, or set
+`kubernetes.node.gpu.nodeLabel` to a label your GPU nodes carry.
+
+If you are upgrading from a chart older than 0.4.0 with `runtimeClassName`
+already set, check the labels first. Older charts gave every node the
+RuntimeClass, so a GPU node without the label reported its GPUs before the
+upgrade and reports CPU only after it.
+
+The node DaemonSets tolerate every taint so that they reach every node, GPU and
 control-plane nodes included. To monitor a subset, set
-`kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`.
+`kubernetes.node.tolerations` or `kubernetes.node.nodeSelector`; both DaemonSets
+use them.
+
+### Limit the agent to some namespaces
+
+By default the cluster pod reads pods, events, workloads and crash logs in every
+namespace. To limit it, list the namespaces it may read:
+
+```yaml
+kubernetes:
+  enabled: true
+  namespaces: [ml, serving]
+```
+
+The chart then renders a `Role` and `RoleBinding` in each listed namespace in place of
+the ClusterRole, with the same reads and nothing more, so a leaked agent token can't
+read a log anywhere else. The namespaces must already exist, at most 10, and the agent
+image must be 0.4.0 or newer (the chart refuses an older one). `namespaces` limits the
+cluster role, so it needs `kubernetes.enabled: true`; the chart refuses it without.
+
+Nodes and node metrics are cluster scoped, and no Role can grant them. One small
+ClusterRole stays for those two reads: node names, capacity and CPU/memory. It grants no
+pods, logs, events or namespaces. skyportalai uses the nodes read to tell a reachable
+cluster from an unreachable one, so removing it would report the cluster as down.
+
+The agent reports the list to skyportalai with its next upload, and skyportalai then reads
+and offers only those namespaces: its pod, event and workload reads go to one namespace
+at a time (`kubectl get pods -n ml`, not `-A`) and the chat's namespace picker lists them
+alone. A chat request for any other namespace is refused as "not granted" once the chat has
+reloaded its server list, which changing the chat's scope does; until then the Role's own
+"forbidden" answers it. That list is a hint skyportalai uses to shape its commands. The
+control is the Role: check it with
+
+```bash
+SA=system:serviceaccount:skyportal:skyportalai-agent-cluster
+kubectl auth can-i list pods -A --as=$SA          # no
+kubectl auth can-i list pods -n ml --as=$SA       # yes
+```
+
+To change the list, change `kubernetes.namespaces` and `helm upgrade`. An empty list is
+the whole cluster again. A skyportalai that predates this keeps asking for `-A` and gets
+"forbidden" for it, so upgrade skyportalai first or install on an instance that has it.
 
 ## Registry access
 
@@ -326,9 +391,9 @@ To serve the image from your own registry instead (air gapped clusters, or a
 registry your nodes already trust), mirror it and point the chart at the copy:
 
 ```bash
-docker pull ghcr.io/skyportalai/skyportalai-agent:0.3.0
-docker tag ghcr.io/skyportalai/skyportalai-agent:0.3.0 registry.example.com/skyportalai-agent:0.3.0
-docker push registry.example.com/skyportalai-agent:0.3.0
+docker pull ghcr.io/skyportalai/skyportalai-agent:0.4.0
+docker tag ghcr.io/skyportalai/skyportalai-agent:0.4.0 registry.example.com/skyportalai-agent:0.4.0
+docker push registry.example.com/skyportalai-agent:0.4.0
 helm install ... --set image.repository=registry.example.com/skyportalai-agent
 ```
 
@@ -399,6 +464,7 @@ Every setting maps onto an environment variable the agent reads at startup
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BATCHES` | `config.queueMaxBatches` | `1000` | cap on spooled batches while the API is unreachable |
 | `SKYPORTALAI_AGENT_QUEUE_MAX_BYTES` | `extraEnv` | `536870912` (512 MiB) | Kubernetes roles only: cap on the spool's size on disk; the oldest uploads are dropped first. Keep it below the spool volume's size |
 | `SKYPORTALAI_AGENT_HEALTHZ_PORT` | `config.healthzPort` | `8080` | liveness port |
+| `SKYPORTALAI_AGENT_NAMESPACES` | `kubernetes.namespaces` | none | cluster role only: read these namespaces, at most 10, not the whole cluster |
 
 The state directory keeps its pre-rename path on purpose: it is the agent's own
 default, and changing it on an existing install would orphan the spool queue.

@@ -47,7 +47,7 @@ class KubernetesShipper(Shipper):
                 shipped += 1
                 continue
             if self.last_outcome is _PostOutcome.PERMANENT:
-                logger.error("SkyPortal refused upload %s permanently; dropping it", batch.batch_id)
+                logger.error("skyportalai refused upload %s permanently; dropping it", batch.batch_id)
                 queue.remove(batch.batch_id)
                 continue
             break  # a transient failure: keep this and later uploads for the next cycle

@@ -304,7 +304,7 @@ class Skyportal:
             if exc.status_code != 404:
                 raise
             raise APIError(
-                "This Skyportal deployment does not report effective permissions yet; "
+                "This skyportalai deployment does not report effective permissions yet; "
                 "it needs a server update before 'whoami' can work.",
                 status_code=404,
                 body=exc.body,
